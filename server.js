@@ -46,10 +46,13 @@ io.on('connection', (socket) => {
   console.log(`🔌 Dispositivo conectado: ${socket.id}`);
 
   socket.on('registrar_dispositivo', (data) => {
-    const { rol, usuarioId } = data; // rol: 'cocina' | 'mesero', usuarioId: nombre del mesero
+    const { rol, usuarioId } = data; // rol: 'cocina' | 'mesero' | 'bar', usuarioId: nombre del mesero
     if (rol === 'cocina') {
       socket.join('sala_cocina');
       console.log(`👨‍🍳 Cocina registrada: ${socket.id}`);
+    } else if (rol === 'bar') {
+      socket.join('sala_bar');
+      console.log(`🍹 Bar registrado: ${socket.id}`);
     } else if (rol === 'mesero') {
       socket.join(`sala_mesero_${usuarioId}`);
       usuariosConectados.set(usuarioId, socket.id);
@@ -518,15 +521,17 @@ app.post('/api/pedidos', (req, res) => {
       }
       logAuditoria(usuario, 'pedido_creado', `Pedido creado para ${mesa} con ${items.length} productos`);
       
-      // Emitir en tiempo real a cocina
-      io.to('sala_cocina').emit('pedido_recibido_cocina', {
+      // Emitir en tiempo real a cocina y bar
+      const payloadPedido = {
         uuid,
         mesa,
         hora,
         items,
         mesero_id: usuario || 'Mesero',
         estado: 'pendiente'
-      });
+      };
+      io.to('sala_cocina').emit('pedido_recibido_cocina', payloadPedido);
+      io.to('sala_bar').emit('pedido_recibido_bar', payloadPedido);
 
       res.json({ success: true, id: this.lastID });
     }

@@ -7,12 +7,29 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import uuid from 'react-native-uuid';
 import axios from 'axios';
-import { Ionicons } from '@expo/vector-icons';
-import { Audio } from 'expo-av';
-import { useKeepAwake } from 'expo-keep-awake';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+
+import Ionicons from 'react-native-vector-icons/Ionicons';
+import Sound from 'react-native-sound';
+Sound.setCategory('Playback');
+import KeepAwake from 'react-native-keep-awake';
+import DocumentPicker from 'react-native-document-picker';
+import RNFS from 'react-native-fs';
 import io from 'socket.io-client';
+import PushNotification from 'react-native-push-notification';
+
+PushNotification.configure({
+  onNotification: function (notification) {
+    console.log("NOTIFICACIÓN RECIBIDA:", notification);
+  },
+  popInitialNotification: true,
+  requestPermissions: false,
+});
+
+
+
+
+
+
 
 // ============================================================
 // COLORES
@@ -175,7 +192,7 @@ const mapFiados = (fiadosList) => {
 // APP PRINCIPAL
 // ============================================================
 export default function App() {
-  useKeepAwake(); // Mantener la pantalla activa durante el servicio
+  KeepAwake.activate(); // Mantener la pantalla activa durante el servicio
 
   const [tab, setTab] = useState("pedido");
   const [mesas, setMesas] = useState(MESAS_INICIAL);
@@ -239,8 +256,8 @@ export default function App() {
   const detenerAlertaSonora = async () => {
     try {
       if (soundObjectRef.current) {
-        await soundObjectRef.current.stopAsync();
-        await soundObjectRef.current.unloadAsync();
+        soundObjectRef.current.stop();
+        soundObjectRef.current.release();
         soundObjectRef.current = null;
       }
       setAlertaSonando(false);
@@ -251,18 +268,15 @@ export default function App() {
 
   const seleccionarAudioLocal = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'audio/*',
-        copyToCacheDirectory: true,
-      });
+      const result = await DocumentPicker.pickSingle({ type: [DocumentPicker.types.audio] });
 
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const selectedAsset = result.assets[0];
-        const destinationPath = `${FileSystem.documentDirectory}custom_alert.mp3`;
+      if (result && result.uri) {
+        const selectedAsset = result;
+        const destinationPath = `${RNFS.DocumentDirectoryPath + "/"}custom_alert.mp3`;
         
-        await FileSystem.copyAsync({
-          from: selectedAsset.uri,
-          to: destinationPath
+        await RNFS.copyFile({
+          filepath: selectedAsset.uri,
+          destPath: destinationPath
         });
 
         await AsyncStorage.setItem('custom_alert_uri', destinationPath);
@@ -2358,9 +2372,9 @@ function CocinaView({ pedidos, onActualizar }) {
     const interval = setInterval(() => setTicker(t => t + 1), 30000);
     return () => clearInterval(interval);
   }, []);
-  const estadoBadge = { pendiente: C.surf3, preparando: "#FEF3C7", listo: "#DCFCE7" };
-  const estadoColor = { pendiente: C.text2, preparando: "#92400E", listo: "#15803D" };
-  const estadoLabel = { pendiente: "⏳ Pendiente", preparando: "🔥 Preparando", listo: "✅ Listo" };
+  const estadoBadge = { pendiente: C.surf3, preparando: "#FEF3C7", lisdestPath: "#DCFCE7" };
+  const estadoColor = { pendiente: C.text2, preparando: "#92400E", lisdestPath: "#15803D" };
+  const estadoLabel = { pendiente: "⏳ Pendiente", preparando: "🔥 Preparando", lisdestPath: "✅ Listo" };
 
   const pedidosCocina = pedidos.map(p => {
     const itemsConIdx = p.items.map((it, idx) => ({ ...it, originalIdx: idx }));
@@ -2457,9 +2471,9 @@ function CocinaView({ pedidos, onActualizar }) {
 
 // ─── VISTA BAR ────────────────────────────────────────────
 function BarView({ pedidos, onActualizar }) {
-  const estadoBadge = { pendiente: C.surf3, preparando: "#FEF3C7", listo: "#DCFCE7" };
-  const estadoColor = { pendiente: C.text2, preparando: "#92400E", listo: "#15803D" };
-  const estadoLabel = { pendiente: "⏳ Pendiente", preparando: "🔥 Preparando", listo: "✅ Listo" };
+  const estadoBadge = { pendiente: C.surf3, preparando: "#FEF3C7", lisdestPath: "#DCFCE7" };
+  const estadoColor = { pendiente: C.text2, preparando: "#92400E", lisdestPath: "#15803D" };
+  const estadoLabel = { pendiente: "⏳ Pendiente", preparando: "🔥 Preparando", lisdestPath: "✅ Listo" };
 
   const pedidosBar = pedidos.map(p => {
     const itemsConIdx = p.items.map((it, idx) => ({ ...it, originalIdx: idx }));
@@ -2704,7 +2718,7 @@ function CajaView({
     const total = calcularTotal(pedidoSel);
     const detallesVenta = pedidoSel.items.map(item => ({
       producto_id: productos.find(p => p.nombre === item.nombre)?.id || null,
-      nombre_producto: item.nombre,
+      nombre_producdestPath: item.nombre,
       cantidad: item.cantidad,
       precio_unitario: item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0),
       subtotal: (item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0)) * item.cantidad
@@ -2758,7 +2772,7 @@ function CajaView({
 
     const detallesVenta = flatItems.map(item => ({
       producto_id: productos.find(p => p.nombre === item.nombre)?.id || null,
-      nombre_producto: item.nombre,
+      nombre_producdestPath: item.nombre,
       cantidad: item.cantidad,
       precio_unitario: item.precio,
       subtotal: item.precio * item.cantidad
@@ -4173,7 +4187,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <Text style={{ color: C.red, fontWeight: '700', fontSize: 13 }}>-${finanzasReporte.gastosTotales.toLocaleString('es-CO')}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border }}>
-                  <Text style={{ color: C.text, fontWeight: '800', fontSize: 14 }}>Balance Neto:</Text>
+                  <Text style={{ color: C.text, fontWeight: '800', fontSize: 14 }}>Balance NedestPath:</Text>
                   <Text style={{ color: finanzasReporte.balanceActual >= 0 ? C.green : C.red, fontWeight: '800', fontSize: 14 }}>
                     ${finanzasReporte.balanceActual.toLocaleString('es-CO')}
                   </Text>
