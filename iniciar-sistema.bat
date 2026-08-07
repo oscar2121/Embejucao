@@ -1,0 +1,6 @@
+@echo off
+echo Iniciando Servidor Embejucao...
+start "Servidor Backend" cmd /c "node server.js"
+
+echo Iniciando Tunel LocalTunnel (Dominio Fijo: embejucaopos)...
+start "Tunel LocalTunnel" cmd /k "npx localtunnel --port 3001 --subdomain embejucaopos"

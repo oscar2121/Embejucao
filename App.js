@@ -102,12 +102,19 @@ const isVersionNewerMobile = (local, remote) => {
 };
 
 // API CONFIG
-let API_URL = 'http://10.184.210.145/api'; // Cambiarla dinámicamente
+let API_URL = 'https://embejucaopos.loca.lt/api'; // URL fija del túnel
 const SYNC_INTERVAL = 5000; // Sincronizar cada 5 segundos
 
 // Función para cambiar la IP
 const setServerIP = (ip) => {
-  API_URL = `http://${ip}:3001/api`;
+  let cleanIP = ip ? ip.trim() : '';
+  if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+  
+  if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+    API_URL = `${cleanIP}/api`;
+  } else {
+    API_URL = `http://${cleanIP}:3001/api`;
+  }
 };
 
 // ============================================================
@@ -223,30 +230,34 @@ export default function App() {
   const reproducirAlertaSonora = async (loop = false) => {
     try {
       if (soundObjectRef.current) {
-        await soundObjectRef.current.stopAsync().catch(() => {});
-        await soundObjectRef.current.unloadAsync().catch(() => {});
+        soundObjectRef.current.stop();
+        soundObjectRef.current.release();
         soundObjectRef.current = null;
       }
 
+      const playSound = (audioPath, isRequire) => {
+        const s = new Sound(audioPath, isRequire ? Sound.MAIN_BUNDLE : '', (error) => {
+          if (error) {
+            console.log('failed to load the sound', error);
+            Vibration.vibrate(loop ? [0, 1000, 500, 1000] : [0, 500]);
+            return;
+          }
+          if (loop) s.setNumberOfLoops(-1);
+          s.play((success) => {
+            if (!success) console.log('playback failed due to audio decoding errors');
+          });
+        });
+        soundObjectRef.current = s;
+        setAlertaSonando(true);
+      };
+
       const savedUri = await AsyncStorage.getItem('custom_alert_uri');
       if (savedUri) {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: savedUri },
-          { shouldPlay: true, isLooping: loop, volume: 1.0 }
-        );
-        soundObjectRef.current = sound;
-        setAlertaSonando(true);
+        playSound(savedUri, false);
       } else {
-        try {
-          const { sound } = await Audio.Sound.createAsync(
-            require('./assets/new_order.mp3'),
-            { shouldPlay: true, isLooping: loop, volume: 1.0 }
-          );
-          soundObjectRef.current = sound;
-          setAlertaSonando(true);
-        } catch (err) {
-          console.log("No default audio resource found in assets, skipping playback");
-        }
+        console.log("No default audio resource found, skipping playback");
+        // Descomenta la siguiente línea cuando pongas tu archivo 'new_order.mp3' en la carpeta 'assets'
+        // playSound(require('./assets/new_order.mp3'), true);
       }
     } catch (error) {
       console.warn("Error al reproducir audio:", error);
@@ -272,29 +283,30 @@ export default function App() {
 
       if (result && result.uri) {
         const selectedAsset = result;
-        const destinationPath = `${RNFS.DocumentDirectoryPath + "/"}custom_alert.mp3`;
+        const destinationPath = `${RNFS.DocumentDirectoryPath}/custom_alert.mp3`;
         
-        await RNFS.copyFile({
-          filepath: selectedAsset.uri,
-          destPath: destinationPath
-        });
+        if (await RNFS.exists(destinationPath)) {
+          await RNFS.unlink(destinationPath);
+        }
+        await RNFS.copyFile(selectedAsset.fileCopyUri || selectedAsset.uri, destinationPath);
 
         await AsyncStorage.setItem('custom_alert_uri', destinationPath);
         setCustomSoundUri(destinationPath);
         showToast('🎵 Audio guardado como tono de alerta');
         
         // Reproducir prueba corta
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: destinationPath },
-          { shouldPlay: true }
-        );
-        setTimeout(() => {
-          sound.unloadAsync().catch(() => {});
-        }, 3000);
+        const s = new Sound(destinationPath, '', (error) => {
+          if (!error) {
+            s.play();
+            setTimeout(() => { s.stop(); s.release(); }, 3000);
+          }
+        });
       }
     } catch (error) {
-      console.error("Error al seleccionar audio:", error);
-      Alert.alert("Error", "No se pudo seleccionar el archivo de audio.");
+      if (!DocumentPicker.isCancel(error)) {
+        console.error("Error al seleccionar audio:", error);
+        Alert.alert("Error", "No se pudo seleccionar el archivo de audio.");
+      }
     }
   };
   const [serverIP, setServerIP] = useState("");
@@ -370,12 +382,21 @@ export default function App() {
       return;
     }
 
-    const socketUrl = `http://${serverIP}:3001`;
+    let cleanIP = serverIP.trim();
+    if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+    
+    let socketUrl = `http://${cleanIP}:3001`;
+    if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+      socketUrl = cleanIP;
+    }
     console.log(`📡 Conectando a Socket.io en ${socketUrl}...`);
     
     socketRef.current = io(socketUrl, {
       transports: ['websocket'],
-      forceNew: true
+      forceNew: true,
+      extraHeaders: {
+        'Bypass-Tunnel-Reminder': 'true'
+      }
     });
 
     socketRef.current.on('connect', () => {
@@ -533,8 +554,17 @@ export default function App() {
   const checkForUpdates = async () => {
     if (!ipConfigured || !serverIP) return;
     try {
-      const checkUrl = `http://${serverIP}:3001/api/check-update`;
-      const response = await axios.get(checkUrl, { timeout: 5000 });
+      let cleanIP = serverIP.trim();
+      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+      
+      let checkUrl = `http://${cleanIP}:3001/api/check-update`;
+      if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+        checkUrl = `${cleanIP}/api/check-update`;
+      }
+      const response = await axios.get(checkUrl, { 
+        timeout: 5000,
+        headers: { 'Bypass-Tunnel-Reminder': 'true' }
+      });
       if (response.data && response.data.version) {
         const { version: remoteVersion, notes, apkUrl } = response.data;
         if (isVersionNewerMobile(APP_VERSION, remoteVersion)) {
@@ -638,11 +668,17 @@ export default function App() {
   const sincronizar = async () => {
     if (!ipConfigured) return;
     try {
-      const baseCol = `http://${serverIP}:3001/api`;
+      let cleanIP = serverIP.trim();
+      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+      
+      let baseCol = `http://${cleanIP}:3001/api`;
+      if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+        baseCol = `${cleanIP}/api`;
+      }
       
       // 1. Sincronizar pedidos
       const url = `${baseCol}/pedidos/date/${new Date().toISOString().split('T')[0]}`;
-      const response = await axios.get(url, { timeout: 5000 });
+      const response = await axios.get(url, { timeout: 10000 });
       if (response.data.pedidos) {
         setPedidos(response.data.pedidos);
         await AsyncStorage.setItem('pedidos', JSON.stringify(response.data.pedidos));
@@ -651,7 +687,7 @@ export default function App() {
 
       // 1b. Sincronizar fiados
       const fiadosUrl = `${baseCol}/pedidos/fiado`;
-      const fiadosRes = await axios.get(fiadosUrl, { timeout: 5000 });
+      const fiadosRes = await axios.get(fiadosUrl, { timeout: 10000 });
       if (fiadosRes.data && fiadosRes.data.fiados) {
         const mapped = mapFiados(fiadosRes.data.fiados);
         setFiados(mapped);
@@ -659,19 +695,19 @@ export default function App() {
       }
 
       // 2. Sincronizar catálogo de productos
-      const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 2000 });
+      const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 10000 });
       if (prodRes.data && prodRes.data.productos) {
         setProductos(prodRes.data.productos);
       }
 
       // 3. Sincronizar sesión de caja
-      const sesionRes = await axios.get(`${baseCol}/caja/sesion-activa`, { timeout: 2000 });
+      const sesionRes = await axios.get(`${baseCol}/caja/sesion-activa`, { timeout: 10000 });
       if (sesionRes.data) {
         setSesionActiva(sesionRes.data.sesion);
       }
 
       // 4. Sincronizar usuarios activos
-      const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 2000 });
+      const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 10000 });
       if (userRes.data && userRes.data.usuarios) {
         setUsuarios(userRes.data.usuarios.filter(u => u.activo));
       }
@@ -710,18 +746,21 @@ export default function App() {
           setPendingRecoveryUser(JSON.parse(savedLoggedUser));
         }
 
-        // Cargar IP guardada
-        const savedIP = await AsyncStorage.getItem('serverIP');
+        // Cargar IP guardada o usar túnel fijo
+        const savedIP = 'https://embejucaopos.loca.lt'; // Forzar URL fija
         if (savedIP) {
           setServerIP(savedIP);
           try {
-            const testUrl = `http://${savedIP}:3001/health`;
-            const response = await axios.get(testUrl, { timeout: 1500 });
+            let testUrl = `http://${savedIP}:3001/health`;
+            if (savedIP.startsWith('http')) testUrl = `${savedIP}/health`;
+            
+            const response = await axios.get(testUrl, { timeout: 5000, headers: { 'Bypass-Tunnel-Reminder': 'true' } });
             if (response.status === 200) {
               setIpConfigured(true);
               
               // Cargar catálogo, sesión activa y usuarios iniciales
-              const baseCol = `http://${savedIP}:3001/api`;
+              let baseCol = `http://${savedIP}:3001/api`;
+              if (savedIP.startsWith('http')) baseCol = `${savedIP}/api`;
               const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 1500 });
               if (prodRes.data && prodRes.data.productos) {
                 setProductos(prodRes.data.productos);
@@ -1069,15 +1108,23 @@ export default function App() {
                       return;
                     }
                     try {
-                      const testUrl = `http://${serverIP}:3001/health`;
-                      const response = await axios.get(testUrl, { timeout: 3000 });
+                      let cleanIP = serverIP.trim();
+                      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+                      let testUrl = `http://${cleanIP}:3001/health`;
+                      if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+                        testUrl = `${cleanIP}/health`;
+                      }
+                      const response = await axios.get(testUrl, { 
+                        timeout: 10000,
+                        headers: { 'Bypass-Tunnel-Reminder': 'true' }
+                      });
                       if (response.status === 200) {
                         setIpConfigured(true);
-                        await AsyncStorage.setItem('serverIP', serverIP);
+                        await AsyncStorage.setItem('serverIP', cleanIP);
                         showToast("✅ Conectado al servidor");
                       }
                     } catch (e) {
-                      alert("❌ No puedo conectar a " + serverIP + ":3001\n\nVerifica:\n1. La IP es correcta\n2. El servidor está corriendo\n3. Ambos están en la misma red WiFi");
+                      alert("❌ No puedo conectar a " + serverIP + "\n\nVerifica:\n1. Que la URL o IP sea correcta\n2. Que el túnel o servidor esté activo");
                     }
                   }}
                   disabled={!serverIP}
