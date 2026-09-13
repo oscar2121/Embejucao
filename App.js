@@ -2,11 +2,87 @@ import { useState, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, SafeAreaView,
   StatusBar, Alert, Animated, FlatList, Modal, Switch, BackHandler, Linking,
-  Vibration, AppState
+  Vibration, AppState, Image, Dimensions
 } from 'react-native';
+import { PieChart, LineChart } from 'react-native-chart-kit';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import uuid from 'react-native-uuid';
 import axios from 'axios';
+axios.defaults.headers.common['Bypass-Tunnel-Reminder'] = 'true';
+axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
+
+// Interceptor global para añadir JWT a todas las peticiones
+axios.interceptors.request.use(
+  async config => {
+    try {
+      const token = await AsyncStorage.getItem('userToken');
+      if (token) {
+        config.headers = config.headers || {};
+        config.headers['Authorization'] = `Bearer ${token}`;
+      }
+    } catch (e) {
+      console.log('Error reading token', e);
+    }
+    return config;
+  },
+  error => Promise.reject(error)
+);
+
+// --- OFFLINE SYNC QUEUE ---
+const syncOfflineQueue = async () => {
+  try {
+    const queueStr = await AsyncStorage.getItem('offline_queue');
+    if (!queueStr) return;
+    const queue = JSON.parse(queueStr);
+    if (queue.length === 0) return;
+    
+    console.log(`Sincronizando ${queue.length} tareas pendientes...`);
+    const remaining = [];
+    for (let req of queue) {
+      try {
+        await axios({
+          method: req.method,
+          url: req.url,
+          data: req.data,
+          headers: req.headers,
+          timeout: 10000
+        });
+      } catch (e) {
+        remaining.push(req);
+      }
+    }
+    if (remaining.length < queue.length) {
+      console.log('Sincronizacin exitosa parcial o total');
+    }
+    await AsyncStorage.setItem('offline_queue', JSON.stringify(remaining));
+  } catch (e) {}
+};
+
+setInterval(syncOfflineQueue, 10000); // Intentar sincronizar cada 10s
+
+axios.interceptors.response.use(null, async (error) => {
+  if (!error.response && error.config && ['post', 'put', 'delete'].includes(error.config.method?.toLowerCase())) {
+    console.log('Error de red, guardando en cola offline...');
+    try {
+      const queueStr = await AsyncStorage.getItem('offline_queue');
+      const queue = queueStr ? JSON.parse(queueStr) : [];
+      queue.push({
+        method: error.config.method,
+        url: error.config.url,
+        data: JSON.parse(error.config.data || '{}'),
+        headers: error.config.headers
+      });
+      await AsyncStorage.setItem('offline_queue', JSON.stringify(queue));
+      return Promise.resolve({ data: { success: true, offline: true } });
+    } catch (e) {
+      return Promise.reject(error);
+    }
+  }
+  return Promise.reject(error);
+});
+// -------------------------
+
+import { initPrinter, getBluetoothPrinters, connectBluetoothPrinter, connectNetPrinter, printKitchenReceipt, printCustomerReceipt } from './printerService';
 
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import Sound from 'react-native-sound';
@@ -102,11 +178,11 @@ const isVersionNewerMobile = (local, remote) => {
 };
 
 // API CONFIG
-let API_URL = 'https://embejucaopos.loca.lt/api'; // URL fija del túnel
+let API_URL = 'https://brisket-pregnant-squiggly.ngrok-free.dev/api'; // URL fija del túnel
 const SYNC_INTERVAL = 5000; // Sincronizar cada 5 segundos
 
 // Función para cambiar la IP
-const setServerIP = (ip) => {
+const updateGlobalApiUrl = (ip) => {
   let cleanIP = ip ? ip.trim() : '';
   if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
   
@@ -129,6 +205,7 @@ const CATEGORIAS = [
   { id: 6, nombre: "🥤 Jugos Naturales" },
   { id: 7, nombre: "🍋 Limonadas" },
   { id: 8, nombre: "🍺 Bebidas / Cervezas" },
+  { id: 9, nombre: "☕ Bebidas Calientes" },
 ];
 
 const PRODUCTOS_INICIAL = [
@@ -173,7 +250,10 @@ const MESAS_INICIAL = [
 // ============================================================
 const mapFiados = (fiadosList) => {
   if (!fiadosList) return [];
-  return fiadosList.map(f => {
+  
+  const grouped = {};
+  
+  fiadosList.forEach(f => {
     let history = [];
     if (f.ordenes_historial) {
       history = f.ordenes_historial;
@@ -187,13 +267,93 @@ const mapFiados = (fiadosList) => {
         items: f.items
       }];
     }
-    return {
-      ...f,
-      ordenes_historial: history,
-      items: history
-    };
+    
+    const key = f.deudor ? f.deudor.trim().toLowerCase() : 'desconocido';
+    
+    if (!grouped[key]) {
+      grouped[key] = {
+        ...f,
+        uuids: [f.uuid],
+        ordenes_historial: [...history],
+        items: [...history]
+      };
+    } else {
+      if (f.uuid) grouped[key].uuids.push(f.uuid);
+      grouped[key].ordenes_historial.push(...history);
+      grouped[key].items.push(...history);
+    }
   });
+  
+  return Object.values(grouped);
 };
+
+// ============================================================
+// COMPONENTE DE CALENDARIO SIMPLE
+// ============================================================
+function SimpleCalendarModal({ visible, onClose, onSelect }) {
+  const [currDate, setCurrDate] = useState(new Date());
+  
+  const month = currDate.getMonth();
+  const year = currDate.getFullYear();
+  
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDay = new Date(year, month, 1).getDay();
+  
+  const days = [];
+  for(let i = 0; i < firstDay; i++) days.push(null);
+  for(let i = 1; i <= daysInMonth; i++) days.push(i);
+  
+  const handlePrev = () => setCurrDate(new Date(year, month - 1, 1));
+  const handleNext = () => setCurrDate(new Date(year, month + 1, 1));
+  
+  const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const diasSemana = ['Do', 'Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa'];
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={{flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)'}}>
+        <View style={{backgroundColor: '#fff', borderRadius: 12, padding: 20, width: 320, elevation: 5, shadowColor: '#000', shadowOffset:{width:0,height:2}, shadowOpacity:0.25, shadowRadius:3.84}}>
+          <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15}}>
+            <TouchableOpacity onPress={handlePrev} style={{padding: 10}}><Text style={{fontSize: 18, color: '#333', fontWeight: 'bold'}}>{"<"}</Text></TouchableOpacity>
+            <Text style={{fontSize: 16, fontWeight: '800', color: '#111'}}>{meses[month]} {year}</Text>
+            <TouchableOpacity onPress={handleNext} style={{padding: 10}}><Text style={{fontSize: 18, color: '#333', fontWeight: 'bold'}}>{">"}</Text></TouchableOpacity>
+          </View>
+          <View style={{flexDirection: 'row', marginBottom: 10}}>
+            {diasSemana.map(d => <Text key={d} style={{flex: 1, textAlign: 'center', fontWeight: 'bold', color: '#888', fontSize: 13}}>{d}</Text>)}
+          </View>
+          <View style={{flexDirection: 'row', flexWrap: 'wrap'}}>
+            {days.map((d, i) => (
+              <TouchableOpacity 
+                key={i} 
+                style={{width: '14.28%', aspectRatio: 1, justifyContent: 'center', alignItems: 'center'}}
+                onPress={() => {
+                  if (d) {
+                    const YYYY = year;
+                    const MM = String(month + 1).padStart(2, '0');
+                    const DD = String(d).padStart(2, '0');
+                    onSelect(`${YYYY}-${MM}-${DD}`);
+                  }
+                }}
+              >
+                <View style={{width: 32, height: 32, borderRadius: 16, backgroundColor: d ? '#f0f0f0' : 'transparent', justifyContent: 'center', alignItems: 'center'}}>
+                  <Text style={{fontSize: 14, color: d ? '#333' : 'transparent', fontWeight: '500'}}>{d}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={{flexDirection: 'row', justifyContent: 'flex-end', marginTop: 20, gap: 15}}>
+            <TouchableOpacity onPress={() => onSelect("")}>
+              <Text style={{color: '#666', fontWeight: '600', fontSize: 14}}>Limpiar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onClose}>
+              <Text style={{color: '#E65100', fontWeight: '700', fontSize: 14}}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 // ============================================================
 // APP PRINCIPAL
@@ -202,13 +362,21 @@ export default function App() {
   KeepAwake.activate(); // Mantener la pantalla activa durante el servicio
 
   const [tab, setTab] = useState("pedido");
-  const [mesas, setMesas] = useState(MESAS_INICIAL);
+  const [baseMesas, setBaseMesas] = useState([]);
+  const [mesas, setMesas] = useState([]);
   const [productos, setProductos] = useState(PRODUCTOS_INICIAL);
   const [pedidos, setPedidos] = useState([]);
   const [fiados, setFiados] = useState([]);
+  const [clientesGlobales, setClientesGlobales] = useState([]);
   const [nextId, setNextId] = useState(1);
   const [toast, setToast] = useState(null);
   const [isOnline, setIsOnline] = useState(true);
+
+  // Estados para el Dashboard Financiero y Gastos
+  const [dashboardRango, setDashboardRango] = useState('hoy');
+  const [dashboardData, setDashboardData] = useState({ ventas: 0, gastos: 0, balance: 0, gastosPorCategoria: [], ultimosGastos: [] });
+  const [modalGastoVisible, setModalGastoVisible] = useState(false);
+  const [formGasto, setFormGasto] = useState({ descripcion: '', categoria: 'Proveedores', valor: '' });
 
   // Estados y refs para Socket.io y alertas sonoras nativas
   const [customSoundUri, setCustomSoundUri] = useState(null);
@@ -309,8 +477,8 @@ export default function App() {
       }
     }
   };
-  const [serverIP, setServerIP] = useState("");
-  const [ipConfigured, setIpConfigured] = useState(false);
+  const [serverIP, setServerIP] = useState("https://brisket-pregnant-squiggly.ngrok-free.dev");
+  const [ipConfigured, setIpConfigured] = useState(true);
   const [isSearching, setIsSearching] = useState(false);
   const [userRol, setUserRol] = useState(null);
   const [ventas, setVentas] = useState([]);
@@ -322,6 +490,9 @@ export default function App() {
 
   // Nuevos estados para seguridad, auditoría y pedidos
   const [loggedUser, setLoggedUser] = useState(null); // { nombre: '', rol: '' }
+  const [loginModalVisible, setLoginModalVisible] = useState(false);
+  const [loginTargetUser, setLoginTargetUser] = useState(null);
+  const [loginPinInput, setLoginPinInput] = useState('');
   const [usuarios, setUsuarios] = useState([]); // lista de usuarios
   const [showSessionRecovery, setShowSessionRecovery] = useState(false);
   const [pendingRecoveryUser, setPendingRecoveryUser] = useState(null);
@@ -332,6 +503,8 @@ export default function App() {
   const [newAdminPin, setNewAdminPin] = useState('');
   const [confirmNewAdminPin, setConfirmNewAdminPin] = useState('');
   const [pedidoEditando, setPedidoEditando] = useState(null);
+  
+  const [modalAdminPedidosVisible, setModalAdminPedidosVisible] = useState(false);
   const [borradores, setBorradores] = useState({});
   const [ajustesModalVisible, setAjustesModalVisible] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
@@ -343,6 +516,14 @@ export default function App() {
   const [carrito, setCarrito] = useState([]);
   const [mesaActivaModalVisible, setMesaActivaModalVisible] = useState(false);
   const [mesaActivaSelected, setMesaActivaSelected] = useState(null);
+  
+  // Estados de Configuración de Producto (Adicionales y Notas)
+  const [prodConfigModalVisible, setProdConfigModalVisible] = useState(false);
+  const [prodToConfig, setProdToConfig] = useState(null);
+  const [configObservaciones, setConfigObservaciones] = useState('');
+  const [configAdicionales, setConfigAdicionales] = useState([]);
+  const [configCantidad, setConfigCantidad] = useState(1);
+  const [adicionalesDisponibles, setAdicionalesDisponibles] = useState([]);
 
   // Estados Hoisted de CajaView
   const [cajaCobroModalVisible, setCajaCobroModalVisible] = useState(false);
@@ -358,6 +539,13 @@ export default function App() {
   const [adminChangePinModalVisible, setAdminChangePinModalVisible] = useState(false);
   const [adminVentaDetalleModalVisible, setAdminVentaDetalleModalVisible] = useState(false);
 
+  // Estados para Impresora
+  const [printerType, setPrinterType] = useState('ble');
+  const [blePrinters, setBlePrinters] = useState([]);
+  const [printerIP, setPrinterIP] = useState('');
+  const [savedPrinter, setSavedPrinter] = useState(null);
+  const [imprimirTicketCaja, setImprimirTicketCaja] = useState(false);
+
   const toastTimer = useRef(null);
   const syncTimer = useRef(null);
 
@@ -370,6 +558,10 @@ export default function App() {
   // Cargar sonido al iniciar
   useEffect(() => {
     cargarSonidoPersonalizado();
+    initPrinter();
+    AsyncStorage.getItem('configuredPrinter').then(res => {
+      if (res) setSavedPrinter(JSON.parse(res));
+    });
   }, []);
 
   // Manejar conexión de Socket.io
@@ -395,14 +587,14 @@ export default function App() {
       transports: ['websocket'],
       forceNew: true,
       extraHeaders: {
-        'Bypass-Tunnel-Reminder': 'true'
+        'Bypass-Tunnel-Reminder': 'true', 'ngrok-skip-browser-warning': 'true'
       }
     });
 
     socketRef.current.on('connect', () => {
       console.log('✅ Conectado al Socket Server');
       if (loggedUser) {
-        const isCocina = loggedUser.rol === 'cocina' || loggedUser.rol === 'bar';
+        const isCocina = loggedUser.rol === 'cocina';
         socketRef.current.emit('registrar_dispositivo', {
           rol: isCocina ? 'cocina' : 'mesero',
           usuarioId: loggedUser.nombre
@@ -410,7 +602,7 @@ export default function App() {
       }
     });
 
-    // Recibir nuevo pedido (cocina/bar)
+    // Recibir nuevo pedido (cocina)
     socketRef.current.on('pedido_recibido_cocina', (nuevoPedido) => {
       console.log('🔔 Pedido recibido en Cocina:', nuevoPedido.uuid);
       setPedidos(prev => {
@@ -418,7 +610,7 @@ export default function App() {
         return [nuevoPedido, ...prev];
       });
 
-      if (loggedUser && (loggedUser.rol === 'cocina' || loggedUser.rol === 'bar')) {
+      if (loggedUser && (loggedUser.rol === 'cocina')) {
         reproducirAlertaSonora(true);
       }
     });
@@ -463,6 +655,11 @@ export default function App() {
       setPedidos(prev => prev.filter(p => p.uuid !== uuid));
     });
 
+    // Recibir actualización de mesas
+    socketRef.current.on('mesas_actualizadas', (nuevasMesas) => {
+      setBaseMesas(nuevasMesas);
+    });
+
     socketRef.current.on('disconnect', () => {
       console.log('❌ Socket desconectado');
     });
@@ -497,21 +694,43 @@ export default function App() {
 
   // Autocorrector de estado de mesas basado en pedidos síncronos
   useEffect(() => {
+    if (!baseMesas || baseMesas.length === 0) return;
     setMesas(prev => {
-      return MESAS_INICIAL.map(m => {
-        const pedidoActivo = pedidos.find(p => Number(p.mesa) === m.num && p.estado === 'activo');
+      return baseMesas.map(m => {
+        const pedidoActivo = pedidos.find(p => Number(p.mesa) === m.num && p.estado !== 'completado' && p.estado !== 'cancelado' && p.estado !== 'fiado');
         if (!pedidoActivo) return { ...m, estado: 'libre' };
         
-        const todosListos = pedidoActivo.items && pedidoActivo.items.length > 0 && pedidoActivo.items.every(it => it.estado === 'listo');
-        return { ...m, estado: todosListos ? 'cuenta' : 'ocupada' };
+        const estadoActual = pedidoActivo.estado;
+        return { ...m, estado: (estadoActual === 'cuenta') ? 'cuenta' : 'ocupada' };
       });
     });
-  }, [pedidos]);
+  }, [pedidos, baseMesas]);
 
   const buscarServidorAut = async () => {
     setIsSearching(true);
-    const subredes = ['192.168.1', '192.168.0', '192.168.100', '192.168.8', '192.168.18', '10.0.0'];
-    showToast("🔍 Buscando servidor en red local...");
+    showToast("🔍 Buscando servidor en red local (y USB)...");
+    
+    // 1. Probar USB / Emulador primero (rápido)
+    const directIPs = ['localhost', '10.0.2.2'];
+    for (const ip of directIPs) {
+      try {
+        const res = await axios.get(`http://${ip}:3001/health`, { timeout: 500 });
+        if (res.status === 200 && res.data.status === 'ok') {
+          setServerIP(ip);
+          updateGlobalApiUrl(ip);
+          setIpConfigured(true);
+          await AsyncStorage.setItem('serverIP', ip);
+          showToast("✅ Servidor conectado vía USB en " + ip);
+          setIsSearching(false);
+          return ip;
+        }
+      } catch (e) {
+        // Ignorar
+      }
+    }
+
+    // 2. Probar red WiFi
+    const subredes = ['192.168.1', '192.168.0', '192.168.100', '192.168.8', '192.168.18', '10.0.0', '10.207.64'];
     
     for (const subred of subredes) {
       const promesas = [];
@@ -532,6 +751,7 @@ export default function App() {
       const ipEncontrada = resultados.find(ip => ip !== null);
       if (ipEncontrada) {
         setServerIP(ipEncontrada);
+        updateGlobalApiUrl(ipEncontrada);
         setIpConfigured(true);
         await AsyncStorage.setItem('serverIP', ipEncontrada);
         showToast("✅ Servidor conectado en " + ipEncontrada);
@@ -562,8 +782,8 @@ export default function App() {
         checkUrl = `${cleanIP}/api/check-update`;
       }
       const response = await axios.get(checkUrl, { 
-        timeout: 5000,
-        headers: { 'Bypass-Tunnel-Reminder': 'true' }
+        timeout: 15000,
+        headers: { 'Bypass-Tunnel-Reminder': 'true', 'ngrok-skip-browser-warning': 'true' }
       });
       if (response.data && response.data.version) {
         const { version: remoteVersion, notes, apkUrl } = response.data;
@@ -694,10 +914,27 @@ export default function App() {
         await AsyncStorage.setItem('fiados', JSON.stringify(mapped));
       }
 
+      // 1c. Sincronizar clientes globales (historicos)
+      try {
+        const clientesRes = await axios.get(`${baseCol}/clientes`, { timeout: 10000 });
+        if (clientesRes.data && clientesRes.data.clientes) {
+          setClientesGlobales(clientesRes.data.clientes);
+          await AsyncStorage.setItem('clientes', JSON.stringify(clientesRes.data.clientes));
+        }
+      } catch (errCli) {
+        console.error('Error sincronizando clientes:', errCli.message);
+      }
+
       // 2. Sincronizar catálogo de productos
       const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 10000 });
       if (prodRes.data && prodRes.data.productos) {
         setProductos(prodRes.data.productos);
+      }
+
+      // 2.5 Sincronizar mesas
+      const mesasRes = await axios.get(`${baseCol}/mesas`, { timeout: 10000 });
+      if (mesasRes.data && mesasRes.data.mesas) {
+        setBaseMesas(mesasRes.data.mesas);
       }
 
       // 3. Sincronizar sesión de caja
@@ -709,7 +946,13 @@ export default function App() {
       // 4. Sincronizar usuarios activos
       const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 10000 });
       if (userRes.data && userRes.data.usuarios) {
-        setUsuarios(userRes.data.usuarios.filter(u => u.activo));
+        setUsuarios(userRes.data.usuarios);
+      }
+
+      // 5. Sincronizar adicionales
+      const adicRes = await axios.get(`${baseCol}/adicionales`, { timeout: 10000 });
+      if (adicRes.data) {
+        setAdicionalesDisponibles(adicRes.data.filter(a => a.disponible === 1));
       }
     } catch (e) {
       console.error('Sync error:', e.message);
@@ -718,10 +961,75 @@ export default function App() {
       if (stored) setPedidos(JSON.parse(stored));
       const storedFiados = await AsyncStorage.getItem('fiados');
       if (storedFiados) setFiados(mapFiados(JSON.parse(storedFiados)));
+      const storedClientes = await AsyncStorage.getItem('clientes');
+      if (storedClientes) setClientesGlobales(JSON.parse(storedClientes));
     }
   };
 
   // Usar pedidos guardados al iniciar y configurar sincronización
+  const cargarDashboardFinanciero = async () => {
+    if (!ipConfigured) return;
+    try {
+      let cleanIP = serverIP.trim();
+      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+      
+      let baseCol = `http://${cleanIP}:3001/api`;
+      if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+        baseCol = `${cleanIP}/api`;
+      }
+
+      const res = await axios.get(`${baseCol}/dashboard/financiero`, {
+        params: { rango: dashboardRango },
+        headers: { 'ngrok-skip-browser-warning': 'true' },
+        timeout: 10000
+      });
+      if (res.data) {
+        setDashboardData(res.data);
+      }
+    } catch (e) {
+      console.error('Error fetching dashboard financiero:', e.message);
+    }
+  };
+
+  const handleRegistrarGasto = async () => {
+    if (!formGasto.descripcion || !formGasto.valor) {
+      showToast('⚠️ Llena descripción y monto');
+      return;
+    }
+    try {
+      let cleanIP = serverIP.trim();
+      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+      
+      let baseCol = `http://${cleanIP}:3001/api`;
+      if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+        baseCol = `${cleanIP}/api`;
+      }
+
+      const res = await axios.post(`${baseCol}/gastos`, {
+        descripcion: formGasto.descripcion,
+        categoria: formGasto.categoria,
+        valor: parseFloat(cleanNum(formGasto.valor)),
+        sesion_id: 1, // o dinámico
+        usuario: loggedUser ? loggedUser.nombre : 'Mobile'
+      }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+      
+      if (res.data.success) {
+        setModalGastoVisible(false);
+        setFormGasto({ descripcion: '', categoria: 'Proveedores', valor: '' });
+        showToast('✅ Gasto registrado');
+        cargarDashboardFinanciero();
+      }
+    } catch (error) {
+      showToast('❌ Error al registrar gasto');
+      console.error(error.message);
+    }
+  };
+
+  useEffect(() => {
+    if (tab === 'dashboard' || tab === 'admin') {
+      cargarDashboardFinanciero();
+    }
+  }, [dashboardRango, tab]);
   useEffect(() => {
     const cargarDatos = async () => {
       try {
@@ -730,6 +1038,9 @@ export default function App() {
 
         const storedFiados = await AsyncStorage.getItem('fiados');
         if (storedFiados) setFiados(mapFiados(JSON.parse(storedFiados)));
+
+        const storedClientes = await AsyncStorage.getItem('clientes');
+        if (storedClientes) setClientesGlobales(JSON.parse(storedClientes));
 
         const storedVentas = await AsyncStorage.getItem('ventas');
         if (storedVentas) setVentas(JSON.parse(storedVentas));
@@ -747,31 +1058,33 @@ export default function App() {
         }
 
         // Cargar IP guardada o usar túnel fijo
-        const savedIP = 'https://embejucaopos.loca.lt'; // Forzar URL fija
-        if (savedIP) {
-          setServerIP(savedIP);
+        const savedIP = await AsyncStorage.getItem('serverIP');
+        const ipToUse = "https://brisket-pregnant-squiggly.ngrok-free.dev";
+        if (ipToUse) {
+          setServerIP(ipToUse);
+          updateGlobalApiUrl(ipToUse);
           try {
-            let testUrl = `http://${savedIP}:3001/health`;
-            if (savedIP.startsWith('http')) testUrl = `${savedIP}/health`;
+            let testUrl = `http://${ipToUse}:3001/health`;
+            if (ipToUse.startsWith('http')) testUrl = `${ipToUse}/health`;
             
-            const response = await axios.get(testUrl, { timeout: 5000, headers: { 'Bypass-Tunnel-Reminder': 'true' } });
+            const response = await axios.get(testUrl, { timeout: 15000, headers: { 'Bypass-Tunnel-Reminder': 'true', 'ngrok-skip-browser-warning': 'true' } });
             if (response.status === 200) {
               setIpConfigured(true);
               
               // Cargar catálogo, sesión activa y usuarios iniciales
-              let baseCol = `http://${savedIP}:3001/api`;
-              if (savedIP.startsWith('http')) baseCol = `${savedIP}/api`;
-              const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 1500 });
+              let baseCol = `http://${ipToUse}:3001/api`;
+              if (ipToUse.startsWith('http')) baseCol = `${ipToUse}/api`;
+              const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 15000 });
               if (prodRes.data && prodRes.data.productos) {
                 setProductos(prodRes.data.productos);
               }
-              const sesionRes = await axios.get(`${baseCol}/caja/sesion-activa`, { timeout: 1500 });
+              const sesionRes = await axios.get(`${baseCol}/caja/sesion-activa`, { timeout: 15000 });
               if (sesionRes.data) {
                 setSesionActiva(sesionRes.data.sesion);
               }
-              const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 1500 });
+              const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 15000 });
               if (userRes.data && userRes.data.usuarios) {
-                setUsuarios(userRes.data.usuarios.filter(u => u.activo));
+                setUsuarios(userRes.data.usuarios);
               }
               return;
             }
@@ -784,9 +1097,9 @@ export default function App() {
           try {
             const currentIP = await AsyncStorage.getItem('serverIP');
             const baseCol = `http://${currentIP}:3001/api`;
-            const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 1500 });
+            const userRes = await axios.get(`${baseCol}/usuarios`, { timeout: 15000 });
             if (userRes.data && userRes.data.usuarios) {
-              setUsuarios(userRes.data.usuarios.filter(u => u.activo));
+              setUsuarios(userRes.data.usuarios);
             }
           } catch (e) {}
         }
@@ -880,7 +1193,7 @@ export default function App() {
           setAdminTab("principal");
           return true;
         } else {
-          // Deslogueo para Caja, Cocina, Bar o Admin en Dashboard principal
+          // Deslogueo para Caja, Cocina o Admin en Dashboard principal
           setLoggedUser(null);
           setUserRol(null);
           setTab('pedido'); // Resetea al tab inicial por defecto
@@ -924,13 +1237,16 @@ export default function App() {
         setPedidos(prev => prev.map(p => p.uuid === editUuid ? { ...p, items } : p));
         
         try {
-          const url = `http://${serverIP}:3001/api/pedidos/${editUuid}`;
+          const url = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${editUuid}`;
           await axios.put(url, {
             items: items,
             usuario: loggedUser ? loggedUser.nombre : 'Mesero'
-          }, { timeout: 5000 });
+          }, { timeout: 15000 });
           showToast("✅ Pedido actualizado");
           eliminarBorrador(mesaNum);
+          if (savedPrinter) {
+            printKitchenReceipt(items, mesaNum, savedPrinter.type);
+          }
           sincronizar();
         } catch (e) {
           showToast("⚠️ Error al actualizar - guardado local");
@@ -967,6 +1283,10 @@ export default function App() {
       await AsyncStorage.setItem('pedidos', JSON.stringify([...pedidos, nueva]));
       eliminarBorrador(mesaNum);
 
+      if (savedPrinter) {
+        printKitchenReceipt(items, mesaNum, savedPrinter.type);
+      }
+
       // Incrementar contador para llevar
       if (typeof mesaNum === 'string' && mesaNum.startsWith('Para Llevar #')) {
         setParaLlevarNextNum(prev => {
@@ -978,7 +1298,7 @@ export default function App() {
 
       // Enviar a servidor
       try {
-        const url = `http://${serverIP}:3001/api/pedidos`;
+        const url = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos`;
         await axios.post(url, {
           uuid: pedidoId,
           mesa: mesaNum,
@@ -986,7 +1306,7 @@ export default function App() {
           items: items,
           fecha: new Date().toISOString().split('T')[0],
           usuario: loggedUser ? loggedUser.nombre : 'Mesero'
-        }, { timeout: 5000 });
+        }, { timeout: 15000 });
         showToast("✅ Pedido " + (typeof mesaNum === 'string' && mesaNum.startsWith('Para') ? mesaNum : "Mesa " + mesaNum) + " enviado");
         sincronizar(); // Sincronizar inmediatamente
       } catch (e) {
@@ -1035,8 +1355,8 @@ export default function App() {
 
     // Actualizar en servidor
     try {
-      const url = `http://${serverIP}:3001/api/pedidos/${pedidoId}/item/${itemIdx}`;
-      await axios.put(url, { nuevoEstado }, { timeout: 5000 });
+      const url = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoId}/item/${itemIdx}`;
+      await axios.put(url, { nuevoEstado }, { timeout: 15000 });
       sincronizar(); // Sincronizar para mostrar cambios en el otro dispositivo
     } catch (e) {
       console.error('Error updating item:', e.message);
@@ -1048,11 +1368,7 @@ export default function App() {
   };
 
   const cocinaPendientes = pedidos.filter(p =>
-    p.items.some(it => (!(Number(it.cat) >= 6) || it.cat === undefined) && it.estado !== "listo")
-  ).length;
-
-  const barPendientes = pedidos.filter(p =>
-    p.items.some(it => Number(it.cat) >= 6 && it.estado !== "listo")
+    p.items.some(it => (!(Number(it.cat) >= 8) || it.cat === undefined) && it.estado !== "listo")
   ).length;
 
   // PANTALLA DE CONFIGURACIÓN DE IP
@@ -1096,8 +1412,11 @@ export default function App() {
                   placeholder="Ej: 192.168.1.100"
                   placeholderTextColor={C.text3}
                   value={serverIP}
-                  onChangeText={setServerIP}
-                  keyboardType="numeric"
+                  onChangeText={(ip) => {
+                    setServerIP(ip);
+                    updateGlobalApiUrl(ip);
+                  }}
+                  keyboardType="decimal-pad"
                 />
 
                 <TouchableOpacity
@@ -1116,7 +1435,7 @@ export default function App() {
                       }
                       const response = await axios.get(testUrl, { 
                         timeout: 10000,
-                        headers: { 'Bypass-Tunnel-Reminder': 'true' }
+                        headers: { 'Bypass-Tunnel-Reminder': 'true', 'ngrok-skip-browser-warning': 'true' }
                       });
                       if (response.status === 200) {
                         setIpConfigured(true);
@@ -1171,15 +1490,16 @@ export default function App() {
               ¿Continuar como {pendingRecoveryUser.nombre}?
             </Text>
             <Text style={{ fontSize: 12, color: C.text2, textAlign: "center", marginBottom: 20 }}>
-              Rol: {pendingRecoveryUser.rol === 'admin' ? 'Administrador' : pendingRecoveryUser.rol === 'pedido' ? 'Mesero' : pendingRecoveryUser.rol}
+              Roles: {pendingRecoveryUser.roles ? pendingRecoveryUser.roles.map(r => r === 'admin' ? 'Administrador' : r === 'pedido' ? 'Mesero' : r).join(', ') : ''}
             </Text>
 
             <TouchableOpacity
               style={[s.btnPrimary, s.btnFull, { backgroundColor: C.green, marginBottom: 10, width: '100%' }]}
               onPress={async () => {
+                const principalRole = pendingRecoveryUser.roles && pendingRecoveryUser.roles.length > 0 ? pendingRecoveryUser.roles[0] : 'pedido';
                 setLoggedUser(pendingRecoveryUser);
-                setUserRol(pendingRecoveryUser.rol);
-                setTab(pendingRecoveryUser.rol);
+                setUserRol(principalRole);
+                setTab(principalRole);
                 setPendingRecoveryUser(null);
                 showToast(`✅ Sesión recuperada: ${pendingRecoveryUser.nombre}`);
               }}
@@ -1252,18 +1572,19 @@ export default function App() {
                   return;
                 }
                 try {
-                  const url = `http://${serverIP}:3001/api/usuarios`;
+                  const url = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios`;
                   const res = await axios.post(url, {
                     id: selectedUserLogin.id,
-                    nombre: "Administrador",
+                    nombre: selectedUserLogin.nombre || "Administrador",
                     pin: newAdminPin,
-                    rol: "admin",
+                    roles: ["admin"],
+                    activo: 1,
                     administrador_usuario: "Administrador"
-                  }, { timeout: 3000 });
+                  }, { timeout: 15000 });
 
                   if (res.data && res.data.success) {
                     setForceChangeAdminPin(false);
-                    const userSes = { nombre: "Administrador", rol: "admin" };
+                    const userSes = { nombre: selectedUserLogin.nombre || "Administrador", roles: ["admin"] };
                     setLoggedUser(userSes);
                     setUserRol("admin");
                     setTab("admin");
@@ -1309,7 +1630,7 @@ export default function App() {
                 Cargando usuarios desde el servidor...
               </Text>
             ) : (
-              usuarios.map(u => (
+              usuarios.filter(u => u.activo).map(u => (
                 <TouchableOpacity
                   key={u.id}
                   style={[s.btnGhost, s.btnFull, {
@@ -1322,15 +1643,15 @@ export default function App() {
                     borderWidth: 1
                   }]}
                   onPress={() => {
-                    setLoggedUser({ nombre: u.nombre, rol: u.rol });
-                    setUserRol(u.rol);
-                    setTab(u.rol);
+                    setLoginTargetUser(u);
+                    setLoginPinInput('');
+                    setLoginModalVisible(true);
                   }}
                 >
                   <View>
                     <Text style={{ fontSize: 14, fontWeight: "700", color: C.text }}>{u.nombre}</Text>
                     <Text style={{ fontSize: 10, color: C.text3, marginTop: 2 }}>
-                      Rol: {u.rol === 'admin' ? 'Administrador' : u.rol === 'pedido' ? 'Mesero' : u.rol}
+                      Roles: {u.roles ? u.roles.map(r => r === 'admin' ? 'Administrador' : r === 'pedido' ? 'Mesero' : r).join(', ') : ''}
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={16} color={C.text3} />
@@ -1349,6 +1670,67 @@ export default function App() {
           </TouchableOpacity>
         </ScrollView>
         {renderUpdateModal()}
+
+        {/* Modal de Inicio de Sesión con PIN */}
+        <Modal visible={loginModalVisible} animationType="slide" transparent={true} onRequestClose={() => setLoginModalVisible(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 20 }}>
+            <View style={{ backgroundColor: C.surface, padding: 24, borderRadius: 16 }}>
+              <Text style={{ fontSize: 20, fontWeight: '800', color: C.text, marginBottom: 8, textAlign: 'center' }}>Ingresa tu PIN</Text>
+              <Text style={{ fontSize: 14, color: C.text2, marginBottom: 20, textAlign: 'center' }}>Usuario: {loginTargetUser?.nombre}</Text>
+              
+              <TextInput
+                style={[s.formInput, { fontSize: 24, letterSpacing: 8, textAlign: 'center', marginBottom: 20, backgroundColor: C.bg }]}
+                placeholder="••••"
+                placeholderTextColor={C.text3}
+                secureTextEntry
+                keyboardType="numeric"
+                maxLength={6}
+                value={loginPinInput}
+                onChangeText={setLoginPinInput}
+                autoFocus
+              />
+
+              <TouchableOpacity
+                style={[s.btnPrimary, { marginBottom: 10 }]}
+                onPress={async () => {
+                  try {
+                    const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/login`, {
+                      usuario: loginTargetUser?.nombre,
+                      pin: loginPinInput
+                    });
+                    if (res.data && res.data.success) {
+                      await AsyncStorage.setItem('userToken', res.data.token);
+                      const principalRole = res.data.roles && res.data.roles.length > 0 ? res.data.roles[0] : 'pedido';
+                      setLoggedUser({ nombre: loginTargetUser.nombre, roles: res.data.roles });
+                      setUserRol(principalRole);
+                      
+                      if (loginPinInput === '1234' && res.data.roles.includes('admin')) {
+                        setLoginModalVisible(false);
+                        setSelectedUserLogin(loginTargetUser);
+                        setForceChangeAdminPin(true);
+                      } else {
+                        setTab(principalRole);
+                        setLoginModalVisible(false);
+                        showToast('✅ Sesión iniciada');
+                      }
+                    } else {
+                      Alert.alert('Error', res.data.message || 'PIN Incorrecto');
+                    }
+                  } catch (e) {
+                    Alert.alert('Error', 'No se pudo contactar con el servidor. Verifica tu conexión.');
+                  }
+                }}
+              >
+                <Text style={s.btnPrimaryTxt}>Acceder</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={[s.btnGhost, { borderColor: C.border }]} onPress={() => setLoginModalVisible(false)}>
+                <Text style={{ color: C.text2, fontWeight: '700', textAlign: 'center' }}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
       </SafeAreaView>
     );
   }
@@ -1415,35 +1797,52 @@ export default function App() {
           </View>
         </View>
 
-        {/* Row 2: Connection + Module badge */}
-        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          {isOnline ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.greenL }} />
-              <Text style={{ fontSize: 10, color: C.greenL, fontWeight: "600" }}>Conectado</Text>
-            </View>
-          ) : (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.red }} />
-              <Text style={{ fontSize: 10, color: C.red, fontWeight: "600" }}>Sin conexión</Text>
-            </View>
-          )}
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            {isOnline ? (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.greenL }} />
+                <Text style={{ fontSize: 10, color: C.greenL, fontWeight: "600" }}>Conectado</Text>
+              </View>
+            ) : (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.red }} />
+                <Text style={{ fontSize: 10, color: C.red, fontWeight: "600" }}>Sin conexión</Text>
+              </View>
+            )}
 
-          <View style={{
-            paddingHorizontal: 12,
-            paddingVertical: 4,
-            borderRadius: 14,
-            backgroundColor: C.orange,
-          }}>
-            <Text style={{ fontSize: 11, fontWeight: "700", color: "white", letterSpacing: 0.3 }}>
-              {userRol === "pedido" ? "🧾 Mesero" :
-               userRol === "cocina" ? `👨‍🍳 Cocina (${cocinaPendientes})` :
-               userRol === "bar" ? `🍹 Bar (${barPendientes})` :
-               userRol === "caja" ? "💰 Caja" :
-               "⚙️ Admin"}
-            </Text>
+            <TouchableOpacity 
+              activeOpacity={loggedUser && loggedUser.roles && loggedUser.roles.length > 1 ? 0.7 : 1}
+              onPress={() => {
+                if (loggedUser && loggedUser.roles && loggedUser.roles.length > 1) {
+                  const currentIdx = loggedUser.roles.indexOf(userRol);
+                  const nextIdx = (currentIdx + 1) % loggedUser.roles.length;
+                  const nextRole = loggedUser.roles[nextIdx];
+                  setUserRol(nextRole);
+                  setTab(nextRole);
+                  showToast(`🔄 Rol cambiado a ${nextRole}`);
+                }
+              }}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 4,
+                borderRadius: 14,
+                backgroundColor: C.orange,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4
+              }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "700", color: "white", letterSpacing: 0.3 }}>
+                {userRol === "pedido" ? "🧾 Mesero" :
+                 userRol === "cocina" ? `👨‍🍳 Cocina (${cocinaPendientes})` :
+                 userRol === "caja" ? "💰 Caja" :
+                 "⚙️ Admin"}
+              </Text>
+              {loggedUser && loggedUser.roles && loggedUser.roles.length > 1 && (
+                <Ionicons name="swap-horizontal" size={12} color="white" />
+              )}
+            </TouchableOpacity>
           </View>
-        </View>
       </View>
 
       {/* VISTAS */}
@@ -1454,6 +1853,7 @@ export default function App() {
             productos={productos}
             pedidos={pedidos}
             onEnviar={enviarPedido}
+            serverIP={serverIP}
             showToast={showToast}
             paraLlevarNextNum={paraLlevarNextNum}
             pedidoEditando={pedidoEditando}
@@ -1471,13 +1871,22 @@ export default function App() {
             setMesaActivaModalVisible={setMesaActivaModalVisible}
             mesaActivaSelected={mesaActivaSelected}
             setMesaActivaSelected={setMesaActivaSelected}
+            prodConfigModalVisible={prodConfigModalVisible}
+            setProdConfigModalVisible={setProdConfigModalVisible}
+            prodToConfig={prodToConfig}
+            setProdToConfig={setProdToConfig}
+            configObservaciones={configObservaciones}
+            setConfigObservaciones={setConfigObservaciones}
+            configAdicionales={configAdicionales}
+            setConfigAdicionales={setConfigAdicionales}
+            configCantidad={configCantidad}
+            setConfigCantidad={setConfigCantidad}
+            adicionalesDisponibles={adicionalesDisponibles}
+            setAdicionalesDisponibles={setAdicionalesDisponibles}
           />
         )}
         {tab === "cocina" && (
           <CocinaView pedidos={pedidos} onActualizar={actualizarItem} />
-        )}
-        {tab === "bar" && (
-          <BarView pedidos={pedidos} onActualizar={actualizarItem} />
         )}
         {tab === "caja" && (
           <CajaView
@@ -1508,6 +1917,9 @@ export default function App() {
             setCierreModalVisible={setCierreModalVisible}
             fiados={fiados}
             setFiados={setFiados}
+            imprimirTicketCaja={imprimirTicketCaja}
+            setImprimirTicketCaja={setImprimirTicketCaja}
+            savedPrinter={savedPrinter}
           />
         )}
         {tab === "admin" && (
@@ -1542,6 +1954,24 @@ export default function App() {
             setAdminChangePinModalVisible={setAdminChangePinModalVisible}
             adminVentaDetalleModalVisible={adminVentaDetalleModalVisible}
             setAdminVentaDetalleModalVisible={setAdminVentaDetalleModalVisible}
+            modalAdminPedidosVisible={modalAdminPedidosVisible}
+            setModalAdminPedidosVisible={setModalAdminPedidosVisible}
+            printerType={printerType}
+            setPrinterType={setPrinterType}
+            blePrinters={blePrinters}
+            setBlePrinters={setBlePrinters}
+            printerIP={printerIP}
+            setPrinterIP={setPrinterIP}
+            savedPrinter={savedPrinter}
+            setSavedPrinter={setSavedPrinter}
+            dashboardData={dashboardData}
+            dashboardRango={dashboardRango}
+            setDashboardRango={setDashboardRango}
+            modalGastoVisible={modalGastoVisible}
+            setModalGastoVisible={setModalGastoVisible}
+            formGasto={formGasto}
+            setFormGasto={setFormGasto}
+            handleRegistrarGasto={handleRegistrarGasto}
           />
         )}
       </View>
@@ -1625,11 +2055,11 @@ export default function App() {
                         return;
                       }
                       try {
-                        const url = `http://${serverIP}:3001/api/pedidos/${pedidoACancelar.uuid}/cancelar`;
+                        const url = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoACancelar.uuid}/cancelar`;
                         const res = await axios.post(url, {
                           motivo: cancelMotivo.trim(),
                           usuario: userRol || 'Desconocido'
-                        }, { timeout: 3000 });
+                        }, { timeout: 15000 });
 
                         if (res.data && res.data.success) {
                           // Liberar mesa localmente si es física
@@ -1743,8 +2173,9 @@ export default function App() {
                             setLoggedUser(null);
                             await AsyncStorage.removeItem('loggedUser');
                             await AsyncStorage.removeItem('userRol');
+                            await AsyncStorage.removeItem('userToken');
                             try {
-                              await axios.post(`http://${serverIP}:3001/api/logout`, { usuario: currentName }, { timeout: 2000 });
+                              await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/logout`, { usuario: currentName }, { timeout: 15000 });
                             } catch (e) {}
                             showToast("🚪 Sesión cerrada");
                           }
@@ -1772,13 +2203,86 @@ export default function App() {
         </Modal>
       )}
       {renderUpdateModal()}
+      {/* Modal Detalles Pedidos Activos */}
+      <Modal visible={modalAdminPedidosVisible} animationType="slide" onRequestClose={() => setModalAdminPedidosVisible(false)}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }}>
+          <View style={{ flexDirection: 'row', padding: 20, alignItems: 'center', backgroundColor: C.surface, borderBottomWidth: 1, borderColor: C.border }}>
+            <TouchableOpacity onPress={() => setModalAdminPedidosVisible(false)} style={{ padding: 10 }}>
+              <Ionicons name="close" size={28} color={C.text} />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', color: C.text, marginLeft: 16 }}>Detalle de Pedidos Activos</Text>
+          </View>
+          <ScrollView style={{ padding: 20 }}>
+            {pedidos.filter(p => p.estado === 'activo').length === 0 && (
+              <Text style={{ textAlign: 'center', color: C.text2, marginTop: 40, fontSize: 16 }}>No hay pedidos activos en este momento.</Text>
+            )}
+            {pedidos.filter(p => p.estado === 'activo').map(p => {
+              const cocina = (() => {
+                let pendientes = 0; let preparando = 0; let listos = 0;
+                if (p.items) {
+                  p.items.forEach(item => {
+                    if (item.estado === 'pendiente') pendientes += (item.cantidad || 1);
+                    else if (item.estado === 'preparando') preparando += (item.cantidad || 1);
+                    else if (item.estado === 'listo') listos += (item.cantidad || 1);
+                  });
+                }
+                return { pendientes, preparando, listos };
+              })();
+              const total = (() => {
+                if (p.ordenes_historial) {
+                  return p.ordenes_historial.reduce((totalSum, orden) => {
+                    if (!orden.items) return totalSum;
+                    return totalSum + orden.items.reduce((sum, item) => {
+                      const price = item.precio !== undefined ? item.precio : (productos.find(prod => prod.nombre === item.nombre)?.precio || 0);
+                      return sum + (price * item.cantidad);
+                    }, 0);
+                  }, 0);
+                }
+                if (!p.items) return 0;
+                return p.items.reduce((sum, item) => {
+                  const price = item.precio !== undefined ? item.precio : (productos.find(prod => prod.nombre === item.nombre)?.precio || 0);
+                  return sum + (price * item.cantidad);
+                }, 0);
+              })();
+              return (
+                <View key={p.uuid} style={{ backgroundColor: C.surface, borderRadius: 12, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: C.border, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', color: C.brand }}>
+                      {isNaN(Number(p.mesa)) ? p.mesa : `Mesa ${p.mesa}`}
+                    </Text>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', color: C.green }}>
+                      {total.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <View>
+                      <Text style={{ fontSize: 14, color: C.text2, fontWeight: 'bold', marginBottom: 4 }}>Estado Cocina:</Text>
+                      {cocina.pendientes > 0 && <Text style={{ fontSize: 14, color: C.red }}>• {cocina.pendientes} Pendientes</Text>}
+                      {cocina.preparando > 0 && <Text style={{ fontSize: 14, color: C.orange }}>• {cocina.preparando} Preparando</Text>}
+                      {cocina.listos > 0 && <Text style={{ fontSize: 14, color: C.green }}>• {cocina.listos} Listos</Text>}
+                      {cocina.pendientes === 0 && cocina.preparando === 0 && cocina.listos === 0 && <Text style={{ fontSize: 14, color: C.text3 }}>Sin ítems de cocina</Text>}
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={{ fontSize: 12, color: C.text3 }}>Inicio:</Text>
+                      <Text style={{ fontSize: 14, color: C.text, fontWeight: '500' }}>{p.hora}</Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+            <View style={{ height: 40 }} />
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
     </SafeAreaView>
   );
 }
 // â”€â”€â”€ VISTA PEDIDO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function PedidoView({
   mesas, productos, pedidos, onEnviar, showToast, paraLlevarNextNum, pedidoEditando, setPedidoEditando, borradores, guardarBorrador, eliminarBorrador,
-  paso, setPaso, mesaSel, setMesaSel, carrito, setCarrito, mesaActivaModalVisible, setMesaActivaModalVisible, mesaActivaSelected, setMesaActivaSelected
+  paso, setPaso, mesaSel, setMesaSel, carrito, setCarrito, mesaActivaModalVisible, setMesaActivaModalVisible, mesaActivaSelected, setMesaActivaSelected,
+  prodConfigModalVisible, setProdConfigModalVisible, prodToConfig, setProdToConfig, configObservaciones, setConfigObservaciones, configAdicionales, setConfigAdicionales, configCantidad, setConfigCantidad, adicionalesDisponibles, setAdicionalesDisponibles
 }) {
   const [catActiva, setCatActiva] = useState(1);
 
@@ -1861,24 +2365,55 @@ function PedidoView({
     }
   };
 
-  const agregarAlCarrito = (prod) => {
+  const iniciarAgregarProducto = (prod) => {
+    setProdToConfig(prod);
+    setConfigObservaciones('');
+    setConfigAdicionales([]);
+    setConfigCantidad(1);
+    setProdConfigModalVisible(true);
+  };
+
+  const confirmarAgregarProducto = () => {
+    if (!prodToConfig) return;
+    
+    let nombreFinal = prodToConfig.nombre;
+    let precioFinal = prodToConfig.precio;
+    
+    if (configAdicionales.length > 0) {
+      const nombresAdic = configAdicionales.map(a => a.nombre).join(', ');
+      nombreFinal += ` (+ ${nombresAdic})`;
+      precioFinal += configAdicionales.reduce((sum, a) => sum + a.precio, 0);
+    }
+    
+    const nuevoItem = {
+      ...prodToConfig,
+      id_unico: uuid.v4(),
+      nombre: nombreFinal,
+      precio: precioFinal,
+      cantidad: configCantidad,
+      estado: 'pendiente',
+      nota: configObservaciones.trim()
+    };
+    
     setCarrito(c => {
       const isEditing = !!pedidoEditando;
-      const ex = c.find(i => i.id === prod.id && (!isEditing || i.estado !== 'listo'));
+      const ex = c.find(i => i.id === prodToConfig.id && i.nombre === nombreFinal && i.nota === nuevoItem.nota && (!isEditing || i.estado !== 'listo'));
       if (ex) {
-        return c.map(i => (i.id === prod.id && (!isEditing || i.estado !== 'listo'))
-          ? { ...i, cantidad: i.cantidad + 1 }
+        return c.map(i => (i.id === prodToConfig.id && i.nombre === nombreFinal && i.nota === nuevoItem.nota && (!isEditing || i.estado !== 'listo'))
+          ? { ...i, cantidad: i.cantidad + configCantidad }
           : i
         );
       }
-      return [...c, { ...prod, cantidad: 1, estado: 'pendiente', nota: '' }];
+      return [...c, nuevoItem];
     });
-    showToast("➕ " + prod.nombre);
+    showToast(`➕ ${configCantidad}x ${prodToConfig.nombre}`);
+    setProdConfigModalVisible(false);
+    setProdToConfig(null);
   };
 
-  const cambiarQty = (id, estado, delta) => {
+  const cambiarQty = (idx, estado, delta) => {
     setCarrito(c => {
-      const updated = c.map(i => (i.id === id && i.estado === estado) ? { ...i, cantidad: i.cantidad + delta } : i);
+      const updated = c.map((i, index) => (index === idx && i.estado === estado) ? { ...i, cantidad: i.cantidad + delta } : i);
       return updated.filter(i => i.cantidad > 0);
     });
   };
@@ -2291,8 +2826,16 @@ function PedidoView({
         {/* Productos */}
         <View style={s.prodsGrid}>
           {prods.map(p => (
-            <TouchableOpacity key={p.id} style={s.prodCard} onPress={() => agregarAlCarrito(p)}>
-              <Text style={{ fontSize: 28 }}>{p.emoji}</Text>
+            <TouchableOpacity key={p.id} style={s.prodCard} onPress={() => iniciarAgregarProducto(p)}>
+              {p.imagen ? (
+                <Image 
+                  source={{ uri: `http://${serverIP}:3001${p.imagen}` }} 
+                  style={{ width: 80, height: 80, borderRadius: 12, marginBottom: 8 }}
+                  resizeMode="cover"
+                />
+              ) : (
+                <Text style={{ fontSize: 28 }}>{p.emoji}</Text>
+              )}
               <Text style={s.prodNombre}>{p.nombre}</Text>
               <Text style={s.prodDesc} numberOfLines={2}>{p.desc}</Text>
               <Text style={s.prodPrecio}>${p.precio.toLocaleString("es-CO")}</Text>
@@ -2342,7 +2885,7 @@ function PedidoView({
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[s.qtyBtn, { opacity: isLocked ? 0.3 : 1 }]}
-                        onPress={() => !isLocked && cambiarQty(item.id, item.estado, -1)}
+                        onPress={() => !isLocked && cambiarQty(idx, item.estado, -1)}
                         disabled={isLocked}
                       >
                         <Text style={s.qtyBtnTxt}>−</Text>
@@ -2350,7 +2893,7 @@ function PedidoView({
                       <Text style={s.qtyNum}>{item.cantidad}</Text>
                       <TouchableOpacity
                         style={[s.qtyBtn, { opacity: isLocked ? 0.3 : 1 }]}
-                        onPress={() => !isLocked && cambiarQty(item.id, item.estado, 1)}
+                        onPress={() => !isLocked && cambiarQty(idx, item.estado, 1)}
                         disabled={isLocked}
                       >
                         <Text style={s.qtyBtnTxt}>+</Text>
@@ -2408,6 +2951,77 @@ function PedidoView({
           </View>
         )}
       </ScrollView>
+
+      {/* ─── MODAL DE CONFIGURAR PRODUCTO (ADICIONALES Y NOTAS) ─── */}
+      {prodToConfig && (
+        <Modal visible={prodConfigModalVisible} animationType="fade" transparent={true}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+            <View style={{ width: '100%', backgroundColor: C.surface, borderRadius: 16, overflow: 'hidden', borderWidth: 1.5, borderColor: C.border }}>
+              <View style={{ backgroundColor: C.brand, padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 18, fontWeight: '800', color: C.cream, flex: 1 }}>{prodToConfig.nombre}</Text>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: C.orange }}>${prodToConfig.precio.toLocaleString("es-CO")}</Text>
+              </View>
+              <ScrollView style={{ padding: 18, maxHeight: 480 }}>
+                
+                <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>🍟 Adicionales Extra:</Text>
+                <View style={{ gap: 8, marginBottom: 16 }}>
+                  {adicionalesDisponibles.map(adic => {
+                    const isSelected = configAdicionales.some(a => a.id === adic.id);
+                    return (
+                      <TouchableOpacity
+                        key={adic.id}
+                        onPress={() => {
+                          if (isSelected) {
+                            setConfigAdicionales(prev => prev.filter(a => a.id !== adic.id));
+                          } else {
+                            setConfigAdicionales(prev => [...prev, adic]);
+                          }
+                        }}
+                        style={{
+                          flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                          padding: 12, borderRadius: 8, borderWidth: 1.5,
+                          borderColor: isSelected ? C.orange : C.border,
+                          backgroundColor: isSelected ? 'rgba(232,82,10,0.05)' : C.surf2
+                        }}
+                      >
+                        <Text style={{ fontWeight: '700', color: C.text }}>{adic.nombre}</Text>
+                        <Text style={{ fontWeight: '700', color: C.orange }}>+${adic.precio.toLocaleString("es-CO")}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>📝 Observaciones para cocina:</Text>
+                <TextInput
+                  style={[s.formInput, { height: 60, textAlignVertical: 'top' }]}
+                  placeholder="Ej. Sin tomate, poca salsa..."
+                  placeholderTextColor={C.text3}
+                  value={configObservaciones}
+                  onChangeText={setConfigObservaciones}
+                  multiline={true}
+                />
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, padding: 12, backgroundColor: C.surf3, borderRadius: 8 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>Cantidad:</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+                    <TouchableOpacity onPress={() => setConfigCantidad(c => Math.max(1, c - 1))} style={{ padding: 8, backgroundColor: C.surf2, borderRadius: 8, width: 40, alignItems: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold' }}>-</Text></TouchableOpacity>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold' }}>{configCantidad}</Text>
+                    <TouchableOpacity onPress={() => setConfigCantidad(c => c + 1)} style={{ padding: 8, backgroundColor: C.surf2, borderRadius: 8, width: 40, alignItems: 'center' }}><Text style={{ fontSize: 20, fontWeight: 'bold' }}>+</Text></TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 24, paddingBottom: 14 }}>
+                  <TouchableOpacity onPress={() => { setProdConfigModalVisible(false); setProdToConfig(null); }} style={{ flex: 1, padding: 14, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' }}><Text style={{ color: C.text, fontWeight: '700' }}>Cancelar</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={confirmarAgregarProducto} style={{ flex: 1, padding: 14, borderRadius: 8, backgroundColor: C.orange, alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>Añadir (${((prodToConfig.precio + configAdicionales.reduce((sum, a) => sum + a.precio, 0)) * configCantidad).toLocaleString("es-CO")})</Text>
+                  </TouchableOpacity>
+                </View>
+
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+      )}
     </View>
   );
 }
@@ -2425,7 +3039,14 @@ function CocinaView({ pedidos, onActualizar }) {
 
   const pedidosCocina = pedidos.map(p => {
     const itemsConIdx = p.items.map((it, idx) => ({ ...it, originalIdx: idx }));
-    const itemsCocina = itemsConIdx.filter(it => (!(Number(it.cat) >= 6) || it.cat === undefined) && it.estado !== "listo");
+    const itemsCocina = itemsConIdx.filter(it => (!(Number(it.cat) >= 8) || it.cat === undefined) && it.estado !== "listo").sort((a, b) => {
+      const getTipo = (cat) => {
+        if (cat >= 1 && cat <= 5) return 1;
+        if (cat === 6 || cat === 7) return 2;
+        return 3;
+      };
+      return getTipo(a.cat) - getTipo(b.cat);
+    });
     return { ...p, itemsFiltered: itemsCocina };
   }).filter(p => p.itemsFiltered.length > 0);
 
@@ -2490,25 +3111,55 @@ function CocinaView({ pedidos, onActualizar }) {
             </View>
           </View>
           <View style={{ padding: 12 }}>
-            {p.itemsFiltered.map((it) => (
-              <View key={it.originalIdx} style={s.itemCocina}>
-                <Text style={s.itemQty}>×{it.cantidad}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: "500", color: C.text }}>{it.nombre}</Text>
-                  {!!it.nota && <Text style={{ fontSize: 11, color: C.text2 }}>📝 {it.nota}</Text>}
-                </View>
-                <View style={[s.badgeBase, { backgroundColor: estadoBadge[it.estado] }]}>
-                  <Text style={{ fontSize: 11, fontWeight: "500", color: estadoColor[it.estado] }}>
-                    {estadoLabel[it.estado]}
-                  </Text>
-                </View>
-                {it.estado === "preparando" && (
-                  <TouchableOpacity style={[s.btnSmGreen, { marginLeft: 6 }]} onPress={() => onActualizar(p.uuid, it.originalIdx, "listo")}>
-                    <Text style={{ color: "white", fontSize: 12 }}>✅ Listo</Text>
+            {(() => {
+              const comidas = p.itemsFiltered.filter(it => !it.cat || Number(it.cat) < 6);
+              const bebidas = p.itemsFiltered.filter(it => Number(it.cat) >= 6);
+              
+              const renderItem = (it) => (
+                <View key={it.originalIdx} style={s.itemCocina}>
+                  <Text style={s.itemQty}>×{it.cantidad}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: "500", color: C.text }}>{it.nombre}</Text>
+                    {!!it.nota && <Text style={{ fontSize: 11, color: C.text2 }}>📝 {it.nota}</Text>}
+                  </View>
+                  <TouchableOpacity 
+                    style={[s.badgeBase, { backgroundColor: estadoBadge[it.estado] }]}
+                    disabled={it.estado !== "pendiente"}
+                    onPress={() => {
+                      if (it.estado === "pendiente") {
+                        onActualizar(p.uuid, it.originalIdx, "preparando");
+                      }
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: "500", color: estadoColor[it.estado] }}>
+                      {estadoLabel[it.estado]}
+                    </Text>
                   </TouchableOpacity>
-                )}
-              </View>
-            ))}
+                  {it.estado === "preparando" && (
+                    <TouchableOpacity style={[s.btnSmGreen, { marginLeft: 6 }]} onPress={() => onActualizar(p.uuid, it.originalIdx, "listo")}>
+                      <Text style={{ color: "white", fontSize: 12 }}>✅ Listo</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+
+              return (
+                <>
+                  {comidas.length > 0 && (
+                    <>
+                      <Text style={{fontSize: 13, fontWeight: "bold", color: C.text2, marginBottom: 8, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5}}>🍔 Comidas</Text>
+                      {comidas.map(renderItem)}
+                    </>
+                  )}
+                  {bebidas.length > 0 && (
+                    <>
+                      <Text style={{fontSize: 13, fontWeight: "bold", color: C.text2, marginBottom: 8, marginTop: comidas.length > 0 ? 12 : 4, textTransform: 'uppercase', letterSpacing: 0.5}}>🥤 Bebidas</Text>
+                      {bebidas.map(renderItem)}
+                    </>
+                  )}
+                </>
+              );
+            })()}
           </View>
         </View>
       ))}
@@ -2516,97 +3167,60 @@ function CocinaView({ pedidos, onActualizar }) {
   );
 }
 
-// ─── VISTA BAR ────────────────────────────────────────────
-function BarView({ pedidos, onActualizar }) {
-  const estadoBadge = { pendiente: C.surf3, preparando: "#FEF3C7", lisdestPath: "#DCFCE7" };
-  const estadoColor = { pendiente: C.text2, preparando: "#92400E", lisdestPath: "#15803D" };
-  const estadoLabel = { pendiente: "⏳ Pendiente", preparando: "🔥 Preparando", lisdestPath: "✅ Listo" };
 
-  const pedidosBar = pedidos.map(p => {
-    const itemsConIdx = p.items.map((it, idx) => ({ ...it, originalIdx: idx }));
-    const itemsBar = itemsConIdx.filter(it => Number(it.cat) >= 6 && it.estado !== "listo");
-    return { ...p, itemsFiltered: itemsBar };
-  }).filter(p => p.itemsFiltered.length > 0);
-
-  if (!pedidosBar.length) {
-    return (
-      <View style={[s.content, { alignItems: "center", justifyContent: "center", flex: 1 }]}>
-        <Text style={{ fontSize: 40 }}>🍹</Text>
-        <Text style={{ color: C.cream2, marginTop: 10, fontSize: 15 }}>Todo al día — sin pedidos en Bar</Text>
-      </View>
-    );
-  }
-
-  return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={s.content}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <Text style={[s.sectionTitle]}>Panel de Bar</Text>
-        <View style={s.badgeOrange}><Text style={s.badgeTxt}>{pedidosBar.length} pedidos</Text></View>
-      </View>
-      {pedidosBar.map(p => (
-        <View key={p.uuid} style={[s.card, { marginBottom: 14 }]}>
-          <View style={[s.cardHeader, { backgroundColor: C.brand }]}>
-            <View>
-              <Text style={{ fontWeight: "800", fontSize: 17, color: C.cream }}>Mesa {p.mesa}</Text>
-              <Text style={{ fontSize: 11, color: C.cream2, opacity: 0.7 }}>🕒 {p.hora}</Text>
-            </View>
-            <View style={s.badgeYellow}><Text style={s.badgeTxt}>En bar</Text></View>
-          </View>
-          <View style={{ padding: 12 }}>
-            {p.itemsFiltered.map((it) => (
-              <View key={it.originalIdx} style={s.itemCocina}>
-                <Text style={s.itemQty}>×{it.cantidad}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: "500", color: C.text }}>{it.nombre}</Text>
-                  {!!it.nota && <Text style={{ fontSize: 11, color: C.text2 }}>📝 {it.nota}</Text>}
-                </View>
-                <View style={[s.badgeBase, { backgroundColor: estadoBadge[it.estado] }]}>
-                  <Text style={{ fontSize: 11, fontWeight: "500", color: estadoColor[it.estado] }}>
-                    {estadoLabel[it.estado]}
-                  </Text>
-                </View>
-                {it.estado === "pendiente" && (
-                  <TouchableOpacity style={[s.btnSmDark, { marginLeft: 6 }]} onPress={() => onActualizar(p.uuid, it.originalIdx, "preparando")}>
-                    <Text style={{ color: C.cream, fontSize: 12 }}>🔥 Iniciar</Text>
-                  </TouchableOpacity>
-                )}
-                {it.estado === "preparando" && (
-                  <TouchableOpacity style={[s.btnSmGreen, { marginLeft: 6 }]} onPress={() => onActualizar(p.uuid, it.originalIdx, "listo")}>
-                    <Text style={{ color: "white", fontSize: 12 }}>✅ Listo</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            ))}
-          </View>
-        </View>
-      ))}
-    </ScrollView>
-  );
-}
 
 // ─── VISTA CAJA (CON ACUMULACIÓN REAL, SUGERENCIAS Y CORRECCIÓN DE SIMBOLO) ───
 function CajaView({
   pedidos, productos, setPedidos, mesas, setMesas, ventas, setVentas, serverIP, showToast, sesionActiva, setSesionActiva, loggedUser, onSolicitarCancelar,
   cajaCobroModalVisible, setCajaCobroModalVisible, cierreModalVisible, setCierreModalVisible,
-  fiados, setFiados
+  fiados, setFiados,
+  imprimirTicketCaja, setImprimirTicketCaja, savedPrinter
 }) {
   const [pedidoSel, setPedidoSel] = useState(null);
   const [metodoPago, setMetodoPago] = useState('efectivo'); 
+  const [efectivoMixto, setEfectivoMixto] = useState('');
   const [nombreDeudor, setNombreDeudor] = useState('');
+  const [showHistorialVentas, setShowHistorialVentas] = useState(false);
 
   // Estados para apertura y cierre de caja
   const [aperturaBase, setAperturaBase] = useState('');
   const [cierreReal, setCierreReal] = useState('');
   const [cierreReporte, setCierreReporte] = useState(null);
 
+  useEffect(() => {
+    const loadBase = async () => {
+      try {
+        const savedBase = await AsyncStorage.getItem('ultima_base_caja');
+        if (savedBase) setAperturaBase(savedBase);
+      } catch (e) {
+        console.error('Error loading ultima base de caja', e);
+      }
+    };
+    loadBase();
+  }, []);
+
   // Estados para Liquidación Posterior
   const [liqModalVisible, setLiqModalVisible] = useState(false);
   const [deudorSel, setDeudorSel] = useState(null);
   const [metodoLiq, setMetodoLiq] = useState('efectivo');
-  const [verDeudores, setVerDeudores] = useState(false);
+  const [verDeudores, setVerDeudores] = useState(true);
   const [deudorExpandido, setDeudorExpandido] = useState(null);
 
   // Función para calcular el valor total de cualquier pedido o cuenta acumulada
+  const calcularEstadoCocina = (items) => {
+    let pendientes = 0;
+    let preparando = 0;
+    let listos = 0;
+    if (items && items.length > 0) {
+      items.forEach(item => {
+        if (item.estado === 'pendiente') pendientes += (item.cantidad || 1);
+        else if (item.estado === 'preparando') preparando += (item.cantidad || 1);
+        else if (item.estado === 'listo') listos += (item.cantidad || 1);
+      });
+    }
+    return { pendientes, preparando, listos };
+  };
+
   const calcularTotal = (pedido) => {
     if (!pedido) return 0;
     if (pedido.ordenes_historial) {
@@ -2694,14 +3308,14 @@ function CajaView({
 
         // Petición PUT al servidor SQLite
         try {
-          const urlFiado = `http://${serverIP}:3001/api/pedidos/${existingFiado.uuid}/fiado`;
+          const urlFiado = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${existingFiado.uuid}/fiado`;
           await axios.put(urlFiado, {
             deudor: existingFiado.deudor, // Conserva la capitalización original
             fecha_fiado: fechaActual,
             items: historialActualizado,
             mesa: updatedMesa,
             usuario: loggedUser ? loggedUser.nombre : 'Caja'
-          }, { timeout: 3000 });
+          }, { timeout: 15000 });
           showToast(`📝 Cuenta acumulada con éxito`);
         } catch (e) {
           console.error('Error merging fiado on server:', e.message);
@@ -2710,8 +3324,8 @@ function CajaView({
 
         // Completar/Eliminar el nuevo pedido en el servidor (DELETE)
         try {
-          const urlDelete = `http://${serverIP}:3001/api/pedidos/${pedidoSel.uuid}`;
-          await axios.delete(urlDelete, { timeout: 5000 });
+          const urlDelete = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel.uuid}`;
+          await axios.delete(urlDelete, { timeout: 15000 });
         } catch (e) {
           console.error('Error completing merged order on server:', e.message);
         }
@@ -2740,14 +3354,14 @@ function CajaView({
 
         // Petición PUT al servidor SQLite
         try {
-          const urlFiado = `http://${serverIP}:3001/api/pedidos/${pedidoSel.uuid}/fiado`;
+          const urlFiado = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel.uuid}/fiado`;
           await axios.put(urlFiado, {
             deudor: deudorLimpio,
             fecha_fiado: fechaActual,
             items: [nuevaOrden],
             mesa: String(pedidoSel.mesa),
             usuario: loggedUser ? loggedUser.nombre : 'Caja'
-          }, { timeout: 3000 });
+          }, { timeout: 15000 });
           showToast(`📝 Cuenta creada con éxito`);
         } catch (e) {
           console.error('Error saving new fiado to server:', e.message);
@@ -2772,14 +3386,30 @@ function CajaView({
     }));
 
     try {
-      await axios.post(`http://${serverIP}:3001/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total, metodo_pago: metodoPago === 'efectivo' ? 'Efectivo' : 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
-      await axios.delete(`http://${serverIP}:3001/api/pedidos/${pedidoSel.uuid}`);
+      if (metodoPago === 'mixto') {
+        const efectivoMonto = parseFloat(cleanNum(efectivoMixto)) || 0;
+        const transferenciaMonto = Math.max(0, total - efectivoMonto);
+        
+        await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total: efectivoMonto, metodo_pago: 'Efectivo', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
+        
+        if (transferenciaMonto > 0) {
+          await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total: transferenciaMonto, metodo_pago: 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: [], usuario: loggedUser ? loggedUser.nombre : 'Caja' });
+        }
+      } else {
+        await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total, metodo_pago: metodoPago === 'efectivo' ? 'Efectivo' : 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
+      }
+      
+      await axios.delete(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel.uuid}`);
       showToast("✅ Cobro registrado");
+      
+      if (imprimirTicketCaja && savedPrinter) {
+        printCustomerReceipt(total, metodoPago === 'efectivo' ? 'Efectivo' : (metodoPago === 'mixto' ? 'Mixto' : 'Transferencia'), JSON.stringify(detallesVenta), String(pedidoSel.mesa), savedPrinter.type);
+      }
     } catch (e) {
       showToast("⚠️ Respaldado en memoria local");
     }
 
-    setVentas([{ id: Date.now(), mesa: pedidoSel.mesa, total, metodo: metodoPago === 'efectivo' ? 'Efectivo' : 'Transferencia', hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }, ...ventas]);
+    setVentas([{ id: Date.now(), mesa: pedidoSel.mesa, total, metodo: metodoPago === 'efectivo' ? 'Efectivo' : (metodoPago === 'mixto' ? 'Mixto' : 'Transferencia'), hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }, ...ventas]);
     setPedidos(pedidos.filter(p => p.uuid !== pedidoSel.uuid));
     const mesaNumero = Number(pedidoSel.mesa);
     if (!isNaN(mesaNumero)) setMesas(mesas.map(m => m.num === mesaNumero ? { ...m, estado: 'libre' } : m));
@@ -2826,10 +3456,19 @@ function CajaView({
     }));
 
     try {
-      await axios.post(`http://${serverIP}:3001/api/ventas`, { fecha: fechaActual, tipo_origen: 'Fiado Pagado', mesa: `Deuda: ${deudorSel.deudor}`, total: totalAcumulado, metodo_pago: metodoLiq === 'efectivo' ? 'Efectivo' : 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
-      await axios.delete(`http://${serverIP}:3001/api/pedidos/${deudorSel.uuid}`);
+      await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Fiado Pagado', mesa: `Deuda: ${deudorSel.deudor}`, total: totalAcumulado, metodo_pago: metodoLiq === 'efectivo' ? 'Efectivo' : 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
+      
+      const uuidsToDelete = deudorSel.uuids || [deudorSel.uuid];
+      for (const uuid of uuidsToDelete) {
+        if (uuid) {
+          await axios.delete(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${uuid}`);
+        }
+      }
 
-      const carteraActualizada = fiados.filter(f => f.uuid !== deudorSel.uuid);
+      const carteraActualizada = fiados.filter(f => {
+        if (deudorSel.uuids && deudorSel.uuids.length > 0) return !deudorSel.uuids.includes(f.uuid);
+        return f.uuid !== deudorSel.uuid;
+      });
       setFiados(carteraActualizada);
       await AsyncStorage.setItem('fiados', JSON.stringify(carteraActualizada));
 
@@ -2873,19 +3512,19 @@ function CajaView({
             }}
             placeholder="Ej. 100000"
             placeholderTextColor={C.text3}
-            keyboardType="numeric"
+            keyboardType="decimal-pad"
             value={aperturaBase}
-            onChangeText={setAperturaBase}
+            onChangeText={(txt) => setAperturaBase(formatMoneyInput(txt))}
           />
           <TouchableOpacity
             onPress={async () => {
-              const base = parseFloat(aperturaBase);
+              const base = parseFloat(cleanNum(aperturaBase));
               if (isNaN(base) || base < 0) {
                 showToast('⚠️ Ingresa una base válida');
                 return;
               }
               try {
-                const res = await axios.post(`http://${serverIP}:3001/api/caja/abrir`, { base_inicial: base }, { timeout: 3000 });
+                const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/caja/abrir`, { base_inicial: base }, { timeout: 15000 });
                 if (res.data && res.data.success) {
                   setSesionActiva(res.data.sesion);
                   setAperturaBase('');
@@ -2937,7 +3576,7 @@ function CajaView({
         <TouchableOpacity
           onPress={async () => {
             try {
-              const res = await axios.get(`http://${serverIP}:3001/api/caja/resumen-cierre/${sesionActiva.id}`, { timeout: 3000 });
+              const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/caja/resumen-cierre/${sesionActiva.id}`, { timeout: 15000 });
               if (res.data && res.data.success) {
                 setCierreReporte(res.data);
                 setCierreReal('');
@@ -3026,7 +3665,7 @@ function CajaView({
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Ionicons name={verDeudores ? "eye-outline" : "eye-off-outline"} size={16} color={C.text2} />
-          <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, letterSpacing: 0.5 }}>Control de Registro</Text>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, letterSpacing: 0.5 }}>Cartera / Créditos</Text>
         </View>
         <Ionicons name={verDeudores ? "chevron-up" : "chevron-down"} size={16} color={C.text3} />
       </TouchableOpacity>
@@ -3106,19 +3745,29 @@ function CajaView({
       )}
 
       {/* HISTORIAL DE VENTAS */}
-      <Text style={[s.sectionTitle, { marginTop: 22, marginBottom: 10 }]}>📋 Ventas del Día</Text>
-      <View style={[s.card, { padding: 14, backgroundColor: C.surface }]}>
-        {ventas.length === 0 ? (
-          <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center' }}>No hay ventas registradas</Text>
-        ) : (
-          ventas.map((v, idx) => (
-            <View key={idx} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: idx < ventas.length - 1 ? 1 : 0, borderBottomColor: C.border }}>
-              <View><Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{typeof v.mesa === 'string' && v.mesa.startsWith('Para') ? v.mesa : `Mesa ${v.mesa}`}</Text><Text style={{ fontSize: 10, color: C.text3 }}>{v.hora || 'Ahora'} • {v.metodo || 'Efectivo'}</Text></View>
-              <Text style={{ fontSize: 14, fontWeight: '800', color: C.green }}>{v.total.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-            </View>
-          ))
-        )}
-      </View>
+      <TouchableOpacity 
+        onPress={() => setShowHistorialVentas(!showHistorialVentas)} 
+        style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 22, marginBottom: 10 }}
+      >
+        <Text style={s.sectionTitle}>📋 Ventas del Día</Text>
+        <Ionicons name={showHistorialVentas ? "chevron-up" : "chevron-down"} size={20} color={C.text} />
+      </TouchableOpacity>
+      
+      {showHistorialVentas && (
+        <View style={[s.card, { padding: 14, backgroundColor: C.surface }]}>
+          {ventas.length === 0 ? (
+            <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center' }}>No hay ventas registradas</Text>
+          ) : (
+            ventas.map((v, idx) => (
+              <View key={idx} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: idx < ventas.length - 1 ? 1 : 0, borderBottomColor: C.border }}>
+                <View><Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{typeof v.mesa === 'string' && v.mesa.startsWith('Para') ? v.mesa : `Mesa ${v.mesa}`}</Text><Text style={{ fontSize: 10, color: C.text3 }}>{v.hora || 'Ahora'} • {v.metodo || 'Efectivo'}</Text></View>
+                <Text style={{ fontSize: 14, fontWeight: '800', color: C.green }}>{v.total.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
+              </View>
+            ))
+          )}
+        </View>
+      )}
+
 
       {/* ─── MODAL DE COBRO DE MESA (CON FILTRO DE SELECCIÓN RÁPIDA) ─── */}
       {pedidoSel && (
@@ -3132,28 +3781,44 @@ function CajaView({
                 <View style={{ gap: 8 }}>
                   <TouchableOpacity onPress={() => setMetodoPago('efectivo')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'efectivo' && { borderColor: C.green, backgroundColor: 'rgba(45,106,63,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>💵 Efectivo</Text></TouchableOpacity>
                   <TouchableOpacity onPress={() => setMetodoPago('transferencia')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'transferencia' && { borderColor: C.orange, backgroundColor: 'rgba(232,82,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>📲 Transferencia</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setMetodoPago('fiado')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'fiado' && { borderColor: C.yellow, backgroundColor: 'rgba(217,119,6,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>👤 Dejar Fiado (Anotar en Cuenta)</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => setMetodoPago('mixto')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'mixto' && { borderColor: C.brand, backgroundColor: 'rgba(61,26,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>💵📲 Cobro Mixto</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => setMetodoPago('fiado')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'fiado' && { borderColor: C.yellow, backgroundColor: 'rgba(217,119,6,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>👤 Dar a Crédito (Anotar en Cuenta)</Text></TouchableOpacity>
                 </View>
+
+                {metodoPago === 'mixto' && (
+                  <View style={{ marginTop: 14, paddingBottom: 10 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>Efectivo a recibir:</Text>
+                    <TextInput 
+                      style={[s.formInput, { fontSize: 18, fontWeight: 'bold' }]} 
+                      placeholder="Ej. 20000" 
+                      placeholderTextColor={C.text3} 
+                      keyboardType="decimal-pad"
+                      value={efectivoMixto} 
+                      onChangeText={(txt) => setEfectivoMixto(formatMoneyInput(txt))} 
+                    />
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, padding: 12, backgroundColor: C.surf3, borderRadius: 8 }}>
+                      <Text style={{ fontSize: 14, color: C.text, fontWeight: '600' }}>Restante por Transferencia:</Text>
+                      <Text style={{ fontSize: 16, color: C.brand, fontWeight: '800' }}>
+                        {Math.max(0, calcularTotal(pedidoSel) - (parseFloat(cleanNum(efectivoMixto)) || 0)).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}
+                      </Text>
+                    </View>
+                  </View>
+                )}
 
                 {metodoPago === 'fiado' && (
                   <View style={{ marginTop: 14, paddingBottom: 10 }}>
                     <Text style={{ fontSize: 11, fontWeight: '700', color: C.text2, marginBottom: 4 }}>Nombre del Cliente Deudor:</Text>
                     <TextInput style={s.formInput} placeholder="Escribe el nombre del cliente..." placeholderTextColor={C.text3} value={nombreDeudor} onChangeText={setNombreDeudor} />
                     
-                    {/* SELECCIÓN RÁPIDA DE DEUDORES ACTUALES */}
+                    {/* SELECCIÓN RÁPIDA DE DEUDORES ACTUALES E HISTÓRICOS */}
                     {(() => {
-                      const deudoresExistentes = Array.from(
-                        new Set(
-                          fiados
-                            .map(f => f.deudor ? f.deudor.trim() : '')
-                            .filter(d => d.length > 0)
-                        )
-                      );
+                      const deudoresActivos = fiados.map(f => f.deudor ? f.deudor.trim() : '').filter(d => d.length > 0);
+                      const deudoresExistentes = Array.from(new Set([...deudoresActivos, ...clientesGlobales])).sort((a,b) => a.localeCompare(b));
                       
                       if (deudoresExistentes.length > 0) {
                         return (
                           <View style={{ marginTop: 10 }}>
-                            <Text style={{ fontSize: 11, fontWeight: '700', color: C.text3, marginBottom: 6 }}>👥 Clientes con cuenta activa (Toca para seleccionar):</Text>
+                            <Text style={{ fontSize: 11, fontWeight: '700', color: C.text3, marginBottom: 6 }}>👥 Clientes registrados (Toca para seleccionar):</Text>
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
                               {deudoresExistentes.map((name, idx) => (
                                 <TouchableOpacity key={idx} onPress={() => setNombreDeudor(name)} style={{ backgroundColor: C.surf3, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.brand }}><Text style={{ fontSize: 12, color: C.text, fontWeight: '700' }}>👤 {name}</Text></TouchableOpacity>
@@ -3166,6 +3831,11 @@ function CajaView({
                     })()}
                   </View>
                 )}
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.border }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>🖨️ Imprimir recibo para cliente</Text>
+                  <Switch value={imprimirTicketCaja} onValueChange={setImprimirTicketCaja} thumbColor={imprimirTicketCaja ? C.green : '#f4f3f4'} trackColor={{ false: '#767577', true: 'rgba(45,106,63,0.5)' }} />
+                </View>
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14, paddingBottom: 14 }}>
                   <TouchableOpacity onPress={() => { setCajaCobroModalVisible(false); setPedidoSel(null); setNombreDeudor(''); }} style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' }}><Text style={{ color: C.text, fontWeight: '700' }}>Cancelar</Text></TouchableOpacity>
@@ -3257,9 +3927,9 @@ function CajaView({
                   }}
                   placeholder="Digita el efectivo total contado"
                   placeholderTextColor={C.text3}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   value={cierreReal}
-                  onChangeText={setCierreReal}
+                  onChangeText={(txt) => setCierreReal(formatMoneyInput(txt))}
                 />
 
                 <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -3280,21 +3950,26 @@ function CajaView({
 
                   <TouchableOpacity
                     onPress={async () => {
-                      const realVal = parseFloat(cierreReal);
+                      const realVal = parseFloat(cleanNum(cierreReal));
                       if (isNaN(realVal) || realVal < 0) {
                         showToast('⚠️ Ingresa un valor válido');
                         return;
                       }
                       try {
-                        const res = await axios.post(`http://${serverIP}:3001/api/caja/cerrar`, {
+                        const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/caja/cerrar`, {
                           sesion_id: sesionActiva.id,
                           saldo_final_real: realVal
-                        }, { timeout: 3000 });
+                        }, { timeout: 15000 });
                         
                         if (res.data && res.data.success) {
                           setSesionActiva(null);
                           setCierreModalVisible(false);
                           setCierreReporte(null);
+                          
+                          // Pre-cargar la base para el día siguiente
+                          setAperturaBase(res.data.base_inicial.toString());
+                          await AsyncStorage.setItem('ultima_base_caja', res.data.base_inicial.toString());
+
                           Alert.alert(
                             "Caja Cerrada",
                             `Arqueo de Caja Completado:\n\n` +
@@ -3339,16 +4014,21 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   adminMovimientoModalVisible, setAdminMovimientoModalVisible,
   adminUserModalVisible, setAdminUserModalVisible,
   adminChangePinModalVisible, setAdminChangePinModalVisible,
-  adminVentaDetalleModalVisible, setAdminVentaDetalleModalVisible
+  adminVentaDetalleModalVisible, setAdminVentaDetalleModalVisible,
+  modalAdminPedidosVisible, setModalAdminPedidosVisible,
+  printerType, setPrinterType, blePrinters, setBlePrinters, printerIP, setPrinterIP, savedPrinter, setSavedPrinter,
+  dashboardData, dashboardRango, setDashboardRango, modalGastoVisible, setModalGastoVisible, formGasto, setFormGasto, handleRegistrarGasto
 }) {
   
   // ─── ESTADOS MENÚ ───
+  const [mostrarVentasRecientes, setMostrarVentasRecientes] = useState(false);
   const [newProdName, setNewProdName] = useState('');
   const [newProdPrice, setNewProdPrice] = useState('');
   const [newProdCat, setNewProdCat] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [newProdDesc, setNewProdDesc] = useState('');
   const [newProdDisp, setNewProdDisp] = useState(true);
+  const [newProdImage, setNewProdImage] = useState(null);
 
   // Estados dinámicos para categorías
   const [categorias, setCategorias] = useState(['Hamburguesas', 'Perros', 'Bebidas']);
@@ -3362,6 +4042,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [gastoCat, setGastoCat] = useState('Otros');
   const [gastoValor, setGastoValor] = useState('');
   const [gastoFechaFilter, setGastoFechaFilter] = useState('');
+  const [gastoCalendarVisible, setGastoCalendarVisible] = useState(false);
 
   // ─── ESTADOS INVENTARIO ───
   const [insumos, setInsumos] = useState([]);
@@ -3386,12 +4067,15 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [cancelFilterMesa, setCancelFilterMesa] = useState('');
   const [cancelFilterUsuario, setCancelFilterUsuario] = useState('');
 
+  // ─── ESTADOS HISTORIAL FACTURAS ───
+  const [historialFacturas, setHistorialFacturas] = useState([]);
+
   // ─── ESTADOS USUARIOS (CRUD) ───
   const [userModalVisible, setUserModalVisible] = useState(false);
   const [editUserSel, setEditUserSel] = useState(null);
   const [newUserName, setNewUserName] = useState('');
   const [newUserPin, setNewUserPin] = useState('');
-  const [newUserRol, setNewUserRol] = useState('pedido');
+  const [newUserRoles, setNewUserRoles] = useState(['pedido']);
   const [newUserActivo, setNewUserActivo] = useState(true);
 
   const [changePinModalVisible, setChangePinModalVisible] = useState(false);
@@ -3400,6 +4084,10 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
   // ─── ESTADOS AUDITORÍA ───
   const [auditoriaLogs, setAuditoriaLogs] = useState([]);
+  const [expandedAuditId, setExpandedAuditId] = useState(null);
+  const [showAuditoriaList, setShowAuditoriaList] = useState(false);
+  const [expandedCancelId, setExpandedCancelId] = useState(null);
+  const [showHistorialVentas, setShowHistorialVentas] = useState(false);
   const [auditUserFilter, setAuditUserFilter] = useState('');
   const [auditAccionFilter, setAuditAccionFilter] = useState('');
   const [auditFechaFilter, setAuditFechaFilter] = useState('');
@@ -3449,6 +4137,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         cargarUsuarios();
       } else if (adminTab === 'auditoria') {
         cargarAuditoria();
+      } else if (adminTab === 'historial') {
+        cargarHistorialFacturas();
       }
     };
 
@@ -3495,7 +4185,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       'mazorcada': 5,
       'jugos naturales': 6,
       'limonadas': 7,
-      'bebidas': 8
+      'bebidas': 8,
+      'bebidas calientes': 9
     };
     const key = String(name).toLowerCase().trim();
     return map[key] !== undefined ? map[key] : name;
@@ -3515,7 +4206,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       'mazorcada': '🌽 Mazorcada',
       'jugos naturales': '🥤 Jugos Naturales',
       'limonadas': '🍋 Limonadas',
-      'bebidas': '🍺 Bebidas / Cervezas'
+      'bebidas': '🍺 Bebidas / Cervezas',
+      'bebidas calientes': '☕ Bebidas Calientes'
     };
     const key = String(catVal).toLowerCase().trim();
     return cleanNameMap[key] || String(catVal);
@@ -3526,7 +4218,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // MENÚ: Agregar producto en SQLite
   const addProducto = async () => {
     if (!newProdName.trim()) { showToast('⚠️ Nombre requerido'); return; }
-    const precioNum = parseFloat(newProdPrice);
+    const precioNum = parseFloat(cleanNum(newProdPrice));
     if (newProdPrice && isNaN(precioNum)) { showToast('⚠️ Precio inválido'); return; }
     
     let catVal = creandoNuevaCat ? nuevaCategoria.trim() : newProdCat;
@@ -3535,17 +4227,41 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     const catIsNumeric = !isNaN(Number(catVal));
     const catId = catIsNumeric ? Number(catVal) : catVal;
 
+    let finalImageUrl = '';
+
+    if (newProdImage) {
+      const formData = new FormData();
+      formData.append('imagen', {
+        uri: newProdImage.uri,
+        type: newProdImage.type,
+        name: newProdImage.name || `photo_${Date.now()}.jpg`
+      });
+
+      try {
+        const uploadRes = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/upload`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data', 'Bypass-Tunnel-Reminder': 'true', 'ngrok-skip-browser-warning': 'true' }
+        });
+        if (uploadRes.data.success) {
+          finalImageUrl = uploadRes.data.url;
+        }
+      } catch (err) {
+        showToast('⚠️ Error al subir imagen');
+        return;
+      }
+    }
+
     const nuevo = {
       cat: catId,
       nombre: newProdName.trim(),
       precio: precioNum || 0,
       desc: newProdDesc.trim(),
       emoji: getEmojiForCategory(catId),
-      disp: newProdDisp ? 1 : 0
+      disp: newProdDisp ? 1 : 0,
+      imagen: finalImageUrl
     };
 
     try {
-      const res = await axios.post(`http://${serverIP}:3001/api/productos`, nuevo, { timeout: 3000 });
+      const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/productos`, nuevo, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast('✅ Producto guardado en SQLite');
         
@@ -3558,6 +4274,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         setNewProdDesc('');
         setNuevaCategoria('');
         setCreandoNuevaCat(false);
+        setNewProdImage(null);
         setModalVisible(false);
         sincronizar();
       }
@@ -3569,7 +4286,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // MENÚ: Alternar disponibilidad
   const toggleProducto = async (id, currentDisp) => {
     try {
-      const res = await axios.put(`http://${serverIP}:3001/api/productos/${id}/disponibilidad`, { disp: !currentDisp }, { timeout: 3000 });
+      const res = await axios.put(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/productos/${id}/disponibilidad`, { disp: !currentDisp }, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast('✅ Disponibilidad actualizada');
         sincronizar();
@@ -3582,7 +4299,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // FINANZAS: Cargar reporte agrupado
   const cargarFinanzas = async () => {
     try {
-      const res = await axios.get(`http://${serverIP}:3001/api/finanzas/reporte`, { timeout: 3000 });
+      const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/finanzas/reporte`, { timeout: 15000 });
       if (res.data) {
         setFinanzasReporte(res.data);
       }
@@ -3594,13 +4311,43 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // USUARIOS: Cargar usuarios
   const cargarUsuarios = async () => {
     try {
-      const res = await axios.get(`http://${serverIP}:3001/api/usuarios`, { timeout: 3000 });
+      const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios`, { timeout: 15000 });
       if (res.data && res.data.usuarios) {
         setUsuarios(res.data.usuarios);
       }
     } catch (e) {
       console.error('Error loading users:', e.message);
     }
+  };
+
+  // USUARIOS: Eliminar usuario
+  const eliminarUsuario = async (userId, userName) => {
+    Alert.alert(
+      "Eliminar Usuario",
+      `¿Estás seguro de que quieres eliminar permanentemente al usuario "${userName}"? Esta acción no se puede deshacer.`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        { 
+          text: "Eliminar", 
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const res = await axios.delete(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios/${userId}`, {
+                data: { administrador_usuario: loggedUser ? loggedUser.nombre : 'Admin' },
+                headers: { 'ngrok-skip-browser-warning': 'true' },
+                timeout: 15000
+              });
+              if (res.data && res.data.success) {
+                showToast('✅ Usuario eliminado correctamente');
+                cargarUsuarios();
+              }
+            } catch (e) {
+              showToast('⚠️ Error al eliminar el usuario');
+            }
+          }
+        }
+      ]
+    );
   };
 
   // USUARIOS: Crear/Editar usuario
@@ -3619,13 +4366,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       id: editUserSel ? editUserSel.id : undefined,
       nombre: newUserName.trim(),
       pin: newUserPin ? newUserPin : undefined,
-      rol: newUserRol,
+      roles: newUserRoles.length > 0 ? newUserRoles : ['pedido'],
       activo: newUserActivo ? 1 : 0,
       administrador_usuario: loggedUser ? loggedUser.nombre : 'Admin'
     };
 
     try {
-      const res = await axios.post(`http://${serverIP}:3001/api/usuarios`, payload, { timeout: 3000 });
+      const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios`, payload, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast(editUserSel ? '✅ Usuario actualizado' : '✅ Usuario creado');
         setUserModalVisible(false);
@@ -3655,7 +4402,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     };
 
     try {
-      const res = await axios.post(`http://${serverIP}:3001/api/usuarios`, payload, { timeout: 3000 });
+      const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios`, payload, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast('✅ PIN actualizado con éxito');
         setChangePinModalVisible(false);
@@ -3671,13 +4418,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // AUDITORÍA: Cargar logs de auditoría con filtros
   const cargarAuditoria = async () => {
     try {
-      const res = await axios.get(`http://${serverIP}:3001/api/auditoria`, {
+      const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/auditoria`, {
         params: {
           usuario: auditUserFilter.trim() || undefined,
           accion: auditAccionFilter || undefined,
           fecha: auditFechaFilter.trim() || undefined
         },
-        timeout: 3000
+        timeout: 15000
       });
       if (res.data && res.data.logs) {
         setAuditoriaLogs(res.data.logs);
@@ -3690,7 +4437,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // FINANZAS: Registrar Gasto
   const registrarGasto = async () => {
     if (!gastoDesc.trim()) { showToast('⚠️ Descripción requerida'); return; }
-    const valorNum = parseFloat(gastoValor);
+    const valorNum = parseFloat(cleanNum(gastoValor));
     if (isNaN(valorNum) || valorNum <= 0) { showToast('⚠️ Valor de gasto inválido'); return; }
 
     const nuevoGasto = {
@@ -3701,7 +4448,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     };
 
     try {
-      const res = await axios.post(`http://${serverIP}:3001/api/gastos`, nuevoGasto, { timeout: 3000 });
+      const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/gastos`, nuevoGasto, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast('✅ Gasto registrado con éxito');
         setGastoDesc('');
@@ -3717,10 +4464,10 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // INVENTARIO: Cargar insumos y Kardex
   const cargarInventario = async () => {
     try {
-      const resInsumos = await axios.get(`http://${serverIP}:3001/api/inventario/insumos`, { timeout: 3000 });
+      const resInsumos = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/insumos`, { timeout: 15000 });
       if (resInsumos.data) setInsumos(resInsumos.data.insumos);
 
-      const resMov = await axios.get(`http://${serverIP}:3001/api/inventario/movimientos`, { timeout: 3000 });
+      const resMov = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/movimientos`, { timeout: 15000 });
       if (resMov.data) setMovimientosLog(resMov.data.movimientos);
     } catch (e) {
       console.error('Error loading inventory:', e.message);
@@ -3730,9 +4477,9 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   // INVENTARIO: Crear Insumo
   const registrarInsumo = async () => {
     if (!insumoNombre.trim()) { showToast('⚠️ Nombre del insumo requerido'); return; }
-    const cantVal = parseFloat(insumoCant);
-    const minVal = parseFloat(insumoMin);
-    const compVal = parseFloat(insumoCompra);
+    const cantVal = parseFloat(cleanNum(insumoCant));
+    const minVal = parseFloat(cleanNum(insumoMin));
+    const compVal = parseFloat(cleanNum(insumoCompra));
 
     const nuevoInsumo = {
       nombre: insumoNombre.trim(),
@@ -3743,7 +4490,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     };
 
     try {
-      const res = await axios.post(`http://${serverIP}:3001/api/inventario/insumos`, nuevoInsumo, { timeout: 3000 });
+      const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/insumos`, nuevoInsumo, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast('✅ Insumo registrado con éxito');
         setInsumoNombre('');
@@ -3760,7 +4507,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
   // INVENTARIO: Registrar Movimiento Kardex
   const registrarMovimiento = async () => {
-    const cantVal = parseFloat(movCant);
+    const cantVal = parseFloat(cleanNum(movCant));
     if (isNaN(cantVal) || cantVal <= 0) { showToast('⚠️ Cantidad inválida'); return; }
 
     const movimiento = {
@@ -3770,7 +4517,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     };
 
     try {
-      const res = await axios.post(`http://${serverIP}:3001/api/inventario/insumos/${insumoSel.id}/movimiento`, movimiento, { timeout: 3000 });
+      const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/insumos/${insumoSel.id}/movimiento`, movimiento, { timeout: 15000 });
       if (res.data && res.data.success) {
         showToast('✅ Movimiento registrado con éxito');
         setMovCant('');
@@ -3784,10 +4531,20 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     }
   };
 
+  // ─── HISTORIAL FACTURAS ───
+  const cargarHistorialFacturas = async () => {
+    try {
+      const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { timeout: 15000 });
+      if (res.data && res.data.ventas) setHistorialFacturas(res.data.ventas);
+    } catch (e) {
+      console.error('Error loading ventas:', e.message);
+    }
+  };
+
   // CANCELACIONES: Cargar historial de cancelados
   const cargarCancelados = async () => {
     try {
-      const res = await axios.get(`http://${serverIP}:3001/api/pedidos-cancelados`, { timeout: 3000 });
+      const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos-cancelados`, { timeout: 15000 });
       if (res.data) setPedidosCancelados(res.data.cancelados);
     } catch (e) {
       console.error('Error loading cancelled orders:', e.message);
@@ -3847,13 +4604,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
             </View>
 
             {/* Pedidos Activos */}
-            <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
+            <TouchableOpacity style={[s.statCard, { flex: 1, minWidth: '45%' }]} onPress={() => setModalAdminPedidosVisible(true)}>
               <Text style={{ fontSize: 24 }}>🍔</Text>
               <Text style={[s.statValue, { color: C.orange, marginTop: 4 }]}>
                 {pedidos.filter(p => p.estado === 'activo').length}
               </Text>
               <Text style={s.statLabel}>Pedidos Activos</Text>
-            </View>
+            </TouchableOpacity>
 
             {/* Pedidos Cancelados */}
             <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
@@ -3895,6 +4652,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               { id: 'usuarios', label: '👤 Gestión de Usuarios', desc: 'Roles, PINs y accesos' },
               { id: 'auditoria', label: '📋 Log de Auditoría', desc: 'Registro de todas las acciones' },
               { id: 'cancelados', label: '📋 Pedidos Cancelados', desc: 'Historial de cancelaciones' },
+              { id: 'historial', label: '🧾 Historial de Facturas', desc: 'Ventas y facturas cobradas' },
+              { id: 'impresora', label: '🖨️ Impresora Térmica', desc: 'Configurar conexión WiFi/Bluetooth' },
             ].map(item => (
               <TouchableOpacity
                 key={item.id}
@@ -3937,7 +4696,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                 <Text style={s.catHeader}>{cat}</Text>
                 {items.map((p, idx) => (
                   <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: C.surf2, borderRadius: 10, padding: 14, marginBottom: 10 }}>
-                    <Text style={{ fontSize: 24, marginRight: 12 }}>{p.emoji || '🍽️'}</Text>
+                    {p.imagen ? (
+                      <Image source={{ uri: `http://${serverIP}:3001${p.imagen}` }} style={{ width: 40, height: 40, borderRadius: 8, marginRight: 12 }} resizeMode="cover" />
+                    ) : (
+                      <Text style={{ fontSize: 24, marginRight: 12 }}>{p.emoji || '🍽️'}</Text>
+                    )}
                     
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 16, color: C.text, fontWeight: '500' }}>{p.nombre}</Text>
@@ -3979,6 +4742,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               setNewProdDisp(true);
               setCreandoNuevaCat(false);
               setNuevaCategoria('');
+              setNewProdImage(null);
               setModalVisible(true);
             }}
             style={{
@@ -4032,9 +4796,9 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     style={s.formInput}
                     placeholder="Ej. 18000"
                     placeholderTextColor={C.text3}
-                    keyboardType="numeric"
+                    keyboardType="decimal-pad"
                     value={newProdPrice}
-                    onChangeText={setNewProdPrice}
+                    onChangeText={(txt) => setNewProdPrice(formatMoneyInput(txt))}
                   />
 
                   <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Descripción</Text>
@@ -4109,6 +4873,32 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     </View>
                   )}
 
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Foto del Producto</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+                    <TouchableOpacity 
+                      onPress={async () => {
+                        try {
+                          const res = await DocumentPicker.pick({
+                            type: [DocumentPicker.types.images],
+                          });
+                          if (res && res.length > 0) {
+                            setNewProdImage(res[0]);
+                          }
+                        } catch (err) {
+                          if (!DocumentPicker.isCancel(err)) {
+                            showToast('⚠️ Error seleccionando imagen');
+                          }
+                        }
+                      }}
+                      style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.orange, borderStyle: 'dashed', alignItems: 'center', backgroundColor: C.surf2 }}
+                    >
+                      <Text style={{ color: C.orange, fontWeight: '700', fontSize: 14 }}>{newProdImage ? 'Cambiar Foto' : '📸 Seleccionar Foto'}</Text>
+                    </TouchableOpacity>
+                    {newProdImage && (
+                      <Image source={{ uri: newProdImage.uri }} style={{ width: 60, height: 60, borderRadius: 8, borderWidth: 1, borderColor: C.border }} />
+                    )}
+                  </View>
+
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: C.surf2, padding: 12, borderRadius: 8, borderWidth: 1, borderColor: C.border, marginBottom: 20 }}>
                     <View>
                       <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>Disponible</Text>
@@ -4150,113 +4940,100 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
           {renderBackHeader('Finanzas y Gastos')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <Text style={s.sectionTitle}>📊 Reporte de Finanzas</Text>
+            <Text style={s.sectionTitle}>📊 Reporte Financiero</Text>
             <TouchableOpacity
-              onPress={() => setGastoModalVisible(true)}
-              style={{
-                backgroundColor: C.orange,
-                paddingVertical: 8,
-                paddingHorizontal: 12,
-                borderRadius: 8,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 4
-              }}
+              onPress={() => setModalGastoVisible(true)}
+              style={{ backgroundColor: C.orange, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}
             >
               <Ionicons name="add-circle" size={16} color="white" />
-              <Text style={{ color: 'white', fontWeight: '700', fontSize: 12 }}>REGISTRAR GASTO</Text>
+              <Text style={{ color: 'white', fontWeight: '700', fontSize: 12 }}>NUEVO GASTO</Text>
             </TouchableOpacity>
           </View>
 
-          {finanzasReporte ? (
+          {dashboardData ? (
             <View style={{ gap: 14 }}>
-              {/* Dashboard Grid */}
-              <View style={s.statsGrid}>
-                <View style={s.statCard}>
-                  <Text style={s.statLabel}>Ventas Hoy</Text>
-                  <Text style={[s.statValue, { color: C.green }]}>${finanzasReporte.ventasHoy.toLocaleString('es-CO')}</Text>
-                  <Text style={s.statSub}>Jornada actual</Text>
-                </View>
-
-                <View style={s.statCard}>
-                  <Text style={s.statLabel}>Ventas Semana</Text>
-                  <Text style={s.statValue}>${finanzasReporte.ventasSemana.toLocaleString('es-CO')}</Text>
-                  <Text style={s.statSub}>Últimos 7 días</Text>
-                </View>
-                
-                <View style={s.statCard}>
-                  <Text style={s.statLabel}>Ventas Mes</Text>
-                  <Text style={s.statValue}>${finanzasReporte.ventasMes.toLocaleString('es-CO')}</Text>
-                  <Text style={s.statSub}>Mes en curso</Text>
-                </View>
-
-                <View style={s.statCard}>
-                  <Text style={s.statLabel}>Ticket Promedio</Text>
-                  <Text style={[s.statValue, { color: C.orange }]}>${Math.round(finanzasReporte.ticketPromedio).toLocaleString('es-CO')}</Text>
-                  <Text style={s.statSub}>Por transacción</Text>
-                </View>
-
-                <View style={s.statCard}>
-                  <Text style={s.statLabel}>Promedio Diario</Text>
-                  <Text style={s.statValue}>${Math.round(finanzasReporte.promedioDiario).toLocaleString('es-CO')}</Text>
-                  <Text style={s.statSub}>Días operativos</Text>
-                </View>
-
-                <View style={s.statCard}>
-                  <Text style={s.statLabel}>Promedio Semanal</Text>
-                  <Text style={s.statValue}>${Math.round(finanzasReporte.promedioSemanal).toLocaleString('es-CO')}</Text>
-                  <Text style={s.statSub}>Por semana activa</Text>
-                </View>
+              {/* Botones de Rango de Fecha */}
+              <View style={{ flexDirection: 'row', gap: 8, backgroundColor: C.surf, padding: 4, borderRadius: 8, marginBottom: 16 }}>
+                {['hoy', 'semana', 'mes'].map(rango => (
+                  <TouchableOpacity
+                    key={rango}
+                    onPress={() => setDashboardRango(rango)}
+                    style={{
+                      flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 6,
+                      backgroundColor: dashboardRango === rango ? C.brand : 'transparent',
+                    }}
+                  >
+                    <Text style={{ fontWeight: 'bold', fontSize: 13, color: dashboardRango === rango ? 'white' : C.text2, textTransform: 'capitalize' }}>
+                      {rango}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
 
-              {/* Payment Methods */}
-              <Text style={[s.sectionTitle, { fontSize: 14, marginTop: 10 }]}>💳 Métodos de Pago (Histórico)</Text>
-              <View style={[s.card, { padding: 14, backgroundColor: C.surf2 }]}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <Text style={{ color: C.text2, fontSize: 13 }}>💵 Efectivo:</Text>
-                  <Text style={{ color: C.text, fontWeight: '700', fontSize: 13 }}>${finanzasReporte.pagoEfectivo.toLocaleString('es-CO')}</Text>
-                </View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                  <Text style={{ color: C.text2, fontSize: 13 }}>📲 Transferencia:</Text>
-                  <Text style={{ color: C.text, fontWeight: '700', fontSize: 13 }}>${finanzasReporte.pagoTransferencia.toLocaleString('es-CO')}</Text>
-                </View>
-              </View>
+              {(() => {
+                const screenWidth = Dimensions.get("window").width - 28;
+                const pieData = dashboardData.gastosPorCategoria && dashboardData.gastosPorCategoria.length > 0
+                  ? dashboardData.gastosPorCategoria.map((c, i) => ({
+                      name: c.categoria,
+                      population: c.total,
+                      color: ['#E8520A', '#2D6A3F', '#F4A261', '#2A9D8F', '#E9C46A'][i % 5],
+                      legendFontColor: C.text2, legendFontSize: 12
+                    }))
+                  : [{ name: "Sin Gastos", population: 1, color: C.border, legendFontColor: C.text3, legendFontSize: 12 }];
 
-              {/* General Balance */}
-              <Text style={[s.sectionTitle, { fontSize: 14, marginTop: 10 }]}>⚖️ Balance General</Text>
-              <View style={[s.card, { padding: 14, backgroundColor: C.surf2 }]}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <Text style={{ color: C.text2, fontSize: 13 }}>Ingresos Totales:</Text>
-                  <Text style={{ color: C.green, fontWeight: '700', fontSize: 13 }}>+${finanzasReporte.ingresosTotales.toLocaleString('es-CO')}</Text>
-                </View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <Text style={{ color: C.text2, fontSize: 13 }}>Gastos Totales:</Text>
-                  <Text style={{ color: C.red, fontWeight: '700', fontSize: 13 }}>-${finanzasReporte.gastosTotales.toLocaleString('es-CO')}</Text>
-                </View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border }}>
-                  <Text style={{ color: C.text, fontWeight: '800', fontSize: 14 }}>Balance NedestPath:</Text>
-                  <Text style={{ color: finanzasReporte.balanceActual >= 0 ? C.green : C.red, fontWeight: '800', fontSize: 14 }}>
-                    ${finanzasReporte.balanceActual.toLocaleString('es-CO')}
-                  </Text>
-                </View>
-              </View>
+                return (
+                  <View style={{ gap: 16 }}>
+                    {/* Nuevos KPIs Estilo Fintech */}
+                    <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' }}>
+                      <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
+                        <Text style={{ fontSize: 11, color: C.text2, fontWeight: 'bold' }}>INGRESOS</Text>
+                        <Text style={{ fontSize: 24, color: C.green, fontWeight: '800' }}>${(dashboardData.ventas || 0).toLocaleString('es-CO')}</Text>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>Ventas totales</Text>
+                      </View>
+                      <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
+                        <Text style={{ fontSize: 11, color: C.text2, fontWeight: 'bold' }}>EGRESOS</Text>
+                        <Text style={{ fontSize: 24, color: C.red, fontWeight: '800' }}>
+                          ${(dashboardData.gastos || 0).toLocaleString('es-CO')}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>Gastos registrados</Text>
+                      </View>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' }}>
+                      <View style={[s.statCard, { flex: 1 }]}>
+                        <Text style={{ fontSize: 11, color: C.text2, fontWeight: 'bold' }}>UTILIDAD NETA</Text>
+                        <Text style={{ fontSize: 24, color: dashboardData.balance >= 0 ? C.brand : C.red, fontWeight: '800' }}>${(dashboardData.balance || 0).toLocaleString('es-CO')}</Text>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>Ingresos menos egresos</Text>
+                      </View>
+                    </View>
+
+                    {/* Gráfico de Dona - Gastos por Categoría */}
+                    <Text style={[s.sectionTitle, { fontSize: 14, marginTop: 4 }]}>📊 Distribución de Gastos</Text>
+                    <View style={[s.card, { padding: 10, backgroundColor: C.surface, alignItems: 'center' }]}>
+                      <PieChart
+                        data={pieData}
+                        width={screenWidth - 20}
+                        height={160}
+                        chartConfig={{ color: (opacity = 1) => `rgba(0, 0, 0, ${opacity})` }}
+                        accessor={"population"}
+                        backgroundColor={"transparent"}
+                        paddingLeft={"15"}
+                        center={[10, 0]}
+                        absolute
+                      />
+                    </View>
+                  </View>
+                );
+              })()}
 
               {/* Recent Expenses List */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 8 }}>
-                <Text style={[s.sectionTitle, { fontSize: 14 }]}>💸 Egresos Recientes</Text>
-                <TextInput
-                  style={[s.formInput, { paddingVertical: 4, paddingHorizontal: 10, fontSize: 11, minWidth: 120, height: 28, backgroundColor: C.surface }]}
-                  placeholder="Filtrar fecha (AAAA-MM-DD)"
-                  placeholderTextColor={C.text3}
-                  value={gastoFechaFilter}
-                  onChangeText={setGastoFechaFilter}
-                />
+                <Text style={[s.sectionTitle, { fontSize: 14 }]}>💸 Últimos Egresos</Text>
               </View>
               <View style={[s.card, { padding: 14, backgroundColor: C.surface }]}>
                 {(() => {
-                  const filteredGastos = finanzasReporte.gastos.filter(g => !gastoFechaFilter || g.fecha.includes(gastoFechaFilter));
+                  const filteredGastos = dashboardData.ultimosGastos || [];
                   if (filteredGastos.length === 0) {
-                    return <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center', paddingVertical: 10 }}>No hay gastos registrados</Text>;
+                    return <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center', paddingVertical: 10 }}>No hay gastos registrados en este periodo</Text>;
                   }
                   return filteredGastos.map((g, idx) => (
                     <View key={g.id || idx} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: idx < filteredGastos.length - 1 ? 1 : 0, borderBottomColor: C.border }}>
@@ -4265,61 +5042,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         <Text style={{ fontSize: 10, color: C.text3 }}>🏷️ {g.categoria} • 📅 {g.fecha}</Text>
                       </View>
                       <Text style={{ fontSize: 14, fontWeight: '800', color: C.red }}>
-                        -${g.valor.toLocaleString('es-CO')}
+                        -${(g.valor || 0).toLocaleString('es-CO')}
                       </Text>
                     </View>
                   ));
                 })()}
-              </View>
-
-              {/* Recent Sales List */}
-              <Text style={[s.sectionTitle, { fontSize: 14, marginTop: 10 }]}>💰 Ventas Recientes</Text>
-              <View style={[s.card, { padding: 14, backgroundColor: C.surface, marginBottom: 14 }]}>
-                {finanzasReporte.ventas.length === 0 ? (
-                  <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center', paddingVertical: 10 }}>No hay ventas registradas</Text>
-                ) : (
-                  finanzasReporte.ventas.map((v, idx) => (
-                    <TouchableOpacity
-                      key={v.id || idx}
-                      onPress={async () => {
-                        try {
-                          const res = await axios.get(`http://${serverIP}:3001/api/ventas/${v.id}/detalles`, { timeout: 3000 });
-                          if (res.data && res.data.detalles) {
-                            setVentaDetalleSelected(v);
-                            setVentaDetallesItems(res.data.detalles);
-                            setVentaDetalleModalVisible(true);
-                          }
-                        } catch (e) {
-                          showToast('⚠️ Error al cargar detalles de venta');
-                        }
-                      }}
-                      style={{
-                        flexDirection: 'row',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        paddingVertical: 8,
-                        borderBottomWidth: idx < finanzasReporte.ventas.length - 1 ? 1 : 0,
-                        borderBottomColor: C.border
-                      }}
-                    >
-                      <View style={{ flex: 1, marginRight: 8 }}>
-                        <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>
-                          {v.tipo_origen === 'Para Llevar' ? v.mesa : `Mesa ${v.mesa}`}
-                        </Text>
-                        <Text style={{ fontSize: 10, color: C.text3 }}>
-                          🕒 {new Date(v.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} • 💳 {v.metodo_pago}
-                        </Text>
-                      </View>
-                      
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Text style={{ fontSize: 14, fontWeight: '800', color: C.green }}>
-                          ${v.total.toLocaleString('es-CO')}
-                        </Text>
-                        <Ionicons name="chevron-forward" size={14} color={C.text3} />
-                      </View>
-                    </TouchableOpacity>
-                  ))
-                )}
               </View>
             </View>
           ) : (
@@ -4357,9 +5084,9 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     style={s.formInput}
                     placeholder="Ej. 25000"
                     placeholderTextColor={C.text3}
-                    keyboardType="numeric"
+                    keyboardType="decimal-pad"
                     value={gastoValor}
-                    onChangeText={setGastoValor}
+                    onChangeText={(txt) => setGastoValor(formatMoneyInput(txt))}
                   />
 
                   <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Categoría del Gasto</Text>
@@ -4592,7 +5319,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     style={s.formInput}
                     placeholder="Ej. 10"
                     placeholderTextColor={C.text3}
-                    keyboardType="numeric"
+                    keyboardType="decimal-pad"
                     value={insumoCant}
                     onChangeText={setInsumoCant}
                   />
@@ -4602,7 +5329,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     style={s.formInput}
                     placeholder="Ej. 5"
                     placeholderTextColor={C.text3}
-                    keyboardType="numeric"
+                    keyboardType="decimal-pad"
                     value={insumoMin}
                     onChangeText={setInsumoMin}
                   />
@@ -4612,9 +5339,9 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     style={s.formInput}
                     placeholder="Ej. 12000"
                     placeholderTextColor={C.text3}
-                    keyboardType="numeric"
+                    keyboardType="decimal-pad"
                     value={insumoCompra}
-                    onChangeText={setInsumoCompra}
+                    onChangeText={(txt) => setInsumoCompra(formatMoneyInput(txt))}
                   />
 
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
@@ -4667,7 +5394,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       style={s.formInput}
                       placeholder={movTipo === 'entrada' ? "Ej. 5" : `Actual: ${insumoSel.cantidad_actual}`}
                       placeholderTextColor={C.text3}
-                      keyboardType="numeric"
+                      keyboardType="decimal-pad"
                       value={movCant}
                       onChangeText={setMovCant}
                     />
@@ -4768,42 +5495,103 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
             return filteredCancelados.map((c) => {
               const valorCancelado = c.items.reduce((sum, item) => sum + (item.precio || 0) * (item.cantidad || 0), 0);
+              const isExpanded = expandedCancelId === c.id;
+              
               return (
-                <View key={c.id} style={[s.card, { marginBottom: 12, padding: 14, backgroundColor: C.surf2 }]}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>
-                      {typeof c.mesa === 'string' && c.mesa.startsWith('Para') ? c.mesa : `Mesa ${c.mesa}`}
-                    </Text>
-                    <Text style={{ fontSize: 10, color: C.text3 }}>📅 {new Date(c.fecha).toLocaleString('es-CO')}</Text>
-                  </View>
-
-                  {/* Items */}
-                  <View style={{ marginBottom: 8, paddingLeft: 6 }}>
-                    {c.items.map((it, idx) => (
-                      <Text key={idx} style={{ fontSize: 12, color: C.text2 }}>
-                        • {it.cantidad}x {it.nombre} {it.nota ? `(📝 ${it.nota})` : ''}
+                <TouchableOpacity 
+                  key={c.id} 
+                  activeOpacity={0.7}
+                  onPress={() => setExpandedCancelId(isExpanded ? null : c.id)}
+                  style={[s.card, { marginBottom: 12, padding: 14, backgroundColor: C.surf2 }]}
+                >
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: isExpanded ? 8 : 0 }}>
+                    <View>
+                      <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>
+                        {typeof c.mesa === 'string' && c.mesa.startsWith('Para') ? c.mesa : `Mesa ${c.mesa}`}
                       </Text>
-                    ))}
-                  </View>
-
-                  <View style={{ borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, gap: 4 }}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontSize: 11, color: C.text, fontWeight: '700' }}>
-                        Motivo: <Text style={{ fontWeight: '500', color: C.text2 }}>{c.motivo}</Text>
-                      </Text>
-                      <Text style={{ fontSize: 12, color: C.red, fontWeight: '800' }}>
-                        Valor: ${valorCancelado.toLocaleString('es-CO')}
-                      </Text>
+                      <Text style={{ fontSize: 10, color: C.text3 }}>📅 {new Date(c.fecha).toLocaleString('es-CO')}</Text>
                     </View>
-                    <Text style={{ fontSize: 10, color: C.text3 }}>
-                      Usuario: {c.usuario} • Estado: <Text style={{ color: C.red, fontWeight: '700' }}>{c.estado.toUpperCase()}</Text>
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      {!isExpanded && (
+                        <Text style={{ fontSize: 12, color: C.red, fontWeight: '800' }}>
+                          ${valorCancelado.toLocaleString('es-CO')}
+                        </Text>
+                      )}
+                      <Ionicons name={isExpanded ? "chevron-up" : "chevron-down"} size={20} color={C.text3} />
+                    </View>
                   </View>
-                </View>
+
+                  {isExpanded && (
+                    <>
+                      {/* Items */}
+                      <View style={{ marginBottom: 8, paddingLeft: 6 }}>
+                        {c.items.map((it, idx) => (
+                          <Text key={idx} style={{ fontSize: 12, color: C.text2 }}>
+                            • {it.cantidad}x {it.nombre} {it.nota ? `(📝 ${it.nota})` : ''}
+                          </Text>
+                        ))}
+                      </View>
+
+                      <View style={{ borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, gap: 4 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                          <Text style={{ fontSize: 11, color: C.text, fontWeight: '700' }}>
+                            Motivo: <Text style={{ fontWeight: '500', color: C.text2 }}>{c.motivo}</Text>
+                          </Text>
+                          <Text style={{ fontSize: 12, color: C.red, fontWeight: '800' }}>
+                            Valor: ${valorCancelado.toLocaleString('es-CO')}
+                          </Text>
+                        </View>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>
+                          Usuario: {c.usuario} • Estado: <Text style={{ color: C.red, fontWeight: '700' }}>{c.estado.toUpperCase()}</Text>
+                        </Text>
+                      </View>
+                    </>
+                  )}
+                </TouchableOpacity>
               );
             });
           })()}
         </ScrollView>
+        </View>
+      )}
+
+      {/* ─── TAB: HISTORIAL DE FACTURAS ─── */}
+      {adminTab === 'historial' && (
+        <View style={{ flex: 1, paddingHorizontal: 14 }}>
+          {renderBackHeader('Historial de Facturas')}
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <Text style={s.sectionTitle}>🧾 Facturas Completadas</Text>
+            </View>
+
+            {historialFacturas.length === 0 ? (
+              <View style={[s.card, { padding: 20, alignItems: 'center', backgroundColor: C.surf2 }]}>
+                <Ionicons name="receipt-outline" size={40} color={C.text3} />
+                <Text style={{ fontSize: 13, color: C.text2, marginTop: 8 }}>No hay facturas cerradas aún</Text>
+              </View>
+            ) : (
+              historialFacturas.map((f, idx) => {
+                return (
+                  <View key={f.uuid || f.id || idx} style={[s.card, { marginBottom: 12, padding: 14, backgroundColor: C.surf2 }]}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <View>
+                        <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>
+                          Mesa {f.mesa}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>📅 {new Date(f.fecha).toLocaleString('es-CO')}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={{ fontSize: 16, color: C.green, fontWeight: '800' }}>
+                          ${f.total ? f.total.toLocaleString('es-CO') : '0'}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: C.text2 }}>{f.metodo_pago}</Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
         </View>
       )}
 
@@ -4819,7 +5607,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   setEditUserSel(null);
                   setNewUserName('');
                   setNewUserPin('');
-                  setNewUserRol('pedido');
+                  setNewUserRoles(['pedido']);
                   setNewUserActivo(true);
                   setUserModalVisible(true);
                 }}
@@ -4850,41 +5638,49 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     <View>
                       <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>{u.nombre}</Text>
                       <Text style={{ fontSize: 11, color: C.text3, marginTop: 2 }}>
-                        Rol: {u.rol === 'admin' ? 'Administrador' : u.rol === 'pedido' ? 'Mesero' : u.rol}
+                        Roles: {u.roles ? u.roles.map(r => r === 'admin' ? 'Administrador' : r === 'pedido' ? 'Mesero' : r).join(', ') : ''}
                       </Text>
                     </View>
                     
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <Text style={{ fontSize: 10, fontWeight: '700', color: u.activo ? C.green : C.text3 }}>
-                        {u.activo ? 'ACTIVO' : 'INACTIVO'}
-                      </Text>
-                      <TouchableOpacity
-                        onPress={async () => {
-                          try {
-                            const res = await axios.put(`http://${serverIP}:3001/api/usuarios/${u.id}/estado`, {
-                              activo: !u.activo,
-                              administrador_usuario: loggedUser ? loggedUser.nombre : 'Admin'
-                            }, { timeout: 3000 });
-                            if (res.data && res.data.success) {
-                              showToast('✅ Estado de usuario actualizado');
-                              cargarUsuarios();
-                            }
-                          } catch (e) {
-                            showToast('⚠️ Error al cambiar estado');
-                          }
-                        }}
-                        style={{
-                          width: 40,
-                          height: 24,
-                          borderRadius: 12,
-                          backgroundColor: u.activo ? C.green : '#D1D5DB',
-                          justifyContent: 'center',
-                          alignItems: u.activo ? 'flex-end' : 'flex-start',
-                          padding: 2,
-                        }}
-                      >
-                        <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: '#FFF' }} />
-                      </TouchableOpacity>
+                      {u.nombre !== 'Administrador' ? (
+                        <>
+                          <Text style={{ fontSize: 10, fontWeight: '700', color: u.activo ? C.green : C.text3 }}>
+                            {u.activo ? 'ACTIVO' : 'INACTIVO'}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={async () => {
+                              try {
+                                const res = await axios.put(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios/${u.id}/estado`, {
+                                  activo: !u.activo,
+                                  administrador_usuario: loggedUser ? loggedUser.nombre : 'Admin'
+                                }, { timeout: 15000 });
+                                if (res.data && res.data.success) {
+                                  showToast('✅ Estado de usuario actualizado');
+                                  cargarUsuarios();
+                                }
+                              } catch (e) {
+                                showToast('⚠️ Error al cambiar estado');
+                              }
+                            }}
+                            style={{
+                              width: 40,
+                              height: 24,
+                              borderRadius: 12,
+                              backgroundColor: u.activo ? C.green : '#D1D5DB',
+                              justifyContent: 'center',
+                              alignItems: u.activo ? 'flex-end' : 'flex-start',
+                              padding: 2,
+                            }}
+                          >
+                            <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: '#FFF' }} />
+                          </TouchableOpacity>
+                        </>
+                      ) : (
+                        <Text style={{ fontSize: 10, fontWeight: '700', color: C.green }}>
+                          ACTIVO (Fijo)
+                        </Text>
+                      )}
                     </View>
                   </View>
 
@@ -4894,7 +5690,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         setEditUserSel(u);
                         setNewUserName(u.nombre);
                         setNewUserPin('');
-                        setNewUserRol(u.rol);
+                        setNewUserRoles(u.roles || ['pedido']);
                         setNewUserActivo(!!u.activo);
                         setUserModalVisible(true);
                       }}
@@ -4933,6 +5729,25 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       <Ionicons name="key-outline" size={14} color="white" />
                       <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>Cambiar PIN</Text>
                     </TouchableOpacity>
+
+                    {u.nombre !== 'Administrador' && (
+                      <TouchableOpacity
+                        onPress={() => eliminarUsuario(u.id, u.nombre)}
+                        style={{
+                          flex: 1,
+                          backgroundColor: C.red,
+                          paddingVertical: 6,
+                          borderRadius: 6,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexDirection: 'row',
+                          gap: 4
+                        }}
+                      >
+                        <Ionicons name="trash-outline" size={14} color="white" />
+                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>Eliminar</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
               ))
@@ -5021,54 +5836,154 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               </TouchableOpacity>
             </View>
 
-            <Text style={[s.sectionTitle, { marginBottom: 10 }]}>Log de Eventos (Máx. 200)</Text>
-            {auditoriaLogs.length === 0 ? (
-              <View style={[s.card, { padding: 20, alignItems: 'center', backgroundColor: C.surface }]}>
-                <Text style={{ fontSize: 12, color: C.text3 }}>No se encontraron registros de auditoría</Text>
-              </View>
-            ) : (
-              auditoriaLogs.map((l) => {
-                let badgeBg = '#E5E7EB';
-                let badgeText = '#4B5563';
-                if (l.accion.includes('fallido') || l.accion.includes('cancelado')) {
-                  badgeBg = '#FEE2E2';
-                  badgeText = '#DC2626';
-                } else if (l.accion.includes('creado') || l.accion.includes('cobrado') || l.accion === 'login') {
-                  badgeBg = '#DCFCE7';
-                  badgeText = '#15803D';
-                } else if (l.accion.includes('editado') || l.accion.includes('cambiado')) {
-                  badgeBg = '#FEF3C7';
-                  badgeText = '#D97706';
-                } else if (l.accion.includes('gasto')) {
-                  badgeBg = '#F3E8FF';
-                  badgeText = '#7E22CE';
-                }
-
-                return (
-                  <View key={l.id} style={[s.card, { marginBottom: 10, padding: 12, backgroundColor: C.surface }]}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                      <Text style={{ fontSize: 11, color: C.text2, fontWeight: '700' }}>
-                        👤 {l.usuario}
-                      </Text>
-                      <Text style={{ fontSize: 9, color: C.text3 }}>
-                        🕒 {new Date(l.fecha).toLocaleString('es-CO')}
-                      </Text>
-                    </View>
-
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                      <View style={{ backgroundColor: badgeBg, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
-                        <Text style={{ fontSize: 9, fontWeight: '800', color: badgeText, textTransform: 'uppercase' }}>
-                          {l.accion}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <Text style={{ fontSize: 12, color: C.text }}>
-                      {l.detalle}
-                    </Text>
+            <TouchableOpacity 
+              onPress={() => setShowAuditoriaList(!showAuditoriaList)} 
+              style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}
+            >
+              <Text style={s.sectionTitle}>Log de Eventos (Máx. 20)</Text>
+              <Ionicons name={showAuditoriaList ? "chevron-up" : "chevron-down"} size={20} color={C.text} />
+            </TouchableOpacity>
+            
+            {showAuditoriaList && (
+              <>
+                {auditoriaLogs.length === 0 ? (
+                  <View style={[s.card, { padding: 20, alignItems: 'center', backgroundColor: C.surface }]}>
+                    <Text style={{ fontSize: 12, color: C.text3 }}>No se encontraron registros de auditoría</Text>
                   </View>
-                );
-              })
+                ) : (
+                  auditoriaLogs.slice(0, 20).map((l) => {
+                    const isExpanded = expandedAuditId === l.id;
+                    let badgeBg = '#E5E7EB';
+                    let badgeText = '#4B5563';
+                    if (l.accion.includes('fallido') || l.accion.includes('cancelado')) {
+                      badgeBg = '#FEE2E2';
+                      badgeText = '#DC2626';
+                    } else if (l.accion.includes('creado') || l.accion.includes('cobrado') || l.accion === 'login') {
+                      badgeBg = '#DCFCE7';
+                      badgeText = '#15803D';
+                    } else if (l.accion.includes('editado') || l.accion.includes('cambiado')) {
+                      badgeBg = '#FEF3C7';
+                      badgeText = '#D97706';
+                    } else if (l.accion.includes('gasto')) {
+                      badgeBg = '#F3E8FF';
+                      badgeText = '#7E22CE';
+                    }
+
+                    return (
+                      <TouchableOpacity 
+                        key={l.id} 
+                        onPress={() => setExpandedAuditId(isExpanded ? null : l.id)}
+                        activeOpacity={0.7}
+                        style={[s.card, { marginBottom: 10, padding: 12, backgroundColor: C.surface }]}
+                      >
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <Text style={{ fontSize: 11, color: C.text2, fontWeight: '700' }}>
+                            👤 {l.usuario}
+                          </Text>
+                          <Text style={{ fontSize: 9, color: C.text3 }}>
+                            🕒 {new Date(l.fecha).toLocaleString('es-CO')}
+                          </Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <View style={{ backgroundColor: badgeBg, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
+                              <Text style={{ fontSize: 9, fontWeight: '800', color: badgeText, textTransform: 'uppercase' }}>
+                                {l.accion}
+                              </Text>
+                            </View>
+                          </View>
+                          <Ionicons name={isExpanded ? "chevron-up" : "chevron-down"} size={16} color={C.text3} />
+                        </View>
+
+                        {isExpanded && (
+                          <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: C.border }}>
+                            <Text style={{ fontSize: 12, color: C.text }}>
+                              {l.detalle}
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </>
+            )}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* ─── TAB 7: IMPRESORA ─── */}
+      {adminTab === 'impresora' && (
+        <View style={{ flex: 1, paddingHorizontal: 14 }}>
+          {renderBackHeader('Configuración de Impresora')}
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
+            <Text style={[s.sectionTitle, { marginBottom: 15 }]}>🖨️ Ajustes de Impresión</Text>
+            
+            <View style={{ flexDirection: 'row', gap: 10, marginBottom: 15 }}>
+              <TouchableOpacity onPress={() => setPrinterType('ble')} style={[s.btnPrimary, { flex: 1, backgroundColor: printerType === 'ble' ? C.brand : C.surf2, borderWidth: 1, borderColor: printerType === 'ble' ? C.brand : C.border }]}>
+                <Text style={{ color: printerType === 'ble' ? 'white' : C.text, fontWeight: '700' }}>Bluetooth</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setPrinterType('net')} style={[s.btnPrimary, { flex: 1, backgroundColor: printerType === 'net' ? C.brand : C.surf2, borderWidth: 1, borderColor: printerType === 'net' ? C.brand : C.border }]}>
+                <Text style={{ color: printerType === 'net' ? 'white' : C.text, fontWeight: '700' }}>Red (WiFi/LAN)</Text>
+              </TouchableOpacity>
+            </View>
+
+            {printerType === 'ble' && (
+              <View style={[s.card, { padding: 15 }]}>
+                <Text style={{ fontSize: 13, fontWeight: '700', marginBottom: 10 }}>1. Buscar Impresoras Bluetooth</Text>
+                <TouchableOpacity onPress={async () => {
+                  showToast("Buscando...");
+                  const devices = await getBluetoothPrinters();
+                  setBlePrinters(devices);
+                }} style={[s.btnPrimary, { backgroundColor: C.blue, marginBottom: 15 }]}>
+                  <Text style={{ color: 'white', fontWeight: '700' }}>Escanear Dispositivos</Text>
+                </TouchableOpacity>
+
+                {blePrinters.map(device => (
+                  <TouchableOpacity key={device.mac_address || device.inner_mac_address} onPress={async () => {
+                    const mac = device.mac_address || device.inner_mac_address;
+                    const connected = await connectBluetoothPrinter(mac);
+                    if (connected) {
+                      const cfg = { type: 'ble', ...device };
+                      setSavedPrinter(cfg);
+                      await AsyncStorage.setItem('configuredPrinter', JSON.stringify(cfg));
+                    }
+                  }} style={{ padding: 12, backgroundColor: C.surf3, marginBottom: 8, borderRadius: 8, borderWidth: 1, borderColor: C.border }}>
+                    <Text style={{ fontWeight: '700' }}>{device.device_name || 'Impresora Bluetooth'}</Text>
+                    <Text style={{ fontSize: 11, color: C.text2 }}>{device.mac_address || device.inner_mac_address}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {printerType === 'net' && (
+              <View style={[s.card, { padding: 15 }]}>
+                <Text style={{ fontSize: 13, fontWeight: '700', marginBottom: 10 }}>2. Conectar por Dirección IP</Text>
+                <TextInput style={[s.formInput, { marginBottom: 10 }]} placeholder="Ej. 192.168.1.100" value={printerIP} onChangeText={setPrinterIP} />
+                <TouchableOpacity onPress={async () => {
+                  if(!printerIP) return showToast("Ingresa una IP");
+                  showToast("Conectando...");
+                  const connected = await connectNetPrinter(printerIP, 9100);
+                  if (connected) {
+                    const cfg = { type: 'net', host: printerIP, port: 9100 };
+                    setSavedPrinter(cfg);
+                    await AsyncStorage.setItem('configuredPrinter', JSON.stringify(cfg));
+                  }
+                }} style={[s.btnPrimary, { backgroundColor: C.green }]}>
+                  <Text style={{ color: 'white', fontWeight: '700' }}>Conectar</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {savedPrinter && (
+              <View style={{ marginTop: 20, padding: 15, backgroundColor: 'rgba(45,106,63,0.1)', borderRadius: 10, borderWidth: 1, borderColor: C.green }}>
+                <Text style={{ fontWeight: '800', color: C.green }}>✅ Impresora Configurada</Text>
+                <Text style={{ fontSize: 12, marginTop: 4 }}>
+                  Tipo: {savedPrinter.type === 'ble' ? 'Bluetooth' : 'Red IP'}{'\n'}
+                  {savedPrinter.type === 'ble' ? `Dispositivo: ${savedPrinter.device_name || savedPrinter.inner_mac_address}` : `IP: ${savedPrinter.host}`}
+                </Text>
+              </View>
             )}
           </ScrollView>
         </View>
@@ -5195,14 +6110,19 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     { id: 'admin', label: 'Administrador' },
                     { id: 'caja', label: 'Caja' },
                     { id: 'pedido', label: 'Mesero' },
-                    { id: 'cocina', label: 'Cocina' },
-                    { id: 'bar', label: 'Bar' }
+                    { id: 'cocina', label: 'Cocina' }
                   ].map(r => {
-                    const isSelected = newUserRol === r.id;
+                    const isSelected = newUserRoles.includes(r.id);
                     return (
                       <TouchableOpacity
                         key={r.id}
-                        onPress={() => setNewUserRol(r.id)}
+                        onPress={() => {
+                          if (isSelected) {
+                            setNewUserRoles(newUserRoles.filter(x => x !== r.id));
+                          } else {
+                            setNewUserRoles([...newUserRoles, r.id]);
+                          }
+                        }}
                         style={{
                           paddingVertical: 8,
                           paddingHorizontal: 12,
@@ -5213,7 +6133,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         }}
                       >
                         <Text style={{ fontSize: 11, color: isSelected ? '#fff' : C.text, fontWeight: '600' }}>
-                          {r.label}
+                          {isSelected ? '✓ ' : ''}{r.label}
                         </Text>
                       </TouchableOpacity>
                     );
@@ -5302,6 +6222,82 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     style={{ flex: 1, padding: 12, borderRadius: 8, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center' }}
                   >
                     <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>Actualizar PIN</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Modal para Registrar Gasto */}
+      {modalGastoVisible && (
+        <Modal visible={modalGastoVisible} transparent animationType="slide" onRequestClose={() => setModalGastoVisible(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+            <View style={{ width: '100%', backgroundColor: C.surface, borderRadius: 16, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' }}>
+              <View style={{ backgroundColor: C.brand, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <TouchableOpacity onPress={() => setModalGastoVisible(false)}>
+                  <Ionicons name="close" size={20} color={C.cream2} />
+                </TouchableOpacity>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>💸 Registrar Gasto</Text>
+              </View>
+
+              <View style={{ padding: 18, gap: 12 }}>
+                <View>
+                  <Text style={s.formLabel}>Descripción del Gasto</Text>
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. Pago de Internet"
+                    placeholderTextColor={C.text3}
+                    value={formGasto.descripcion}
+                    onChangeText={txt => setFormGasto({...formGasto, descripcion: txt})}
+                  />
+                </View>
+
+                <View>
+                  <Text style={s.formLabel}>Categoría</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {["Proveedores", "Servicios", "Nómina", "Mantenimiento", "Varios"].map(cat => (
+                      <TouchableOpacity
+                        key={cat}
+                        onPress={() => setFormGasto({...formGasto, categoria: cat})}
+                        style={{
+                          paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16,
+                          backgroundColor: formGasto.categoria === cat ? C.orange : C.surf2,
+                          borderWidth: 1, borderColor: formGasto.categoria === cat ? C.orange : C.border
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, fontWeight: '600', color: formGasto.categoria === cat ? 'white' : C.text2 }}>{cat}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                <View>
+                  <Text style={s.formLabel}>Monto ($)</Text>
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="0"
+                    placeholderTextColor={C.text3}
+                    keyboardType="decimal-pad"
+                    value={formGasto.valor}
+                    onChangeText={txt => setFormGasto({...formGasto, valor: formatMoneyInput(txt)})}
+                  />
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                  <TouchableOpacity
+                    onPress={() => setModalGastoVisible(false)}
+                    style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, alignItems: 'center', backgroundColor: 'transparent' }}
+                  >
+                    <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>Cancelar</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={handleRegistrarGasto}
+                    style={{ flex: 1, padding: 12, borderRadius: 8, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>Guardar</Text>
                   </TouchableOpacity>
                 </View>
               </View>

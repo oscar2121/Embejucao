@@ -5,7 +5,9 @@ const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 
+const JWT_SECRET = process.env.JWT_SECRET || 'embejucao_secreto_super_seguro_2026';
 // Cargar variables de entorno desde .env local de forma manual (sin dependencias)
 const envPath = path.join(__dirname, '.env');
 if (fs.existsSync(envPath)) {
@@ -27,6 +29,8 @@ if (fs.existsSync(envPath)) {
 
 
 const app = express();
+const multer = require('multer');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 const PORT = process.env.PORT || 3001;
 const http = require('http');
 const { Server } = require('socket.io');
@@ -46,13 +50,10 @@ io.on('connection', (socket) => {
   console.log(`🔌 Dispositivo conectado: ${socket.id}`);
 
   socket.on('registrar_dispositivo', (data) => {
-    const { rol, usuarioId } = data; // rol: 'cocina' | 'mesero' | 'bar', usuarioId: nombre del mesero
+    const { rol, usuarioId } = data; // rol: 'cocina' | 'mesero', usuarioId: nombre del mesero
     if (rol === 'cocina') {
       socket.join('sala_cocina');
       console.log(`👨‍🍳 Cocina registrada: ${socket.id}`);
-    } else if (rol === 'bar') {
-      socket.join('sala_bar');
-      console.log(`🍹 Bar registrado: ${socket.id}`);
     } else if (rol === 'mesero') {
       socket.join(`sala_mesero_${usuarioId}`);
       usuariosConectados.set(usuarioId, socket.id);
@@ -130,6 +131,13 @@ db.serialize(() => {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS clientes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT UNIQUE
+    )
+  `);
+
   // --- NUEVAS TABLAS PARA LA AMPLIACIÓN ---
 
   // 1. Productos persistentes
@@ -170,7 +178,12 @@ db.serialize(() => {
       sesion_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `, (err) => {
+    // Migration: Add usuario column to existing table
+    db.run(`ALTER TABLE gastos ADD COLUMN usuario TEXT`, (errAlter) => {
+      // Ignorar error si la columna ya existe
+    });
+  });
 
   // 4. Insumos (Inventario)
   db.run(`
@@ -230,10 +243,58 @@ db.serialize(() => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       nombre TEXT UNIQUE,
       pin TEXT,
-      rol TEXT,
+      rol TEXT, -- OBSOLETO, mantener por retrocompatibilidad
       activo INTEGER DEFAULT 1
     )
   `);
+
+  // 8.1 Roles
+  db.run(`
+    CREATE TABLE IF NOT EXISTS roles (
+      id TEXT PRIMARY KEY,
+      nombre TEXT,
+      descripcion TEXT
+    )
+  `);
+
+  // 8.2 Usuario_Roles (Muchos a Muchos)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS usuario_roles (
+      usuario_id INTEGER,
+      rol_id TEXT,
+      PRIMARY KEY (usuario_id, rol_id),
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY(rol_id) REFERENCES roles(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Insertar roles por defecto
+  db.run(`INSERT OR IGNORE INTO roles (id, nombre, descripcion) VALUES 
+    ('admin', 'Administrador', 'Acceso total al sistema'),
+    ('caja', 'Cajero', 'Acceso a facturación y pagos'),
+    ('cocina', 'Cocina', 'Acceso a gestión de comandas'),
+    ('pedido', 'Mesero', 'Acceso a toma de pedidos')
+  `);
+
+  // 8.3 Adicionales
+  db.run(`
+    CREATE TABLE IF NOT EXISTS adicionales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT UNIQUE,
+      precio REAL,
+      disponible INTEGER DEFAULT 1
+    )
+  `, (err) => {
+    if (!err) {
+      db.run(`INSERT OR IGNORE INTO adicionales (id, nombre, precio, disponible) VALUES 
+        (1, 'Porción de Papa', 3000, 1),
+        (2, 'Queso Extra', 2000, 1),
+        (3, 'Tocineta', 2500, 1),
+        (4, 'Salsa Extra', 1000, 1),
+        (5, 'Carne Extra', 5000, 1)
+      `);
+    }
+  });
 
   // 9. Ventas Detalle
   db.run(`
@@ -280,8 +341,7 @@ db.serialize(() => {
         { nombre: "Administrador", pin: hashPin("1234"), rol: "admin", activo: 1 },
         { nombre: "Caja", pin: hashPin("1111"), rol: "caja", activo: 1 },
         { nombre: "Mesero", pin: hashPin("2222"), rol: "pedido", activo: 1 },
-        { nombre: "Cocina", pin: hashPin("3333"), rol: "cocina", activo: 1 },
-        { nombre: "Bar", pin: hashPin("4444",), rol: "bar", activo: 1 }
+        { nombre: "Cocina", pin: hashPin("3333"), rol: "cocina", activo: 1 }
       ];
       const stmt = db.prepare(`INSERT OR IGNORE INTO usuarios (nombre, pin, rol, activo) VALUES (?, ?, ?, ?)`);
       USUARIOS_INICIAL.forEach(u => {
@@ -341,8 +401,68 @@ db.serialize(() => {
 
 // ─── ENDPOINTS ────────────────────────────────────────────
 
+// ─── SUBIDA DE IMÁGENES ───
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, path.join(__dirname, 'uploads', 'productos'))
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
+    cb(null, uniqueSuffix + path.extname(file.originalname))
+  }
+});
+const upload = multer({ storage: storage });
+
+app.post('/api/upload', upload.single('imagen'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No se subió ningún archivo' });
+  res.json({ success: true, url: `/uploads/productos/${req.file.filename}` });
+});
+
 // ─── CATALOGO DE PRODUCTOS ───
 // GET - Obtener catálogo
+// ─── ENDPOINTS ADICIONALES ───
+app.get('/api/adicionales', (req, res) => {
+  db.all('SELECT * FROM adicionales ORDER BY nombre ASC', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+app.post('/api/adicionales', (req, res) => {
+  const { nombre, precio } = req.body;
+  if (!nombre || precio === undefined) return res.status(400).json({ error: 'Faltan datos' });
+  db.run('INSERT INTO adicionales (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ id: this.lastID, success: true });
+  });
+});
+
+app.put('/api/adicionales/:id', (req, res) => {
+  const { nombre, precio, disponible } = req.body;
+  let query = 'UPDATE adicionales SET ';
+  const params = [];
+  
+  if (nombre) { query += 'nombre = ?, '; params.push(nombre); }
+  if (precio !== undefined) { query += 'precio = ?, '; params.push(precio); }
+  if (disponible !== undefined) { query += 'disponible = ?, '; params.push(disponible ? 1 : 0); }
+  
+  query = query.slice(0, -2) + ' WHERE id = ?';
+  params.push(req.params.id);
+  
+  db.run(query, params, function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, changes: this.changes });
+  });
+});
+
+app.delete('/api/adicionales/:id', (req, res) => {
+  db.run('DELETE FROM adicionales WHERE id = ?', [req.params.id], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, changes: this.changes });
+  });
+});
+
+// ─── ENDPOINTS PRODUCTOS ───
 app.get('/api/productos', (req, res) => {
   db.all(`SELECT * FROM productos ORDER BY cat ASC, nombre ASC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -352,13 +472,13 @@ app.get('/api/productos', (req, res) => {
 
 // POST - Crear/Actualizar producto
 app.post('/api/productos', (req, res) => {
-  const { id, cat, nombre, precio, desc, emoji, disp, usuario } = req.body;
+  const { id, cat, nombre, precio, desc, emoji, disp, usuario, imagen } = req.body;
   const dispVal = disp !== false ? 1 : 0;
   
   if (id) {
     db.run(
-      `UPDATE productos SET cat=?, nombre=?, precio=?, desc=?, emoji=?, disp=? WHERE id=?`,
-      [cat, nombre, precio, desc, emoji, dispVal, id],
+      `UPDATE productos SET cat=?, nombre=?, precio=?, desc=?, emoji=?, disp=?, imagen=? WHERE id=?`,
+      [cat, nombre, precio, desc, emoji, dispVal, imagen, id],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'producto_editado', `Producto modificado: ${nombre} ($${precio})`);
@@ -367,8 +487,8 @@ app.post('/api/productos', (req, res) => {
     );
   } else {
     db.run(
-      `INSERT INTO productos (cat, nombre, precio, desc, emoji, disp) VALUES (?, ?, ?, ?, ?, ?)`,
-      [cat, nombre, precio, desc, emoji, dispVal],
+      `INSERT INTO productos (cat, nombre, precio, desc, emoji, disp, imagen) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [cat, nombre, precio, desc, emoji, dispVal, imagen],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'producto_creado', `Nuevo producto agregado al catálogo: ${nombre} ($${precio})`);
@@ -395,6 +515,84 @@ app.put('/api/productos/:id/disponibilidad', (req, res) => {
   });
 });
 
+// ─── MESAS ───
+// GET - Obtener todas las mesas
+app.get('/api/mesas', (req, res) => {
+  db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    if (rows.length === 0) {
+      // Inicializar si está vacío
+      const iniciales = [
+        { num: 1, estado: "libre" },
+        { num: 2, estado: "libre" },
+        { num: 3, estado: "libre" },
+        { num: 4, estado: "libre" }
+      ];
+      
+      const stmt = db.prepare(`INSERT INTO mesas (num, estado) VALUES (?, ?)`);
+      iniciales.forEach(m => stmt.run(m.num, m.estado));
+      stmt.finalize(() => {
+        db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, newRows) => {
+          res.json({ mesas: newRows });
+        });
+      });
+    } else {
+      res.json({ mesas: rows });
+    }
+  });
+});
+
+// PUT - Actualizar cantidad de mesas
+app.put('/api/mesas/cantidad', (req, res) => {
+  const { cantidad, usuario } = req.body;
+  if (!cantidad || cantidad < 1 || cantidad > 100) return res.status(400).json({ error: "Cantidad inválida (1-100)" });
+  
+  db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err, mesasActuales) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    const cantidadActual = mesasActuales.length;
+    
+    if (cantidad === cantidadActual) {
+      return res.json({ success: true, message: "La cantidad ya es correcta." });
+    }
+    
+    if (cantidad > cantidadActual) {
+      // Agregar nuevas mesas
+      const stmt = db.prepare(`INSERT INTO mesas (num, estado) VALUES (?, 'libre')`);
+      for (let i = cantidadActual + 1; i <= cantidad; i++) {
+        stmt.run(i);
+      }
+      stmt.finalize(() => {
+        logAuditoria(usuario, 'mesas_actualizadas', `Cantidad de mesas aumentada a ${cantidad}`);
+        db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, rows) => {
+          io.emit('mesas_actualizadas', rows);
+          res.json({ success: true, mesas: rows });
+        });
+      });
+    } else {
+      // Reducir mesas, primero verificar si las que se van a eliminar están ocupadas
+      const mesasAEliminar = mesasActuales.filter(m => m.num > cantidad);
+      const mesasOcupadas = mesasAEliminar.filter(m => m.estado !== 'libre');
+      
+      if (mesasOcupadas.length > 0) {
+        const nums = mesasOcupadas.map(m => m.num).join(', ');
+        return res.status(400).json({ error: `No se puede reducir la cantidad. Las siguientes mesas están ocupadas o en cuenta: ${nums}` });
+      }
+      
+      db.run(`DELETE FROM mesas WHERE num > ?`, [cantidad], (errDelete) => {
+        if (errDelete) return res.status(500).json({ error: errDelete.message });
+        logAuditoria(usuario, 'mesas_actualizadas', `Cantidad de mesas reducida a ${cantidad}`);
+        
+        db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, rows) => {
+          io.emit('mesas_actualizadas', rows);
+          res.json({ success: true, mesas: rows });
+        });
+      });
+    }
+  });
+});
+
 // ─── SESIONES DE CAJA ───
 // GET - Sesión Activa
 app.get('/api/caja/sesion-activa', (req, res) => {
@@ -418,6 +616,7 @@ app.post('/api/caja/abrir', (req, res) => {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'caja_abierta', `Caja abierta con base inicial de $${base_inicial}`);
         db.get(`SELECT * FROM caja_sesiones WHERE id = ?`, [this.lastID], (errRow, row) => {
+          io.emit('caja_actualizada', row);
           res.json({ success: true, sesion: row });
         });
       }
@@ -486,6 +685,7 @@ app.post('/api/caja/cerrar', (req, res) => {
             (errUpdate) => {
               if (errUpdate) return res.status(500).json({ error: errUpdate.message });
               logAuditoria(usuario, 'caja_cerrada', `Caja cerrada. Esperado: $${esperado}, Real: $${saldo_final_real}, Dif: $${diferencia}`);
+              io.emit('caja_actualizada', null);
               res.json({
                 success: true,
                 base_inicial: sesion.base_inicial,
@@ -521,8 +721,9 @@ app.post('/api/pedidos', (req, res) => {
       }
       logAuditoria(usuario, 'pedido_creado', `Pedido creado para ${mesa} con ${items.length} productos`);
       
-      // Emitir en tiempo real a cocina y bar
+      // Emitir en tiempo real a cocina
       const payloadPedido = {
+        id: this.lastID,
         uuid,
         mesa,
         hora,
@@ -531,7 +732,14 @@ app.post('/api/pedidos', (req, res) => {
         estado: 'pendiente'
       };
       io.to('sala_cocina').emit('pedido_recibido_cocina', payloadPedido);
-      io.to('sala_bar').emit('pedido_recibido_bar', payloadPedido);
+
+      // Actualizar el estado de la mesa física a 'ocupada'
+      const numMesa = parseInt(mesa);
+      if (!isNaN(numMesa)) {
+        db.run(`UPDATE mesas SET estado = 'ocupada' WHERE num = ?`, [numMesa], (errMesa) => {
+          if (errMesa) console.error('Error actualizando estado de mesa:', errMesa);
+        });
+      }
 
       res.json({ success: true, id: this.lastID });
     }
@@ -543,8 +751,8 @@ app.get('/api/pedidos/date/:fecha', (req, res) => {
   const fecha = req.params.fecha;
   
   db.all(
-    `SELECT * FROM pedidos WHERE fecha = ? AND estado = 'activo' ORDER BY id DESC`,
-    [fecha],
+    `SELECT * FROM pedidos WHERE fecha LIKE ? AND estado NOT IN ('completado', 'cancelado') ORDER BY id DESC`,
+    [`${fecha}%`],
     (err, rows) => {
       if (err) {
         console.error('Error fetching pedidos:', err);
@@ -557,6 +765,36 @@ app.get('/api/pedidos/date/:fecha', (req, res) => {
       }));
       
       res.json({ pedidos });
+    }
+  );
+});
+
+// POST - Actualizar estado general de un pedido y sus items en batch (Cocina)
+app.post('/api/pedidos/estado', (req, res) => {
+  const { uuid, items, nuevoEstado } = req.body;
+  
+  if (!uuid || !items || !nuevoEstado) {
+    return res.status(400).json({ error: 'Faltan parámetros requeridos (uuid, items, nuevoEstado)' });
+  }
+
+  db.run(
+    `UPDATE pedidos SET items = ?, estado = ? WHERE uuid = ?`,
+    [JSON.stringify(items), nuevoEstado, uuid],
+    (err) => {
+      if (err) {
+        console.error('Error actualizando estado del pedido en batch:', err);
+        return res.status(500).json({ error: err.message });
+      }
+
+      // Emitir el cambio a todos los clientes conectados
+      io.emit('pedido_estado_cambiado', { uuid, items, nuevoEstado });
+
+      // Si el pedido entero está listo y pasa a 'cuenta', podemos emitir un evento específico
+      if (nuevoEstado === 'cuenta') {
+        io.emit('pedido_listo_para_entregar', { uuid });
+      }
+
+      res.json({ success: true, items, estado: nuevoEstado });
     }
   );
 });
@@ -603,15 +841,38 @@ app.put('/api/pedidos/:uuid/item/:itemIdx', (req, res) => {
 
 // DELETE - Completar pedido (cuando mesa se factura y se completa)
 app.delete('/api/pedidos/:uuid', (req, res) => {
-  db.run(
-    `UPDATE pedidos SET estado = 'completado' WHERE uuid = ?`,
-    [req.params.uuid],
-    (err) => {
-      if (err) return res.status(400).json({ error: err.message });
-      io.emit('pedido_completado_servidor', { uuid: req.params.uuid });
-      res.json({ success: true });
-    }
-  );
+  const uuid = req.params.uuid;
+  db.get(`SELECT mesa FROM pedidos WHERE uuid = ?`, [uuid], (err, row) => {
+    if (err || !row) return res.status(400).json({ error: 'Pedido no encontrado' });
+    
+    db.run(
+      `UPDATE pedidos SET estado = 'completado' WHERE uuid = ?`,
+      [uuid],
+      (errUpdate) => {
+        if (errUpdate) return res.status(400).json({ error: errUpdate.message });
+        io.emit('pedido_completado_servidor', { uuid });
+        
+        // Liberar mesa física
+        const targetMesa = row.mesa || '';
+        const mesasALiberar = String(targetMesa).split(',').map(m => Number(m.trim())).filter(m => !isNaN(m));
+        
+        if (mesasALiberar.length > 0) {
+          let updates = 0;
+          mesasALiberar.forEach(mesaNum => {
+            db.run(`UPDATE mesas SET estado = 'libre' WHERE num = ?`, [mesaNum], () => {
+              updates++;
+              if (updates === mesasALiberar.length) {
+                db.all('SELECT * FROM mesas', (errMesas, filasMesas) => {
+                  if (!errMesas) io.emit('mesas_actualizadas', filasMesas);
+                });
+              }
+            });
+          });
+        }
+        res.json({ success: true });
+      }
+    );
+  });
 });
 
 // GET - Obtener pedidos fiados
@@ -631,6 +892,15 @@ app.get('/api/pedidos/fiado', (req, res) => {
       res.json({ fiados });
     }
   );
+});
+
+// GET - Obtener todos los clientes historicos
+app.get('/api/clientes', (req, res) => {
+  db.all(`SELECT nombre FROM clientes ORDER BY nombre ASC`, [], (err, rows) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const clientes = rows.map(r => r.nombre);
+    res.json({ clientes });
+  });
 });
 
 // PUT - Registrar/Actualizar pedido como fiado (soporta combinación/merge)
@@ -655,12 +925,25 @@ app.put('/api/pedidos/:uuid/fiado', (req, res) => {
   
   db.run(query, params, function (err) {
     if (err) return res.status(400).json({ error: err.message });
-    
     // Liberar mesa física
     const targetMesa = mesa || '';
     const mesasALiberar = String(targetMesa).split(',').map(m => Number(m.trim())).filter(m => !isNaN(m));
     mesasALiberar.forEach(mesaNum => {
       db.run(`UPDATE mesas SET estado = 'libre' WHERE num = ?`, [mesaNum]);
+    });
+    
+    // Notificar a todos que el pedido ya no está activo
+    if (deudor) {
+      db.run('INSERT OR IGNORE INTO clientes (nombre) VALUES (?)', [deudor.trim()]);
+    }
+    
+    // Emitir el evento de fiado para que se actualice en la caja en tiempo real (Créditos)
+    // El móvil (App.js) lo removerá de sus activos automáticamente al recibir pedido_fiado_servidor
+    db.get('SELECT * FROM pedidos WHERE uuid = ?', [uuid], (errSel, row) => {
+      if (row) {
+        row.items = JSON.parse(row.items);
+        io.emit('pedido_fiado_servidor', row);
+      }
     });
     
     logAuditoria(usuario, 'pedido_fiado', `Pedido registrado como fiado a favor de ${deudor} (Mesa ${targetMesa})`);
@@ -731,13 +1014,11 @@ app.post('/api/ventas', (req, res) => {
   const ahora = fecha || new Date().toISOString();
 
   db.serialize(() => {
-    db.run("BEGIN TRANSACTION");
     db.run(
       `INSERT INTO ventas (fecha, tipo_origen, mesa, total, metodo_pago, sesion_id, deudor, fecha_fiado) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [ahora, tipo_origen, mesa, total, metodo_pago, sesion_id, deudor || null, fecha_fiado || null],
       function (err) {
         if (err) {
-          db.run("ROLLBACK");
           return res.status(400).json({ error: err.message });
         }
         const ventaId = this.lastID;
@@ -755,15 +1036,12 @@ app.post('/api/ventas', (req, res) => {
           });
           stmt.finalize((errFinal) => {
             if (insertError || errFinal) {
-              db.run("ROLLBACK");
               return res.status(400).json({ error: insertError ? insertError.message : 'Error al registrar detalles' });
             }
-            db.run("COMMIT");
             logAuditoria(usuario, 'pedido_cobrado', `Cobro registrado para ${tipo_origen} ${mesa} por $${total} (${metodo_pago})`);
             res.json({ success: true, id: ventaId });
           });
         } else {
-          db.run("COMMIT");
           logAuditoria(usuario, 'pedido_cobrado', `Cobro registrado para ${tipo_origen} ${mesa} por $${total} (${metodo_pago})`);
           res.json({ success: true, id: ventaId });
         }
@@ -774,7 +1052,18 @@ app.post('/api/ventas', (req, res) => {
 
 // GET - Obtener Ventas Históricas
 app.get('/api/ventas', (req, res) => {
-  db.all(`SELECT * FROM ventas ORDER BY id DESC`, [], (err, rows) => {
+  const { rango } = req.query; 
+  
+  let dateCondition = `date(datetime(fecha, 'localtime')) = date('now', 'localtime')`; // Default a hoy
+  if (rango === 'semana') {
+    dateCondition = `date(datetime(fecha, 'localtime')) >= date('now', '-6 days', 'localtime')`;
+  } else if (rango === 'mes') {
+    dateCondition = `strftime('%Y-%m', datetime(fecha, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`;
+  } else if (rango === 'todo') {
+    dateCondition = '1=1';
+  }
+
+  db.all(`SELECT * FROM ventas WHERE ${dateCondition} ORDER BY id DESC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ ventas: rows });
   });
@@ -785,16 +1074,17 @@ app.get('/api/ventas', (req, res) => {
 // ─── GASTOS ───
 
 // POST - Registrar Gasto
-app.post('/api/gastos', (req, res) => {
-  const { descripcion, categoria, valor, fecha, sesion_id, usuario } = req.body;
+app.post('/api/gastos', authorize(['admin', 'caja']), (req, res) => {
+  const { descripcion, categoria, valor, fecha, sesion_id } = req.body;
   const fechaGasto = fecha || new Date().toISOString().split('T')[0];
+  const usuarioResp = req.user ? req.user.nombre : 'Desconocido';
 
   db.run(
-    `INSERT INTO gastos (descripcion, categoria, valor, fecha, sesion_id) VALUES (?, ?, ?, ?, ?)`,
-    [descripcion, categoria, valor, fechaGasto, sesion_id],
+    `INSERT INTO gastos (descripcion, categoria, valor, fecha, sesion_id, usuario) VALUES (?, ?, ?, ?, ?, ?)`,
+    [descripcion, categoria, valor, fechaGasto, sesion_id, usuarioResp],
     function (err) {
       if (err) return res.status(400).json({ error: err.message });
-      logAuditoria(usuario, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${valor}) en cat. ${categoria}`);
+      logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${valor}) en cat. ${categoria}`);
       res.json({ success: true, id: this.lastID });
     }
   );
@@ -822,19 +1112,19 @@ app.get('/api/finanzas/reporte', (req, res) => {
       const gastosTot = rGastos ? rGastos.total || 0 : 0;
       
       // 2b. Gastos de Hoy
-      db.get(`SELECT SUM(valor) as total FROM gastos WHERE date(fecha) = date('now', 'localtime') OR fecha LIKE ?`, [hoy + '%'], (errG, rG) => {
+      db.get(`SELECT SUM(valor) as total FROM gastos WHERE date(datetime(fecha, 'localtime')) = date('now', 'localtime')`, [], (errG, rG) => {
         const gastosHoy = rG ? rG.total || 0 : 0;
         
         // 3. Ventas Hoy
-        db.get(`SELECT SUM(total) as total FROM ventas WHERE date(fecha) = date('now', 'localtime') OR fecha LIKE ?`, [hoy + '%'], (err3, rHoy) => {
+        db.get(`SELECT SUM(total) as total FROM ventas WHERE date(datetime(fecha, 'localtime')) = date('now', 'localtime')`, [], (err3, rHoy) => {
           const ventasHoy = rHoy ? rHoy.total || 0 : 0;
           
           // 4. Ventas Semana (últimos 7 días)
-          db.get(`SELECT SUM(total) as total FROM ventas WHERE date(fecha) >= date('now', '-6 days', 'localtime')`, [], (err4, rSemana) => {
+          db.get(`SELECT SUM(total) as total FROM ventas WHERE date(datetime(fecha, 'localtime')) >= date('now', '-6 days', 'localtime')`, [], (err4, rSemana) => {
             const ventasSemana = rSemana ? rSemana.total || 0 : 0;
             
             // 5. Ventas Mes (mes actual)
-            db.get(`SELECT SUM(total) as total FROM ventas WHERE strftime('%Y-%m', fecha) = strftime('%Y-%m', 'now', 'localtime')`, [], (err5, rMes) => {
+            db.get(`SELECT SUM(total) as total FROM ventas WHERE strftime('%Y-%m', datetime(fecha, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`, [], (err5, rMes) => {
               const ventasMes = rMes ? rMes.total || 0 : 0;
               
               // 6. Desglose Métodos de Pago
@@ -861,21 +1151,24 @@ app.get('/api/finanzas/reporte', (req, res) => {
                       // 8. Lista de gastos recientes
                       db.all(`SELECT * FROM gastos ORDER BY id DESC LIMIT 50`, [], (errList, listGastos) => {
                         db.all(`SELECT * FROM ventas ORDER BY id DESC LIMIT 50`, [], (errSales, listSales) => {
-                          res.json({
-                            ventasHoy,
-                            ventasSemana,
-                            ventasMes,
-                            promedioDiario,
-                            promedioSemanal,
-                            ticketPromedio,
-                            pagoEfectivo: efectivo,
-                            pagoTransferencia: transferencia,
-                            ingresosTotales: ingresosTot,
-                            gastosTotales: gastosTot,
-                            gastosHoy,
-                            balanceActual: ingresosTot - gastosTot,
-                            gastos: listGastos || [],
-                            ventas: listSales || []
+                          db.all(`SELECT nombre_producto, SUM(cantidad) as cantidad_total, SUM(subtotal) as total_generado FROM ventas_detalle GROUP BY nombre_producto ORDER BY cantidad_total DESC, total_generado DESC`, [], (errRank, rankList) => {
+                            res.json({
+                              ventasHoy,
+                              ventasSemana,
+                              ventasMes,
+                              promedioDiario,
+                              promedioSemanal,
+                              ticketPromedio,
+                              pagoEfectivo: efectivo,
+                              pagoTransferencia: transferencia,
+                              ingresosTotales: ingresosTot,
+                              gastosTotales: gastosTot,
+                              gastosHoy,
+                              balanceActual: ingresosTot - gastosTot,
+                              gastos: listGastos || [],
+                              ventas: listSales || [],
+                              rankingProductos: rankList || []
+                            });
                           });
                         });
                       });
@@ -890,7 +1183,60 @@ app.get('/api/finanzas/reporte', (req, res) => {
     });
   });
 });
+// GET - Dashboard Financiero Interactivo
+app.get('/api/dashboard/financiero', authorize(['admin']), (req, res) => {
+  const { rango } = req.query; // 'hoy', 'semana', 'mes'
+  const hoy = new Date().toISOString().split('T')[0];
+  let dateConditionVentas = `date(datetime(fecha, 'localtime')) = date('now', 'localtime')`;
+  let dateConditionGastos = `date(datetime(fecha, 'localtime')) = date('now', 'localtime')`;
 
+  if (rango === 'semana') {
+    dateConditionVentas = `date(datetime(fecha, 'localtime')) >= date('now', '-6 days', 'localtime')`;
+    dateConditionGastos = `date(datetime(fecha, 'localtime')) >= date('now', '-6 days', 'localtime')`;
+  } else if (rango === 'mes') {
+    dateConditionVentas = `strftime('%Y-%m', datetime(fecha, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`;
+    dateConditionGastos = `strftime('%Y-%m', datetime(fecha, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`;
+  }
+
+  // 1. Ventas
+  db.get(`SELECT SUM(total) as total FROM ventas WHERE ${dateConditionVentas}`, [], (err, rVentas) => {
+    const ventas = rVentas ? rVentas.total || 0 : 0;
+    
+    // 2. Gastos
+    db.get(`SELECT SUM(valor) as total FROM gastos WHERE ${dateConditionGastos}`, [], (err, rGastos) => {
+      const gastos = rGastos ? rGastos.total || 0 : 0;
+      
+      // 3. Gastos por categoría
+      db.all(`SELECT categoria, SUM(valor) as total FROM gastos WHERE ${dateConditionGastos} GROUP BY categoria`, [], (err, catList) => {
+        const gastosPorCategoria = catList || [];
+        
+        // 4. Últimos gastos
+        db.all(`SELECT * FROM gastos WHERE ${dateConditionGastos} ORDER BY id DESC LIMIT 50`, [], (err, ultimosGastos) => {
+          
+          // 5. Métodos de pago
+          db.get(`SELECT SUM(total) as total FROM ventas WHERE (${dateConditionVentas}) AND metodo_pago = 'Efectivo'`, [], (err, rEfe) => {
+            const efectivo = rEfe ? rEfe.total || 0 : 0;
+            
+            db.get(`SELECT SUM(total) as total FROM ventas WHERE (${dateConditionVentas}) AND metodo_pago = 'Transferencia'`, [], (err, rTrans) => {
+              const transferencia = rTrans ? rTrans.total || 0 : 0;
+
+              res.json({
+                rango: rango || 'hoy',
+                ventas,
+                gastos,
+                balance: ventas - gastos,
+                gastosPorCategoria,
+                ultimosGastos: ultimosGastos || [],
+                efectivo,
+                transferencia
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+});
 
 // ─── INVENTARIO (INSUMOS Y MOVIMIENTOS) ───
 
@@ -995,6 +1341,34 @@ app.get('/api/inventario/movimientos', (req, res) => {
 const loginAttempts = {}; // { [usuario]: { intentos: 0, bloqueadoHasta: null } }
 
 // ─── SEGURIDAD / LOGIN ───
+// Middleware de Autorización RBAC
+function authorize(rolesPermitidos = []) {
+  return (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Falta token de autenticación' });
+    }
+    const token = authHeader.split(' ')[1];
+    
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded; // { id, nombre, roles }
+      
+      // Si no se exigen roles específicos, dejamos pasar
+      if (rolesPermitidos.length === 0) return next();
+      
+      // Verificar si el usuario tiene al menos uno de los roles permitidos
+      const tieneRol = req.user.roles && req.user.roles.some(rol => rolesPermitidos.includes(rol));
+      if (!tieneRol) {
+        return res.status(403).json({ error: 'No tienes permisos suficientes (Roles requeridos: ' + rolesPermitidos.join(', ') + ')' });
+      }
+      next();
+    } catch (err) {
+      return res.status(401).json({ error: 'Token inválido o expirado' });
+    }
+  };
+};
+
 // POST - Iniciar sesión por PIN
 app.post('/api/login', (req, res) => {
   const { usuario, pin } = req.body;
@@ -1051,15 +1425,37 @@ app.post('/api/login', (req, res) => {
       loginAttempts[usuario].bloqueadoHasta = null;
     }
 
-    // Verificar si es administrador y está usando el PIN por defecto "1234"
-    const forcePinChange = (row.rol === 'admin' && hashedPin === hashPin('1234'));
+    // Fetch multiple roles
+    db.all(`SELECT rol_id FROM usuario_roles WHERE usuario_id = ?`, [row.id], (errRoles, rolesRows) => {
+      let roles = [];
+      if (!errRoles && rolesRows && rolesRows.length > 0) {
+        roles = rolesRows.map(r => r.rol_id);
+      } else if (row.rol) {
+        // Fallback to legacy single role if no mapping exists
+        roles = [row.rol];
+      }
 
-    logAuditoria(row.nombre, 'login', `Inicio de sesión exitoso como ${row.rol}`);
-    res.json({ 
-      success: true, 
-      usuario: row.nombre, 
-      rol: row.rol, 
-      forcePinChange 
+      // Verificar si es administrador y está usando el PIN por defecto "1234"
+      const isAdmin = roles.includes('admin');
+      const forcePinChange = (isAdmin && hashedPin === hashPin('1234'));
+
+      logAuditoria(row.nombre, 'login', `Inicio de sesión exitoso con roles: ${roles.join(', ')}`);
+
+      // Generate JWT Token
+      const tokenPayload = {
+        id: row.id,
+        nombre: row.nombre,
+        roles: roles
+      };
+      const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '12h' });
+
+      res.json({ 
+        success: true, 
+        usuario: row.nombre, 
+        roles: roles,
+        token: token,
+        forcePinChange 
+      });
     });
   });
 });
@@ -1074,66 +1470,85 @@ app.post('/api/logout', (req, res) => {
 // ─── GESTIÓN DE USUARIOS ───
 // GET - Obtener usuarios (excluyendo PIN por seguridad)
 app.get('/api/usuarios', (req, res) => {
-  db.all(`SELECT id, nombre, rol, activo FROM usuarios ORDER BY nombre ASC`, [], (err, rows) => {
+  const query = `
+    SELECT u.id, u.nombre, u.rol as legacy_rol, u.activo, GROUP_CONCAT(ur.rol_id) as roles
+    FROM usuarios u
+    LEFT JOIN usuario_roles ur ON u.id = ur.usuario_id
+    GROUP BY u.id
+    ORDER BY u.nombre ASC
+  `;
+  db.all(query, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ usuarios: rows });
+    const usuarios = rows.map(r => ({
+      id: r.id,
+      nombre: r.nombre,
+      activo: r.activo,
+      roles: r.roles ? r.roles.split(',') : (r.legacy_rol ? [r.legacy_rol] : [])
+    }));
+    res.json({ usuarios });
   });
 });
 
 // POST - Crear o actualizar usuario
-app.post('/api/usuarios', (req, res) => {
-  const { id, nombre, pin, rol, activo, administrador_usuario } = req.body;
+app.post('/api/usuarios', authorize(['admin']), (req, res) => {
+  const { id, nombre, pin, roles, activo, administrador_usuario } = req.body;
+  const dbRoles = Array.isArray(roles) ? roles : [];
+  // For backwards compatibility logic if necessary, though we just use roles
+  const legacyRol = dbRoles[0] || 'pedido';
   
+  const syncRoles = (userId, successMessage, res) => {
+    db.run(`DELETE FROM usuario_roles WHERE usuario_id = ?`, [userId], function(err) {
+      if (err) return res.status(400).json({ error: err.message });
+      if (dbRoles.length === 0) {
+        logAuditoria(administrador_usuario || req.user?.nombre || 'Admin', id ? 'usuario_editado' : 'usuario_creado', successMessage);
+        return res.json({ success: true, id: userId });
+      }
+      
+      let placeholders = dbRoles.map(() => '(?, ?)').join(',');
+      let params = [];
+      dbRoles.forEach(r => { params.push(userId, r); });
+      
+      db.run(`INSERT INTO usuario_roles (usuario_id, rol_id) VALUES ${placeholders}`, params, function(err2) {
+        if (err2) return res.status(400).json({ error: err2.message });
+        logAuditoria(administrador_usuario || req.user?.nombre || 'Admin', id ? 'usuario_editado' : 'usuario_creado', successMessage);
+        res.json({ success: true, id: userId });
+      });
+    });
+  };
+
   if (id) {
-    // Actualización de usuario existente
+    // Actualización
     if (pin) {
-      // Si se desea actualizar el PIN
       if (pin.length < 4 || pin.length > 6 || isNaN(Number(pin))) {
         return res.status(400).json({ error: 'El PIN debe tener entre 4 y 6 dígitos' });
       }
       const hashed = hashPin(pin);
-      db.run(
-        `UPDATE usuarios SET nombre=?, pin=?, rol=? WHERE id=?`,
-        [nombre, hashed, rol, id],
-        function (err) {
-          if (err) return res.status(400).json({ error: err.message });
-          logAuditoria(administrador_usuario, 'pin_cambiado', `PIN y datos actualizados para usuario: ${nombre}`);
-          res.json({ success: true });
-        }
-      );
+      db.run(`UPDATE usuarios SET nombre=?, pin=?, rol=? WHERE id=?`, [nombre, hashed, legacyRol, id], function (err) {
+        if (err) return res.status(400).json({ error: err.message });
+        syncRoles(id, `PIN, roles y datos actualizados para usuario: ${nombre}`, res);
+      });
     } else {
-      // Actualizar solo nombre y rol
-      db.run(
-        `UPDATE usuarios SET nombre=?, rol=? WHERE id=?`,
-        [nombre, rol, id],
-        function (err) {
-          if (err) return res.status(400).json({ error: err.message });
-          logAuditoria(administrador_usuario, 'usuario_editado', `Datos actualizados para usuario: ${nombre}`);
-          res.json({ success: true });
-        }
-      );
+      db.run(`UPDATE usuarios SET nombre=?, rol=? WHERE id=?`, [nombre, legacyRol, id], function (err) {
+        if (err) return res.status(400).json({ error: err.message });
+        syncRoles(id, `Datos y roles actualizados para usuario: ${nombre}`, res);
+      });
     }
   } else {
-    // Crear nuevo usuario
+    // Crear
     if (!pin || pin.length < 4 || pin.length > 6 || isNaN(Number(pin))) {
       return res.status(400).json({ error: 'El PIN debe tener entre 4 y 6 dígitos' });
     }
     const hashed = hashPin(pin);
     const activoVal = activo !== false ? 1 : 0;
-    db.run(
-      `INSERT INTO usuarios (nombre, pin, rol, activo) VALUES (?, ?, ?, ?)`,
-      [nombre, hashed, rol, activoVal],
-      function (err) {
-        if (err) return res.status(400).json({ error: err.message });
-        logAuditoria(administrador_usuario, 'usuario_creado', `Nuevo usuario creado: ${nombre} (${rol})`);
-        res.json({ success: true, id: this.lastID });
-      }
-    );
+    db.run(`INSERT INTO usuarios (nombre, pin, rol, activo) VALUES (?, ?, ?, ?)`, [nombre, hashed, legacyRol, activoVal], function (err) {
+      if (err) return res.status(400).json({ error: err.message });
+      syncRoles(this.lastID, `Nuevo usuario creado: ${nombre} (${dbRoles.join(', ')})`, res);
+    });
   }
 });
 
 // PUT - Activar/Desactivar estado de usuario
-app.put('/api/usuarios/:id/estado', (req, res) => {
+app.put('/api/usuarios/:id/estado', authorize(['admin']), (req, res) => {
   const { id } = req.params;
   const { activo, administrador_usuario } = req.body;
   const activoVal = activo ? 1 : 0;
@@ -1141,19 +1556,36 @@ app.put('/api/usuarios/:id/estado', (req, res) => {
   db.get(`SELECT nombre FROM usuarios WHERE id = ?`, [id], (errGet, userRow) => {
     if (errGet || !userRow) return res.status(404).json({ error: 'Usuario no encontrado' });
     
-    db.run(
-      `UPDATE usuarios SET activo = ? WHERE id = ?`,
-      [activoVal, id],
-      function (err) {
-        if (err) return res.status(400).json({ error: err.message });
-        const accionStr = activo ? 'usuario_activado' : 'usuario_desactivado';
-        const detalleStr = activo ? `Usuario reactivado: ${userRow.nombre}` : `Usuario desactivado: ${userRow.nombre}`;
-        logAuditoria(administrador_usuario, accionStr, detalleStr);
-        res.json({ success: true });
-      }
-    );
+    db.run(`UPDATE usuarios SET activo = ? WHERE id = ?`, [activoVal, id], function (err) {
+      if (err) return res.status(400).json({ error: err.message });
+      const accionStr = activo ? 'usuario_activado' : 'usuario_desactivado';
+      const detalleStr = activo ? `Usuario reactivado: ${userRow.nombre}` : `Usuario desactivado: ${userRow.nombre}`;
+      logAuditoria(administrador_usuario || req.user?.nombre || 'Admin', accionStr, detalleStr);
+      res.json({ success: true });
+    });
   });
 });
+
+// DELETE - Eliminar usuario
+app.delete('/api/usuarios/:id', authorize(['admin']), (req, res) => {
+  const { id } = req.params;
+  const { administrador_usuario } = req.body;
+
+  db.get(`SELECT nombre FROM usuarios WHERE id = ?`, [id], (errGet, userRow) => {
+    if (errGet || !userRow) return res.status(404).json({ error: 'Usuario no encontrado' });
+    
+    db.run(`DELETE FROM usuarios WHERE id = ?`, [id], function(err) {
+      if (err) return res.status(400).json({ error: err.message });
+      // Thanks to ON DELETE CASCADE, usuario_roles are also deleted if pragma foreign_keys=ON is active, 
+      // but if not, let's explicitly delete them to be safe
+      db.run(`DELETE FROM usuario_roles WHERE usuario_id = ?`, [id]);
+      
+      logAuditoria(administrador_usuario || req.user?.nombre || 'Admin', 'usuario_eliminado', `Usuario eliminado permanentemente: ${userRow.nombre}`);
+      res.json({ success: true });
+    });
+  });
+});
+
 
 // ─── EDICIÓN DE PEDIDO ───
 // PUT - Actualizar pedido completo (edición de mesero)
@@ -1161,14 +1593,18 @@ app.put('/api/pedidos/:uuid', (req, res) => {
   const { uuid } = req.params;
   const { items, usuario } = req.body;
 
-  db.get(`SELECT mesa FROM pedidos WHERE uuid = ?`, [uuid], (errGet, pRow) => {
+  db.get(`SELECT mesa, estado FROM pedidos WHERE uuid = ?`, [uuid], (errGet, pRow) => {
     const mesaLabel = pRow ? pRow.mesa : 'desconocida';
+    const estadoActual = pRow ? pRow.estado : 'activo';
     db.run(
       `UPDATE pedidos SET items = ? WHERE uuid = ?`,
       [JSON.stringify(items), uuid],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'pedido_editado', `Pedido editado para mesa ${mesaLabel} (${items.length} productos en total)`);
+        
+        io.emit('pedido_estado_cambiado', { uuid, items, nuevoEstado: estadoActual });
+        
         res.json({ success: true });
       }
     );
@@ -1187,7 +1623,7 @@ app.get('/api/ventas/:id/detalles', (req, res) => {
 
 // ─── HISTORIAL DE AUDITORÍA ───
 // GET - Obtener logs de auditoría con filtros opcionales
-app.get('/api/auditoria', (req, res) => {
+app.get('/api/auditoria', authorize(['admin']), (req, res) => {
   const { usuario, fecha, accion } = req.query;
   let query = `SELECT * FROM auditoria WHERE 1=1`;
   const params = [];

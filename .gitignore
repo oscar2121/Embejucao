@@ -49,3 +49,6 @@ android/assets/logs/
 # System files
 .DS_Store
 Thumbs.db
+
+desktop-app/dist-electron/
+cloudflared.exe

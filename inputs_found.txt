@@ -1,0 +1,382 @@
+--- Line 1354 ---
+
+                <TextInput
+                  style={[s.formInput, { fontSize: 14, marginBottom: 16 }]}
+                  placeholder="Ej: 192.168.1.100"
+                  placeholderTextColor={C.text3}
+                  value={serverIP}
+                  onChangeText={(ip) => {
+                    setServerIP(ip);
+                    updateGlobalApiUrl(ip);
+                  }}
+                  keyboardType="numeric"
+                />
+
+--- Line 1484 ---
+
+            <TextInput
+              style={[s.formInput, { marginBottom: 14, letterSpacing: 5, fontSize: 18, textAlign: 'center' }]}
+              placeholder="••••••"
+              placeholderTextColor={C.text3}
+              keyboardType="numeric"
+              maxLength={6}
+              secureTextEntry
+              value={newAdminPin}
+              onChangeText={setNewAdminPin}
+            />
+
+--- Line 1496 ---
+
+            <TextInput
+              style={[s.formInput, { marginBottom: 20, letterSpacing: 5, fontSize: 18, textAlign: 'center' }]}
+              placeholder="••••••"
+              placeholderTextColor={C.text3}
+              keyboardType="numeric"
+              maxLength={6}
+              secureTextEntry
+              value={confirmNewAdminPin}
+              onChangeText={setConfirmNewAdminPin}
+            />
+
+--- Line 1625 ---
+
+              <TextInput
+                style={[s.formInput, { fontSize: 24, letterSpacing: 8, textAlign: 'center', marginBottom: 20, backgroundColor: C.bg }]}
+                placeholder="••••"
+                placeholderTextColor={C.text3}
+                secureTextEntry
+                keyboardType="numeric"
+                maxLength={6}
+                value={loginPinInput}
+                onChangeText={setLoginPinInput}
+                autoFocus
+              />
+
+--- Line 1958 ---
+
+                <TextInput
+                  style={{
+                    backgroundColor: C.surf2,
+                    borderWidth: 1.5,
+                    borderColor: C.border,
+                    borderRadius: 8,
+                    padding: 10,
+                    color: C.text,
+                    fontSize: 14,
+                    minHeight: 60,
+                    textAlignVertical: 'top',
+                    marginBottom: 20
+                  }}
+                  placeholder="Ej. Error al digitar / Mesa equivocada / Cliente cancela"
+                  placeholderTextColor={C.text3}
+
+--- Line 2850 ---
+
+                  <TextInput
+                    style={[s.notaInput, { opacity: isLocked ? 0.6 : 1 }]}
+                    placeholder={isLocked ? "Sin notas" : "Nota para cocina..."}
+                    placeholderTextColor={C.text3}
+                    value={item.nota}
+                    editable={!isLocked}
+                    onChangeText={t => setCarrito(c => c.map((it, i) => i === idx ? { ...it, nota: t } : it))}
+                  />
+
+--- Line 2939 ---
+
+                <TextInput
+                  style={[s.formInput, { height: 60, textAlignVertical: 'top' }]}
+                  placeholder="Ej. Sin tomate, poca salsa..."
+                  placeholderTextColor={C.text3}
+                  value={configObservaciones}
+                  onChangeText={setConfigObservaciones}
+                  multiline={true}
+                />
+
+--- Line 3445 ---
+
+          <TextInput
+            style={{
+              width: '100%',
+              backgroundColor: C.surface,
+              borderWidth: 1.5,
+              borderColor: C.border,
+              borderRadius: 8,
+              padding: 12,
+              fontSize: 16,
+              color: C.text,
+              marginBottom: 20
+            }}
+            placeholder="Ej. 100000"
+            placeholderTextColor={C.text3}
+            keyboardType="numeric"
+
+--- Line 3735 ---
+
+                    <TextInput 
+                      style={[s.formInput, { fontSize: 18, fontWeight: 'bold' }]} 
+                      placeholder="Ej. 20000" 
+                      placeholderTextColor={C.text3} 
+                      keyboardType="numeric"
+                      value={efectivoMixto} 
+                      onChangeText={setEfectivoMixto} 
+                    />
+
+--- Line 3755 ---
+
+                    <TextInput style={s.formInput} placeholder="Escribe el nombre del cliente..." placeholderTextColor={C.text3} value={nombreDeudor} onChangeText={setNombreDeudor} />
+
+--- Line 3861 ---
+
+                <TextInput
+                  style={{
+                    backgroundColor: C.surf2,
+                    borderWidth: 1.5,
+                    borderColor: C.border,
+                    borderRadius: 8,
+                    padding: 10,
+                    color: C.text,
+                    fontSize: 16,
+                    marginBottom: 20
+                  }}
+                  placeholder="Digita el efectivo total contado"
+                  placeholderTextColor={C.text3}
+                  keyboardType="numeric"
+                  value={cierreReal}
+
+--- Line 4730 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. Hamburguesa doble"
+                    placeholderTextColor={C.text3}
+                    value={newProdName}
+                    onChangeText={setNewProdName}
+                  />
+
+--- Line 4739 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. 18000"
+                    placeholderTextColor={C.text3}
+                    keyboardType="numeric"
+                    value={newProdPrice}
+                    onChangeText={setNewProdPrice}
+                  />
+
+--- Line 4749 ---
+
+                  <TextInput
+                    style={[s.formInput, { minHeight: 60, textAlignVertical: 'top' }]}
+                    placeholder="Ingredientes o detalles..."
+                    placeholderTextColor={C.text3}
+                    multiline={true}
+                    numberOfLines={3}
+                    value={newProdDesc}
+                    onChangeText={setNewProdDesc}
+                  />
+
+--- Line 4810 ---
+
+                      <TextInput
+                        style={s.formInput}
+                        placeholder="Ej: Empanadas"
+                        placeholderTextColor={C.text3}
+                        value={nuevaCategoria}
+                        onChangeText={setNuevaCategoria}
+                      />
+
+--- Line 5018 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. Compra de tomate y cebolla"
+                    placeholderTextColor={C.text3}
+                    value={gastoDesc}
+                    onChangeText={setGastoDesc}
+                  />
+
+--- Line 5027 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. 25000"
+                    placeholderTextColor={C.text3}
+                    keyboardType="numeric"
+                    value={gastoValor}
+                    onChangeText={setGastoValor}
+                  />
+
+--- Line 5232 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. Carne de Res (hamburguesa)"
+                    placeholderTextColor={C.text3}
+                    value={insumoNombre}
+                    onChangeText={setInsumoNombre}
+                  />
+
+--- Line 5262 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. 10"
+                    placeholderTextColor={C.text3}
+                    keyboardType="numeric"
+                    value={insumoCant}
+                    onChangeText={setInsumoCant}
+                  />
+
+--- Line 5272 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. 5"
+                    placeholderTextColor={C.text3}
+                    keyboardType="numeric"
+                    value={insumoMin}
+                    onChangeText={setInsumoMin}
+                  />
+
+--- Line 5282 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. 12000"
+                    placeholderTextColor={C.text3}
+                    keyboardType="numeric"
+                    value={insumoCompra}
+                    onChangeText={setInsumoCompra}
+                  />
+
+--- Line 5337 ---
+
+                    <TextInput
+                      style={s.formInput}
+                      placeholder={movTipo === 'entrada' ? "Ej. 5" : `Actual: ${insumoSel.cantidad_actual}`}
+                      placeholderTextColor={C.text3}
+                      keyboardType="numeric"
+                      value={movCant}
+                      onChangeText={setMovCant}
+                    />
+
+--- Line 5347 ---
+
+                    <TextInput
+                      style={s.formInput}
+                      placeholder="Ej. Compra de inventario / conteo semanal"
+                      placeholderTextColor={C.text3}
+                      value={movMotivo}
+                      onChangeText={setMovMotivo}
+                    />
+
+--- Line 5389 ---
+
+                <TextInput
+                  style={[s.formInput, { paddingVertical: 5, fontSize: 12, height: 32 }]}
+                  placeholder="Ej. 2026-06-08"
+                  placeholderTextColor={C.text3}
+                  value={cancelFilterFecha}
+                  onChangeText={setCancelFilterFecha}
+                />
+
+--- Line 5399 ---
+
+                <TextInput
+                  style={[s.formInput, { paddingVertical: 5, fontSize: 12, height: 32 }]}
+                  placeholder="Ej. 3 o Para"
+                  placeholderTextColor={C.text3}
+                  value={cancelFilterMesa}
+                  onChangeText={setCancelFilterMesa}
+                />
+
+--- Line 5409 ---
+
+                <TextInput
+                  style={[s.formInput, { paddingVertical: 5, fontSize: 12, height: 32 }]}
+                  placeholder="Ej. Mesero"
+                  placeholderTextColor={C.text3}
+                  value={cancelFilterUsuario}
+                  onChangeText={setCancelFilterUsuario}
+                />
+
+--- Line 5713 ---
+
+                  <TextInput
+                    style={[s.formInput, { paddingVertical: 6 }]}
+                    placeholder="Ej. Admin"
+                    placeholderTextColor={C.text3}
+                    value={auditUserFilter}
+                    onChangeText={setAuditUserFilter}
+                  />
+
+--- Line 5723 ---
+
+                  <TextInput
+                    style={[s.formInput, { paddingVertical: 6 }]}
+                    placeholder="Ej. 2026-06-08"
+                    placeholderTextColor={C.text3}
+                    value={auditFechaFilter}
+                    onChangeText={setAuditFechaFilter}
+                  />
+
+--- Line 5907 ---
+
+                <TextInput style={[s.formInput, { marginBottom: 10 }]} placeholder="Ej. 192.168.1.100" value={printerIP} onChangeText={setPrinterIP} />
+
+--- Line 6028 ---
+
+                <TextInput
+                  style={s.formInput}
+                  placeholder="Ej. Juan Pérez"
+                  placeholderTextColor={C.text3}
+                  value={newUserName}
+                  onChangeText={setNewUserName}
+                />
+
+--- Line 6039 ---
+
+                    <TextInput
+                      style={s.formInput}
+                      placeholder="Ej. 1234"
+                      placeholderTextColor={C.text3}
+                      keyboardType="numeric"
+                      maxLength={6}
+                      value={newUserPin}
+                      onChangeText={setNewUserPin}
+                    />
+
+--- Line 6145 ---
+
+                <TextInput
+                  style={[s.formInput, { letterSpacing: 4, textAlign: 'center', fontSize: 18 }]}
+                  placeholder="••••••"
+                  placeholderTextColor={C.text3}
+                  keyboardType="numeric"
+                  maxLength={6}
+                  value={newPinVal}
+                  onChangeText={setNewPinVal}
+                  secureTextEntry
+                />
+
+--- Line 6192 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="Ej. Pago de Internet"
+                    placeholderTextColor={C.text3}
+                    value={formGasto.descripcion}
+                    onChangeText={txt => setFormGasto({...formGasto, descripcion: txt})}
+                  />
+
+--- Line 6222 ---
+
+                  <TextInput
+                    style={s.formInput}
+                    placeholder="0"
+                    placeholderTextColor={C.text3}
+                    keyboardType="numeric"
+                    value={formGasto.valor}
+                    onChangeText={txt => setFormGasto({...formGasto, valor: txt})}
+                  />
