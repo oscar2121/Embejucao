@@ -1659,15 +1659,6 @@ export default function App() {
               ))
             )}
           </View>
-
-          <TouchableOpacity
-            onPress={() => setIpConfigured(false)}
-            style={{ alignSelf: "center", marginTop: 25 }}
-          >
-            <Text style={{ fontSize: 12, color: C.cream2, textDecorationLine: "underline" }}>
-              ⚙️ Cambiar IP del Servidor ({serverIP})
-            </Text>
-          </TouchableOpacity>
         </ScrollView>
         {renderUpdateModal()}
 
@@ -1779,21 +1770,6 @@ export default function App() {
                 <Text style={{ color: "white", fontSize: 11, fontWeight: "800" }}>Silenciar</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity
-              onPress={abrirMenuConfig}
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 17,
-                borderWidth: 1.5,
-                borderColor: "rgba(245,230,200,0.2)",
-                backgroundColor: "rgba(245,230,200,0.06)",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Ionicons name="settings-outline" size={16} color={C.cream2} />
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -2115,45 +2091,6 @@ export default function App() {
                 <TouchableOpacity
                   onPress={() => {
                     setAjustesModalVisible(false);
-                    setIpConfigured(false);
-                  }}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    backgroundColor: C.surf2,
-                    padding: 14,
-                    borderRadius: 10,
-                    borderWidth: 1.5,
-                    borderColor: C.border,
-                    gap: 10
-                  }}
-                >
-                  <Text style={{ fontSize: 18 }}>🔌</Text>
-                  <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>Cambiar IP del Servidor</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={async () => {
-                    await seleccionarAudioLocal();
-                  }}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    backgroundColor: C.surf2,
-                    padding: 14,
-                    borderRadius: 10,
-                    borderWidth: 1.5,
-                    borderColor: C.border,
-                    gap: 10
-                  }}
-                >
-                  <Text style={{ fontSize: 18 }}>🎵</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>Tono de Alerta</Text>
-                    <Text style={{ fontSize: 10, color: C.text3, marginTop: 2 }} numberOfLines={1}>
-                      {customSoundUri ? "Personalizado cargado" : "Tono por defecto"}
-                    </Text>
-                  </View>
                 </TouchableOpacity>
 
                 <TouchableOpacity
