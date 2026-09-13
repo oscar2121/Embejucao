@@ -2088,10 +2088,7 @@ export default function App() {
               </View>
 
               <View style={{ padding: 18, gap: 12 }}>
-                <TouchableOpacity
-                  onPress={() => {
-                    setAjustesModalVisible(false);
-                </TouchableOpacity>
+
 
                 <TouchableOpacity
                   onPress={() => {
