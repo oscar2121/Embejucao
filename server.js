@@ -183,6 +183,10 @@ db.serialize(() => {
     db.run(`ALTER TABLE gastos ADD COLUMN usuario TEXT`, (errAlter) => {
       // Ignorar error si la columna ya existe
     });
+    // Migration: Add uuid column for idempotency
+    db.run(`ALTER TABLE gastos ADD COLUMN uuid TEXT UNIQUE`, (errAlter) => {
+      // Ignorar error
+    });
   });
 
   // 4. Insumos (Inventario)
@@ -1185,17 +1189,24 @@ app.get('/api/finanzas/reporte', (req, res) => {
 });
 // GET - Dashboard Financiero Interactivo
 app.get('/api/dashboard/financiero', authorize(['admin']), (req, res) => {
-  const { rango } = req.query; // 'hoy', 'semana', 'mes'
+  const { rango } = req.query; // 'hoy', 'semana', 'mes', o 'YYYY-MM-DD'
   const hoy = new Date().toISOString().split('T')[0];
   let dateConditionVentas = `date(datetime(fecha, 'localtime')) = date('now', 'localtime')`;
   let dateConditionGastos = `date(datetime(fecha, 'localtime')) = date('now', 'localtime')`;
+  let dateConditionCaja = `date(datetime(fecha_apertura, 'localtime')) = date('now', 'localtime')`;
 
   if (rango === 'semana') {
     dateConditionVentas = `date(datetime(fecha, 'localtime')) >= date('now', '-6 days', 'localtime')`;
     dateConditionGastos = `date(datetime(fecha, 'localtime')) >= date('now', '-6 days', 'localtime')`;
+    dateConditionCaja = `date(datetime(fecha_apertura, 'localtime')) >= date('now', '-6 days', 'localtime')`;
   } else if (rango === 'mes') {
     dateConditionVentas = `strftime('%Y-%m', datetime(fecha, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`;
     dateConditionGastos = `strftime('%Y-%m', datetime(fecha, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`;
+    dateConditionCaja = `strftime('%Y-%m', datetime(fecha_apertura, 'localtime')) = strftime('%Y-%m', 'now', 'localtime')`;
+  } else if (rango && /^\d{4}-\d{2}-\d{2}$/.test(rango)) {
+    dateConditionVentas = `date(datetime(fecha, 'localtime')) = '${rango}'`;
+    dateConditionGastos = `date(datetime(fecha, 'localtime')) = '${rango}'`;
+    dateConditionCaja = `date(datetime(fecha_apertura, 'localtime')) = '${rango}'`;
   }
 
   // 1. Ventas
@@ -1220,15 +1231,30 @@ app.get('/api/dashboard/financiero', authorize(['admin']), (req, res) => {
             db.get(`SELECT SUM(total) as total FROM ventas WHERE (${dateConditionVentas}) AND metodo_pago = 'Transferencia'`, [], (err, rTrans) => {
               const transferencia = rTrans ? rTrans.total || 0 : 0;
 
-              res.json({
-                rango: rango || 'hoy',
-                ventas,
-                gastos,
-                balance: ventas - gastos,
-                gastosPorCategoria,
-                ultimosGastos: ultimosGastos || [],
-                efectivo,
-                transferencia
+              // 6. Flujo de Ventas (Agrupado por hora o día)
+              let flowSelect = "strftime('%H:00', datetime(fecha, 'localtime')) as label";
+              if (rango === 'semana' || rango === 'mes') {
+                flowSelect = "date(datetime(fecha, 'localtime')) as label";
+              }
+
+              db.all(`SELECT ${flowSelect}, SUM(total) as total FROM ventas WHERE ${dateConditionVentas} GROUP BY label ORDER BY label ASC`, [], (err, flujoVentas) => {
+                
+                // 7. Sesiones de Caja
+                db.all(`SELECT * FROM caja_sesiones WHERE ${dateConditionCaja} ORDER BY id DESC`, [], (err, cajaSesiones) => {
+
+                  res.json({
+                    rango: rango || 'hoy',
+                    ventas,
+                    gastos,
+                    balance: ventas - gastos,
+                    gastosPorCategoria,
+                    ultimosGastos: ultimosGastos || [],
+                    efectivo,
+                    transferencia,
+                    flujoVentas: flujoVentas || [],
+                    cajaSesiones: cajaSesiones || []
+                  });
+                });
               });
             });
           });
@@ -1693,70 +1719,54 @@ app.get('/api/download-asset/:assetId/:filename', async (req, res) => {
   }
 });
 
-// Endpoint para comprobar actualizaciones de la app y del servidor
+// Endpoint para comprobar actualizaciones de la app y del servidor (Dual)
 app.get('/api/check-update', async (req, res) => {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token || token === 'tu_token_personal_de_github_aqui') {
-    console.error('❌ Error de actualización: GITHUB_TOKEN no configurado en el servidor.');
-    return res.status(500).json({ error: 'GitHub Token no configurado en el servidor' });
-  }
-
+  const platform = req.query.platform || 'mobile'; // 'mobile' o 'desktop'
+  
   try {
-    console.log('📡 Buscando última release en GitHub...');
+    console.log(`?? Buscando última release en GitHub para plataforma: ${platform}...`);
     const response = await axios.get(
       'https://api.github.com/repos/oscar2121/Embejucao/releases/latest',
       {
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'Node-Express-Server'
+          'User-Agent': 'Embejucao-App'
         },
         timeout: 10000 // 10s timeout
       }
     );
 
     const release = response.data;
-    const rawVersion = release.tag_name;
-    const version = rawVersion.replace(/^v/, ''); // Limpiar 'v'
+    const latestVersion = release.tag_name ? release.tag_name.replace(/^v/, '') : '';
 
-    // Extraer notas de versión (changelog)
     const notes = release.body 
       ? release.body.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0)
       : [];
 
-    let apkAsset = null;
-    let zipAsset = null;
-
+    let downloadUrl = null;
     if (release.assets && Array.isArray(release.assets)) {
-      apkAsset = release.assets.find(a => a.name.toLowerCase().endsWith('.apk'));
-      zipAsset = release.assets.find(a => a.name.toLowerCase().endsWith('.zip'));
+      const asset = release.assets.find(a => {
+        const name = a.name.toLowerCase();
+        return platform === 'mobile' ? name.endsWith('.apk') : name.endsWith('.exe');
+      });
+      if (asset) {
+        downloadUrl = asset.browser_download_url;
+      }
     }
 
-    // Resolver IP/Puerto dinámicamente según la petición recibida
-    const host = req.get('host') || `localhost:${PORT}`;
-    const protocol = req.protocol || 'http';
-    const serverBaseUrl = `${protocol}://${host}`;
-
-    const apkUrl = apkAsset 
-      ? `${serverBaseUrl}/api/download-asset/${apkAsset.id}/${apkAsset.name}`
-      : null;
-
-    const serverUrl = zipAsset 
-      ? `${serverBaseUrl}/api/download-asset/${zipAsset.id}/${zipAsset.name}`
-      : null;
-
     res.json({
-      version,
-      notes,
-      apkUrl,
-      serverUrl
+      updateAvailable: true,
+      latestVersion,
+      releaseNotes: notes,
+      downloadUrl
     });
   } catch (error) {
-    console.error('❌ Error al buscar actualizaciones en GitHub:', error.message);
-    res.status(500).json({ 
-      error: 'Error al conectar con GitHub para buscar actualizaciones',
-      details: error.message 
-    });
+    // Si GitHub devuelve 404 significa que no hay releases an.
+    if (error.response && error.response.status === 404) {
+      return res.json({ updateAvailable: false, message: 'Sin releases disponibles' });
+    }
+    console.error('?O Error al buscar actualizaciones en GitHub:', error.message);
+    res.json({ updateAvailable: false, message: 'Error de red o lmite de GitHub' });
   }
 });
 

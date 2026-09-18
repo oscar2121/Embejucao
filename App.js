@@ -2,16 +2,16 @@ import { useState, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, SafeAreaView,
   StatusBar, Alert, Animated, FlatList, Modal, Switch, BackHandler, Linking,
-  Vibration, AppState, Image, Dimensions
+  Vibration, AppState, Image, Dimensions, Keyboard
 } from 'react-native';
-import { PieChart, LineChart } from 'react-native-chart-kit';
+import { PieChart, LineChart, BarChart } from 'react-native-chart-kit';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import uuid from 'react-native-uuid';
 import axios from 'axios';
 axios.defaults.headers.common['Bypass-Tunnel-Reminder'] = 'true';
 axios.defaults.headers.common['ngrok-skip-browser-warning'] = 'true';
 
-// Interceptor global para añadir JWT a todas las peticiones
+// Interceptor global para aÃ±adir JWT a todas las peticiones
 axios.interceptors.request.use(
   async config => {
     try {
@@ -91,11 +91,42 @@ import KeepAwake from 'react-native-keep-awake';
 import DocumentPicker from 'react-native-document-picker';
 import RNFS from 'react-native-fs';
 import io from 'socket.io-client';
+
+// --- OFFLINE QUEUE MOBILE ---
+const syncOfflineQueueMobile = async () => {
+  try {
+    const queueStr = await AsyncStorage.getItem('@offline_queue');
+    if (!queueStr) return;
+    const queue = JSON.parse(queueStr);
+    if (queue.length === 0) return;
+    
+    console.log(`Sincronizando ${queue.length} tareas pendientes desde mvil...`);
+    const remaining = [];
+    for (let req of queue) {
+      try {
+        await axios({
+          method: req.method,
+          url: req.url,
+          data: req.data,
+          headers: req.headers || { 'ngrok-skip-browser-warning': 'true' },
+          timeout: 10000
+        });
+      } catch (e) {
+        remaining.push(req);
+      }
+    }
+    await AsyncStorage.setItem('@offline_queue', JSON.stringify(remaining));
+  } catch (e) {}
+};
+
+setInterval(syncOfflineQueueMobile, 10000);
+// ----------------------------
+
 import PushNotification from 'react-native-push-notification';
 
 PushNotification.configure({
   onNotification: function (notification) {
-    console.log("NOTIFICACIÓN RECIBIDA:", notification);
+    console.log("NOTIFICACIÃ“N RECIBIDA:", notification);
   },
   popInitialNotification: true,
   requestPermissions: false,
@@ -161,27 +192,37 @@ const obtenerMinutosTranscurridos = (horaPedidoString) => {
 };
 
 
-const APP_VERSION = "1.0.0"; // Versión actual de la app móvil (APK)
 
-// Comparador de versiones semánticas en el cliente
-const isVersionNewerMobile = (local, remote) => {
-  if (!remote) return false;
-  const cleanLocal = local.replace(/^v/, '').split('.').map(Number);
-  const cleanRemote = remote.replace(/^v/, '').split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const l = cleanLocal[i] || 0;
-    const r = cleanRemote[i] || 0;
-    if (r > l) return true;
-    if (l > r) return false;
-  }
-  return false;
+const cleanNum = (val) => {
+  if (val === null || val === undefined) return '';
+  return String(val).replace(/[^0-9]/g, '');
+};
+
+const formatMoneyInput = (val) => {
+  if (val === null || val === undefined) return '';
+  const numStr = String(val).replace(/[^0-9]/g, '');
+  if (!numStr) return '';
+  const parsed = parseInt(numStr, 10);
+  return isNaN(parsed) ? '' : parsed.toLocaleString('es-CO');
+};
+
+const APP_VERSION = "1.0.0"; // VersiÃ³n actual de la app mÃ³vil (APK)
+
+// Comparador de versiones semÃ¡nticas en el cliente
+const isNewerVersion = (latest, current) => {
+  const clean = (v) => String(v || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const [lMaj, lMin, lPat] = clean(latest);
+  const [cMaj, cMin, cPat] = clean(current);
+  if (lMaj !== cMaj) return lMaj > cMaj;
+  if (lMin !== cMin) return lMin > cMin;
+  return lPat > cPat;
 };
 
 // API CONFIG
-let API_URL = 'https://brisket-pregnant-squiggly.ngrok-free.dev/api'; // URL fija del túnel
+let API_URL = 'https://brisket-pregnant-squiggly.ngrok-free.dev/api'; // URL fija del tÃºnel
 const SYNC_INTERVAL = 5000; // Sincronizar cada 5 segundos
 
-// Función para cambiar la IP
+// FunciÃ³n para cambiar la IP
 const updateGlobalApiUrl = (ip) => {
   let cleanIP = ip ? ip.trim() : '';
   if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
@@ -197,45 +238,45 @@ const updateGlobalApiUrl = (ip) => {
 // DATOS INICIALES
 // ============================================================
 const CATEGORIAS = [
-  { id: 1, nombre: "🍔 Hamburguesas" },
-  { id: 2, nombre: "🌭 Perros Calientes" },
-  { id: 3, nombre: "🌯 Burritos" },
-  { id: 4, nombre: "🍟 Salchipapas" },
-  { id: 5, nombre: "🌽 Mazorcada" },
-  { id: 6, nombre: "🥤 Jugos Naturales" },
-  { id: 7, nombre: "🍋 Limonadas" },
-  { id: 8, nombre: "🍺 Bebidas / Cervezas" },
-  { id: 9, nombre: "☕ Bebidas Calientes" },
+  { id: 1, nombre: "ðŸ” Hamburguesas" },
+  { id: 2, nombre: "ðŸŒ­ Perros Calientes" },
+  { id: 3, nombre: "ðŸŒ¯ Burritos" },
+  { id: 4, nombre: "ðŸŸ Salchipapas" },
+  { id: 5, nombre: "ðŸŒ½ Mazorcada" },
+  { id: 6, nombre: "ðŸ¥¤ Jugos Naturales" },
+  { id: 7, nombre: "ðŸ‹ Limonadas" },
+  { id: 8, nombre: "ðŸº Bebidas / Cervezas" },
+  { id: 9, nombre: "â˜• Bebidas Calientes" },
 ];
 
 const PRODUCTOS_INICIAL = [
-  { id: 101, cat: 1, nombre: "Clásica", precio: 16000, desc: "Pan artesanal, 125g carne res, queso, vegetales, cebolla en salsa, papa chip", emoji: "🍔", disp: true },
-  { id: 102, cat: 1, nombre: "Especial", precio: 18000, desc: "Pan artesanal, tocineta, plátano maduro, queso, vegetales, papa chip", emoji: "🍔", disp: true },
-  { id: 103, cat: 1, nombre: "Doble Carne", precio: 22000, desc: "Pan artesanal, 250g carne res, queso, vegetales, cebolla en salsa, papa chip", emoji: "🍔", disp: true },
-  { id: 104, cat: 1, nombre: "Mexicana", precio: 18000, desc: "Pan artesanal, carne res, pico de gallo, nachos, jalapeños", emoji: "🍔", disp: true },
-  { id: 201, cat: 2, nombre: "Sencillo", precio: 13000, desc: "Pan artesanal, salchicha, cebolla en salsa, papa chip, queso gratinado con maíz dulce", emoji: "🌭", disp: true },
-  { id: 202, cat: 2, nombre: "Choriperro", precio: 14000, desc: "Pan artesanal, chorizo, tocineta, cebolla en salsa, papa chip y queso gratinado", emoji: "🌭", disp: true },
-  { id: 203, cat: 2, nombre: "Especial", precio: 16000, desc: "Pan artesanal, salchicha ranchera, plátano, tocineta, papa chip, queso gratinado", emoji: "🌭", disp: true },
-  { id: 301, cat: 3, nombre: "Burrito Carne", precio: 16000, desc: "Carne desmechada, plátano maduro, queso, salchicha y maíz dulce", emoji: "🌯", disp: true },
-  { id: 302, cat: 3, nombre: "Burrito Pollo", precio: 16000, desc: "Pollo desmechado, plátano maduro, queso, salchicha y maíz dulce", emoji: "🌯", disp: true },
-  { id: 303, cat: 3, nombre: "Burrito Mixto", precio: 16000, desc: "Carne y pollo desmechado, plátano maduro, queso, salchicha y maíz dulce", emoji: "🌯", disp: true },
-  { id: 401, cat: 4, nombre: "Sencilla", precio: 13000, desc: "300g papa francesa, salchicha y queso gratinado con maíz dulce", emoji: "🍟", disp: true },
-  { id: 402, cat: 4, nombre: "Especial", precio: 20000, desc: "Papa francesa, carne, pollo, lechuga, papa chip, tocineta, chorizo, queso gratinado, salsa de la casa", emoji: "🍟", disp: true },
-  { id: 501, cat: 5, nombre: "Mazorcada Especial", precio: 20000, desc: "Maíz dulce, salchicha, pollo, carne desmechada, tocineta, papa chip, salsa de la casa", emoji: "🌽", disp: true },
-  { id: 601, cat: 6, nombre: "Jugo Agua 12oz", precio: 9000, desc: "Mandarina, Maracuyá, Lulo, Mora, Naranja, Mango, Guanábana o Fresa", emoji: "🥤", disp: true },
-  { id: 602, cat: 6, nombre: "Jugo Agua 16oz", precio: 12000, desc: "Mandarina, Maracuyá, Lulo, Mora, Naranja, Mango, Guanábana o Fresa", emoji: "🥤", disp: true },
-  { id: 603, cat: 6, nombre: "Jugo Leche 12oz", precio: 11000, desc: "Mandarina, Maracuyá, Lulo, Mora, Naranja, Mango, Guanábana o Fresa", emoji: "🥛", disp: true },
-  { id: 604, cat: 6, nombre: "Jugo Leche 16oz", precio: 13000, desc: "Mandarina, Maracuyá, Lulo, Mora, Naranja, Mango, Guanábana o Fresa", emoji: "🥛", disp: true },
-  { id: 605, cat: 6, nombre: "Jugo Combinado", precio: 9000, desc: "Sandía-Fresa-Limón / Maracuyá-Mango / Manzana-Piña-Hierbabuena", emoji: "🍹", disp: true },
-  { id: 701, cat: 7, nombre: "Limonada Mango 12oz", precio: 9000, desc: "Limonada de mango natural", emoji: "🍋", disp: true },
-  { id: 702, cat: 7, nombre: "Limonada Mango 16oz", precio: 12000, desc: "Limonada de mango natural", emoji: "🍋", disp: true },
-  { id: 703, cat: 7, nombre: "Limonada Hierbabuena 12oz", precio: 9000, desc: "Limonada de hierbabuena fresca", emoji: "🍋", disp: true },
-  { id: 704, cat: 7, nombre: "Limonada Hierbabuena 16oz", precio: 12000, desc: "Limonada de hierbabuena fresca", emoji: "🍋", disp: true },
-  { id: 705, cat: 7, nombre: "Limonada Coco 12oz", precio: 9000, desc: "Limonada de coco tropical", emoji: "🍋", disp: true },
-  { id: 706, cat: 7, nombre: "Limonada Coco 16oz", precio: 12000, desc: "Limonada de coco tropical", emoji: "🍋", disp: true },
-  { id: 801, cat: 8, nombre: "Cerveza Club Colombia", precio: 6000, desc: "Cerveza nacional dorada", emoji: "🍺", disp: true },
-  { id: 802, cat: 8, nombre: "Cerveza Corona", precio: 8000, desc: "Cerveza importada", emoji: "🍺", disp: true },
-  { id: 803, cat: 8, nombre: "Gaseosa 350ml", precio: 4000, desc: "Coca-Cola, Postobón o Pepsi", emoji: "🥤", disp: true },
+  { id: 101, cat: 1, nombre: "ClÃ¡sica", precio: 16000, desc: "Pan artesanal, 125g carne res, queso, vegetales, cebolla en salsa, papa chip", emoji: "ðŸ”", disp: true },
+  { id: 102, cat: 1, nombre: "Especial", precio: 18000, desc: "Pan artesanal, tocineta, plÃ¡tano maduro, queso, vegetales, papa chip", emoji: "ðŸ”", disp: true },
+  { id: 103, cat: 1, nombre: "Doble Carne", precio: 22000, desc: "Pan artesanal, 250g carne res, queso, vegetales, cebolla en salsa, papa chip", emoji: "ðŸ”", disp: true },
+  { id: 104, cat: 1, nombre: "Mexicana", precio: 18000, desc: "Pan artesanal, carne res, pico de gallo, nachos, jalapeÃ±os", emoji: "ðŸ”", disp: true },
+  { id: 201, cat: 2, nombre: "Sencillo", precio: 13000, desc: "Pan artesanal, salchicha, cebolla en salsa, papa chip, queso gratinado con maÃ­z dulce", emoji: "ðŸŒ­", disp: true },
+  { id: 202, cat: 2, nombre: "Choriperro", precio: 14000, desc: "Pan artesanal, chorizo, tocineta, cebolla en salsa, papa chip y queso gratinado", emoji: "ðŸŒ­", disp: true },
+  { id: 203, cat: 2, nombre: "Especial", precio: 16000, desc: "Pan artesanal, salchicha ranchera, plÃ¡tano, tocineta, papa chip, queso gratinado", emoji: "ðŸŒ­", disp: true },
+  { id: 301, cat: 3, nombre: "Burrito Carne", precio: 16000, desc: "Carne desmechada, plÃ¡tano maduro, queso, salchicha y maÃ­z dulce", emoji: "ðŸŒ¯", disp: true },
+  { id: 302, cat: 3, nombre: "Burrito Pollo", precio: 16000, desc: "Pollo desmechado, plÃ¡tano maduro, queso, salchicha y maÃ­z dulce", emoji: "ðŸŒ¯", disp: true },
+  { id: 303, cat: 3, nombre: "Burrito Mixto", precio: 16000, desc: "Carne y pollo desmechado, plÃ¡tano maduro, queso, salchicha y maÃ­z dulce", emoji: "ðŸŒ¯", disp: true },
+  { id: 401, cat: 4, nombre: "Sencilla", precio: 13000, desc: "300g papa francesa, salchicha y queso gratinado con maÃ­z dulce", emoji: "ðŸŸ", disp: true },
+  { id: 402, cat: 4, nombre: "Especial", precio: 20000, desc: "Papa francesa, carne, pollo, lechuga, papa chip, tocineta, chorizo, queso gratinado, salsa de la casa", emoji: "ðŸŸ", disp: true },
+  { id: 501, cat: 5, nombre: "Mazorcada Especial", precio: 20000, desc: "MaÃ­z dulce, salchicha, pollo, carne desmechada, tocineta, papa chip, salsa de la casa", emoji: "ðŸŒ½", disp: true },
+  { id: 601, cat: 6, nombre: "Jugo Agua 12oz", precio: 9000, desc: "Mandarina, MaracuyÃ¡, Lulo, Mora, Naranja, Mango, GuanÃ¡bana o Fresa", emoji: "ðŸ¥¤", disp: true },
+  { id: 602, cat: 6, nombre: "Jugo Agua 16oz", precio: 12000, desc: "Mandarina, MaracuyÃ¡, Lulo, Mora, Naranja, Mango, GuanÃ¡bana o Fresa", emoji: "ðŸ¥¤", disp: true },
+  { id: 603, cat: 6, nombre: "Jugo Leche 12oz", precio: 11000, desc: "Mandarina, MaracuyÃ¡, Lulo, Mora, Naranja, Mango, GuanÃ¡bana o Fresa", emoji: "ðŸ¥›", disp: true },
+  { id: 604, cat: 6, nombre: "Jugo Leche 16oz", precio: 13000, desc: "Mandarina, MaracuyÃ¡, Lulo, Mora, Naranja, Mango, GuanÃ¡bana o Fresa", emoji: "ðŸ¥›", disp: true },
+  { id: 605, cat: 6, nombre: "Jugo Combinado", precio: 9000, desc: "SandÃ­a-Fresa-LimÃ³n / MaracuyÃ¡-Mango / Manzana-PiÃ±a-Hierbabuena", emoji: "ðŸ¹", disp: true },
+  { id: 701, cat: 7, nombre: "Limonada Mango 12oz", precio: 9000, desc: "Limonada de mango natural", emoji: "ðŸ‹", disp: true },
+  { id: 702, cat: 7, nombre: "Limonada Mango 16oz", precio: 12000, desc: "Limonada de mango natural", emoji: "ðŸ‹", disp: true },
+  { id: 703, cat: 7, nombre: "Limonada Hierbabuena 12oz", precio: 9000, desc: "Limonada de hierbabuena fresca", emoji: "ðŸ‹", disp: true },
+  { id: 704, cat: 7, nombre: "Limonada Hierbabuena 16oz", precio: 12000, desc: "Limonada de hierbabuena fresca", emoji: "ðŸ‹", disp: true },
+  { id: 705, cat: 7, nombre: "Limonada Coco 12oz", precio: 9000, desc: "Limonada de coco tropical", emoji: "ðŸ‹", disp: true },
+  { id: 706, cat: 7, nombre: "Limonada Coco 16oz", precio: 12000, desc: "Limonada de coco tropical", emoji: "ðŸ‹", disp: true },
+  { id: 801, cat: 8, nombre: "Cerveza Club Colombia", precio: 6000, desc: "Cerveza nacional dorada", emoji: "ðŸº", disp: true },
+  { id: 802, cat: 8, nombre: "Cerveza Corona", precio: 8000, desc: "Cerveza importada", emoji: "ðŸº", disp: true },
+  { id: 803, cat: 8, nombre: "Gaseosa 350ml", precio: 4000, desc: "Coca-Cola, PostobÃ³n o Pepsi", emoji: "ðŸ¥¤", disp: true },
 ];
 
 const MESAS_INICIAL = [
@@ -359,6 +400,13 @@ function SimpleCalendarModal({ visible, onClose, onSelect }) {
 // APP PRINCIPAL
 // ============================================================
 export default function App() {
+  const handlePaymentMethodChange = (metodo) => {
+    Keyboard.dismiss();
+    setMetodoPago(metodo);
+    if (metodo !== 'mixto') setEfectivoMixto('');
+    if (metodo !== 'fiado') setNombreDeudor('');
+  };
+
   KeepAwake.activate(); // Mantener la pantalla activa durante el servicio
 
   const [tab, setTab] = useState("pedido");
@@ -424,7 +472,7 @@ export default function App() {
         playSound(savedUri, false);
       } else {
         console.log("No default audio resource found, skipping playback");
-        // Descomenta la siguiente línea cuando pongas tu archivo 'new_order.mp3' en la carpeta 'assets'
+        // Descomenta la siguiente lÃ­nea cuando pongas tu archivo 'new_order.mp3' en la carpeta 'assets'
         // playSound(require('./assets/new_order.mp3'), true);
       }
     } catch (error) {
@@ -460,7 +508,7 @@ export default function App() {
 
         await AsyncStorage.setItem('custom_alert_uri', destinationPath);
         setCustomSoundUri(destinationPath);
-        showToast('🎵 Audio guardado como tono de alerta');
+        showToast('ðŸŽµ Audio guardado como tono de alerta');
         
         // Reproducir prueba corta
         const s = new Sound(destinationPath, '', (error) => {
@@ -488,7 +536,7 @@ export default function App() {
   const [pedidoACancelar, setPedidoACancelar] = useState(null);
   const [cancelMotivo, setCancelMotivo] = useState('');
 
-  // Nuevos estados para seguridad, auditoría y pedidos
+  // Nuevos estados para seguridad, auditorÃ­a y pedidos
   const [loggedUser, setLoggedUser] = useState(null); // { nombre: '', rol: '' }
   const [loginModalVisible, setLoginModalVisible] = useState(false);
   const [loginTargetUser, setLoginTargetUser] = useState(null);
@@ -517,7 +565,7 @@ export default function App() {
   const [mesaActivaModalVisible, setMesaActivaModalVisible] = useState(false);
   const [mesaActivaSelected, setMesaActivaSelected] = useState(null);
   
-  // Estados de Configuración de Producto (Adicionales y Notas)
+  // Estados de ConfiguraciÃ³n de Producto (Adicionales y Notas)
   const [prodConfigModalVisible, setProdConfigModalVisible] = useState(false);
   const [prodToConfig, setProdToConfig] = useState(null);
   const [configObservaciones, setConfigObservaciones] = useState('');
@@ -564,7 +612,7 @@ export default function App() {
     });
   }, []);
 
-  // Manejar conexión de Socket.io
+  // Manejar conexiÃ³n de Socket.io
   useEffect(() => {
     if (!ipConfigured || !serverIP) {
       if (socketRef.current) {
@@ -581,7 +629,7 @@ export default function App() {
     if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
       socketUrl = cleanIP;
     }
-    console.log(`📡 Conectando a Socket.io en ${socketUrl}...`);
+    console.log(`ðŸ“¡ Conectando a Socket.io en ${socketUrl}...`);
     
     socketRef.current = io(socketUrl, {
       transports: ['websocket'],
@@ -592,7 +640,7 @@ export default function App() {
     });
 
     socketRef.current.on('connect', () => {
-      console.log('✅ Conectado al Socket Server');
+      console.log('âœ… Conectado al Socket Server');
       if (loggedUser) {
         const isCocina = loggedUser.rol === 'cocina';
         socketRef.current.emit('registrar_dispositivo', {
@@ -604,7 +652,7 @@ export default function App() {
 
     // Recibir nuevo pedido (cocina)
     socketRef.current.on('pedido_recibido_cocina', (nuevoPedido) => {
-      console.log('🔔 Pedido recibido en Cocina:', nuevoPedido.uuid);
+      console.log('ðŸ”” Pedido recibido en Cocina:', nuevoPedido.uuid);
       setPedidos(prev => {
         if (prev.some(p => p.uuid === nuevoPedido.uuid)) return prev;
         return [nuevoPedido, ...prev];
@@ -615,23 +663,23 @@ export default function App() {
       }
     });
 
-    // Recibir actualización de estado
+    // Recibir actualizaciÃ³n de estado
     socketRef.current.on('pedido_estado_cambiado', (data) => {
       const { uuid, items, nuevoEstado } = data;
       setPedidos(prev => prev.map(p => p.uuid === uuid ? { ...p, items, estado: nuevoEstado } : p));
     });
 
-    // Recibir notificación de pedido listo
+    // Recibir notificaciÃ³n de pedido listo
     socketRef.current.on('pedido_listo_mesero', (data) => {
       const { uuid, mesa, plato } = data;
-      console.log(`🛎️ Pedido listo para mesa ${mesa}:`, plato);
+      console.log(`ðŸ›Žï¸ Pedido listo para mesa ${mesa}:`, plato);
       
       if (loggedUser && loggedUser.rol === 'pedido') {
         reproducirAlertaSonora(false);
         Vibration.vibrate([0, 500, 250, 500]);
         Alert.alert(
-          "🛎️ ¡Plato Listo!",
-          `Mesa ${mesa}: El plato "${plato}" está listo para ser servido.`,
+          "ðŸ›Žï¸ Â¡Plato Listo!",
+          `Mesa ${mesa}: El plato "${plato}" estÃ¡ listo para ser servido.`,
           [{ text: "Entendido", onPress: () => detenerAlertaSonora() }]
         );
       }
@@ -655,13 +703,13 @@ export default function App() {
       setPedidos(prev => prev.filter(p => p.uuid !== uuid));
     });
 
-    // Recibir actualización de mesas
+    // Recibir actualizaciÃ³n de mesas
     socketRef.current.on('mesas_actualizadas', (nuevasMesas) => {
       setBaseMesas(nuevasMesas);
     });
 
     socketRef.current.on('disconnect', () => {
-      console.log('❌ Socket desconectado');
+      console.log('âŒ Socket desconectado');
     });
 
     return () => {
@@ -683,6 +731,16 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
+  // Re-registrar en socket.io cuando cambia el rol o el usuario
+  useEffect(() => {
+    if (socketRef.current && socketRef.current.connected && loggedUser) {
+      socketRef.current.emit('registrar_dispositivo', {
+        rol: userRol === 'admin' ? 'cocina' : userRol,
+        usuarioId: loggedUser.nombre
+      });
+    }
+  }, [userRol, loggedUser]);
+
   // Temporizador para bloqueo de login
   useEffect(() => {
     if (lockoutTimer <= 0) return;
@@ -692,7 +750,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [lockoutTimer]);
 
-  // Autocorrector de estado de mesas basado en pedidos síncronos
+  // Autocorrector de estado de mesas basado en pedidos sÃ­ncronos
   useEffect(() => {
     if (!baseMesas || baseMesas.length === 0) return;
     setMesas(prev => {
@@ -708,9 +766,9 @@ export default function App() {
 
   const buscarServidorAut = async () => {
     setIsSearching(true);
-    showToast("🔍 Buscando servidor en red local (y USB)...");
+    showToast("ðŸ” Buscando servidor en red local (y USB)...");
     
-    // 1. Probar USB / Emulador primero (rápido)
+    // 1. Probar USB / Emulador primero (rÃ¡pido)
     const directIPs = ['localhost', '10.0.2.2'];
     for (const ip of directIPs) {
       try {
@@ -720,7 +778,7 @@ export default function App() {
           updateGlobalApiUrl(ip);
           setIpConfigured(true);
           await AsyncStorage.setItem('serverIP', ip);
-          showToast("✅ Servidor conectado vía USB en " + ip);
+          showToast("âœ… Servidor conectado vÃ­a USB en " + ip);
           setIsSearching(false);
           return ip;
         }
@@ -754,13 +812,13 @@ export default function App() {
         updateGlobalApiUrl(ipEncontrada);
         setIpConfigured(true);
         await AsyncStorage.setItem('serverIP', ipEncontrada);
-        showToast("✅ Servidor conectado en " + ipEncontrada);
+        showToast("âœ… Servidor conectado en " + ipEncontrada);
         setIsSearching(false);
         return true;
       }
     }
     setIsSearching(false);
-    showToast("⚠️ Servidor no encontrado automáticamente");
+    showToast("âš ï¸ Servidor no encontrado automÃ¡ticamente");
     return false;
   };
 
@@ -777,27 +835,28 @@ export default function App() {
       let cleanIP = serverIP.trim();
       if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
       
-      let checkUrl = `http://${cleanIP}:3001/api/check-update`;
+      let checkUrl = `http://${cleanIP}:3001/api/check-update?platform=mobile`;
       if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
-        checkUrl = `${cleanIP}/api/check-update`;
+        checkUrl = `${cleanIP}/api/check-update?platform=mobile`;
       }
       const response = await axios.get(checkUrl, { 
         timeout: 15000,
         headers: { 'Bypass-Tunnel-Reminder': 'true', 'ngrok-skip-browser-warning': 'true' }
       });
-      if (response.data && response.data.version) {
-        const { version: remoteVersion, notes, apkUrl } = response.data;
-        if (isVersionNewerMobile(APP_VERSION, remoteVersion)) {
-          setUpdateInfo({ version: remoteVersion, notes, apkUrl });
+      
+      if (response.data && response.data.updateAvailable) {
+        const { latestVersion, releaseNotes, downloadUrl } = response.data;
+        if (isNewerVersion(latestVersion, APP_VERSION)) {
+          setUpdateInfo({ version: latestVersion, notes: releaseNotes, apkUrl: downloadUrl });
           setUpdateModalVisible(true);
         }
       }
     } catch (err) {
-      console.log("No se pudo comprobar la actualización de la app:", err.message);
+      console.log("No se pudo comprobar la actualizaciÃ³n OTA:", err.message);
     }
   };
 
-  // Renderizar modal de actualización si está disponible
+  // Renderizar modal de actualizaciÃ³n si estÃ¡ disponible
   const renderUpdateModal = () => {
     if (!updateModalVisible || !updateInfo) return null;
     return (
@@ -805,25 +864,25 @@ export default function App() {
         visible={updateModalVisible}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setUpdateModalVisible(false)}
+        onRequestClose={() => {}} // Impide cerrar en Android back
       >
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           <View style={{ width: '100%', backgroundColor: C.surface, borderRadius: 16, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' }}>
             <View style={{ backgroundColor: C.brand, padding: 16, alignItems: 'center' }}>
-              <Text style={{ fontSize: 28 }}>🚀</Text>
+              <Text style={{ fontSize: 28 }}>ðŸš€</Text>
               <Text style={{ fontSize: 18, fontWeight: '800', color: C.cream, marginTop: 5 }}>
-                Actualización Disponible
+                ActualizaciÃ³n Disponible
               </Text>
             </View>
             
             <View style={{ padding: 18 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 16, backgroundColor: C.surf2, padding: 10, borderRadius: 8 }}>
                 <View style={{ alignItems: 'center' }}>
-                  <Text style={{ fontSize: 10, color: C.text3 }}>Versión actual</Text>
+                  <Text style={{ fontSize: 10, color: C.text3 }}>VersiÃ³n actual</Text>
                   <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>{APP_VERSION}</Text>
                 </View>
                 <View style={{ alignItems: 'center' }}>
-                  <Text style={{ fontSize: 10, color: C.text3 }}>Nueva versión</Text>
+                  <Text style={{ fontSize: 10, color: C.text3 }}>Nueva versiÃ³n</Text>
                   <Text style={{ fontSize: 14, fontWeight: '700', color: C.orange }}>{updateInfo.version}</Text>
                 </View>
               </View>
@@ -836,7 +895,7 @@ export default function App() {
                   <ScrollView style={{ maxHeight: 120 }}>
                     {updateInfo.notes.map((note, index) => (
                       <Text key={index} style={{ fontSize: 12, color: C.text, marginBottom: 4 }}>
-                        • {note}
+                        â€¢ {note}
                       </Text>
                     ))}
                   </ScrollView>
@@ -856,7 +915,7 @@ export default function App() {
                   }}
                   onPress={() => setUpdateModalVisible(false)}
                 >
-                  <Text style={{ color: C.text, fontWeight: '700', fontSize: 12 }}>Más tarde</Text>
+                  <Text style={{ color: C.text, fontWeight: '700', fontSize: 12 }}>MÃ¡s tarde</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -884,7 +943,7 @@ export default function App() {
     );
   };
 
-  // Sincronizar pedidos del día, catálogo y sesión de caja
+  // Sincronizar pedidos del dÃ­a, catÃ¡logo y sesiÃ³n de caja
   const sincronizar = async () => {
     if (!ipConfigured) return;
     try {
@@ -925,7 +984,7 @@ export default function App() {
         console.error('Error sincronizando clientes:', errCli.message);
       }
 
-      // 2. Sincronizar catálogo de productos
+      // 2. Sincronizar catÃ¡logo de productos
       const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 10000 });
       if (prodRes.data && prodRes.data.productos) {
         setProductos(prodRes.data.productos);
@@ -937,7 +996,7 @@ export default function App() {
         setBaseMesas(mesasRes.data.mesas);
       }
 
-      // 3. Sincronizar sesión de caja
+      // 3. Sincronizar sesiÃ³n de caja
       const sesionRes = await axios.get(`${baseCol}/caja/sesion-activa`, { timeout: 10000 });
       if (sesionRes.data) {
         setSesionActiva(sesionRes.data.sesion);
@@ -966,7 +1025,7 @@ export default function App() {
     }
   };
 
-  // Usar pedidos guardados al iniciar y configurar sincronización
+  // Usar pedidos guardados al iniciar y configurar sincronizaciÃ³n
   const cargarDashboardFinanciero = async () => {
     if (!ipConfigured) return;
     try {
@@ -993,7 +1052,7 @@ export default function App() {
 
   const handleRegistrarGasto = async () => {
     if (!formGasto.descripcion || !formGasto.valor) {
-      showToast('⚠️ Llena descripción y monto');
+      showToast('âš ï¸ Llena descripciÃ³n y monto');
       return;
     }
     try {
@@ -1009,18 +1068,18 @@ export default function App() {
         descripcion: formGasto.descripcion,
         categoria: formGasto.categoria,
         valor: parseFloat(cleanNum(formGasto.valor)),
-        sesion_id: 1, // o dinámico
+        sesion_id: 1, // o dinÃ¡mico
         usuario: loggedUser ? loggedUser.nombre : 'Mobile'
       }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
       
       if (res.data.success) {
         setModalGastoVisible(false);
         setFormGasto({ descripcion: '', categoria: 'Proveedores', valor: '' });
-        showToast('✅ Gasto registrado');
+        showToast('âœ… Gasto registrado');
         cargarDashboardFinanciero();
       }
     } catch (error) {
-      showToast('❌ Error al registrar gasto');
+      showToast('âŒ Error al registrar gasto');
       console.error(error.message);
     }
   };
@@ -1051,13 +1110,13 @@ export default function App() {
         const storedBorradores = await AsyncStorage.getItem('borradores');
         if (storedBorradores) setBorradores(JSON.parse(storedBorradores));
 
-        // Cargar Usuario Guardado para recuperación de sesión
+        // Cargar Usuario Guardado para recuperaciÃ³n de sesiÃ³n
         const savedLoggedUser = await AsyncStorage.getItem('loggedUser');
         if (savedLoggedUser) {
           setPendingRecoveryUser(JSON.parse(savedLoggedUser));
         }
 
-        // Cargar IP guardada o usar túnel fijo
+        // Cargar IP guardada o usar tÃºnel fijo
         const savedIP = await AsyncStorage.getItem('serverIP');
         const ipToUse = "https://brisket-pregnant-squiggly.ngrok-free.dev";
         if (ipToUse) {
@@ -1071,7 +1130,7 @@ export default function App() {
             if (response.status === 200) {
               setIpConfigured(true);
               
-              // Cargar catálogo, sesión activa y usuarios iniciales
+              // Cargar catÃ¡logo, sesiÃ³n activa y usuarios iniciales
               let baseCol = `http://${ipToUse}:3001/api`;
               if (ipToUse.startsWith('http')) baseCol = `${ipToUse}/api`;
               const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 15000 });
@@ -1110,14 +1169,14 @@ export default function App() {
     cargarDatos();
   }, []);
 
-  // Sincronización periódica (se re-ejecuta cuando ipConfigured cambia)
+  // SincronizaciÃ³n periÃ³dica (se re-ejecuta cuando ipConfigured cambia)
   useEffect(() => {
-    if (!ipConfigured) return; // No sincronizar si IP no está configurada
+    if (!ipConfigured) return; // No sincronizar si IP no estÃ¡ configurada
 
     sincronizar(); // Sincronizar inmediatamente al conectar
     checkForUpdates(); // Buscar actualizaciones del APK al conectar
 
-    // Sincronizar periódicamente
+    // Sincronizar periÃ³dicamente
     syncTimer.current = setInterval(sincronizar, SYNC_INTERVAL);
     return () => clearInterval(syncTimer.current);
   }, [ipConfigured]);
@@ -1125,7 +1184,7 @@ export default function App() {
   // Manejo de BackHandler nativo (Android)
   useEffect(() => {
     const handleBackPress = () => {
-      // 1. Cerrar modales (Prioridad más alta)
+      // 1. Cerrar modales (Prioridad mÃ¡s alta)
       if (cancelModalVisible) {
         setCancelModalVisible(false);
         return true;
@@ -1175,12 +1234,12 @@ export default function App() {
         return true;
       }
 
-      // 2. Navegación interna o cierre de sesión si hay usuario logueado
+      // 2. NavegaciÃ³n interna o cierre de sesiÃ³n si hay usuario logueado
       if (loggedUser) {
         if (tab === "pedido" && paso === 2) {
           if (carrito.length > 0 && mesaSel) {
             guardarBorrador(mesaSel.num, carrito, !!pedidoEditando, pedidoEditando?.uuid);
-            showToast(`📝 Borrador guardado: ${mesaSel.num}`);
+            showToast(`ðŸ“ Borrador guardado: ${mesaSel.num}`);
           }
           setPaso(1);
           return true;
@@ -1201,14 +1260,14 @@ export default function App() {
         }
       }
 
-      // 3. Confirmación de salida (Sólo si NO hay usuario logueado)
+      // 3. ConfirmaciÃ³n de salida (SÃ³lo si NO hay usuario logueado)
       if (!loggedUser) {
         Alert.alert(
           "Salir de Embejucao POS",
-          "¿Está seguro de que desea cerrar la aplicación?",
+          "Â¿EstÃ¡ seguro de que desea cerrar la aplicaciÃ³n?",
           [
             { text: "No, continuar", style: "cancel" },
-            { text: "Sí, salir", style: "destructive", onPress: () => BackHandler.exitApp() }
+            { text: "SÃ­, salir", style: "destructive", onPress: () => BackHandler.exitApp() }
           ],
           { cancelable: false }
         );
@@ -1242,14 +1301,14 @@ export default function App() {
             items: items,
             usuario: loggedUser ? loggedUser.nombre : 'Mesero'
           }, { timeout: 15000 });
-          showToast("✅ Pedido actualizado");
+          showToast("âœ… Pedido actualizado");
           eliminarBorrador(mesaNum);
           if (savedPrinter) {
             printKitchenReceipt(items, mesaNum, savedPrinter.type);
           }
           sincronizar();
         } catch (e) {
-          showToast("⚠️ Error al actualizar - guardado local");
+          showToast("âš ï¸ Error al actualizar - guardado local");
           console.error('Error updating order:', e.message);
         }
         return;
@@ -1307,14 +1366,14 @@ export default function App() {
           fecha: new Date().toISOString().split('T')[0],
           usuario: loggedUser ? loggedUser.nombre : 'Mesero'
         }, { timeout: 15000 });
-        showToast("✅ Pedido " + (typeof mesaNum === 'string' && mesaNum.startsWith('Para') ? mesaNum : "Mesa " + mesaNum) + " enviado");
+        showToast("âœ… Pedido " + (typeof mesaNum === 'string' && mesaNum.startsWith('Para') ? mesaNum : "Mesa " + mesaNum) + " enviado");
         sincronizar(); // Sincronizar inmediatamente
       } catch (e) {
-        showToast("⚠️ Guardado localmente - sin conexión");
+        showToast("âš ï¸ Guardado localmente - sin conexiÃ³n");
         console.error('Error sending pedido:', e.message);
       }
     } catch (error) {
-      showToast("❌ ERROR CRÍTICO: " + error.message);
+      showToast("âŒ ERROR CRÃTICO: " + error.message);
       console.error("FATAL ERROR IN enviarPedido:", error);
     }
   };
@@ -1346,7 +1405,7 @@ export default function App() {
         if (!isNaN(mesaNum)) {
           setMesas(m => m.map(x => x.num === mesaNum ? { ...x, estado: "cuenta" } : x));
         }
-        showToast("🎉 Pedido " + p.mesa + " completado");
+        showToast("ðŸŽ‰ Pedido " + p.mesa + " completado");
       }
 
       AsyncStorage.setItem('pedidos', JSON.stringify(updated));
@@ -1371,42 +1430,42 @@ export default function App() {
     p.items.some(it => (!(Number(it.cat) >= 8) || it.cat === undefined) && it.estado !== "listo")
   ).length;
 
-  // PANTALLA DE CONFIGURACIÓN DE IP
+  // PANTALLA DE CONFIGURACIÃ“N DE IP
   if (!ipConfigured) {
     return (
       <SafeAreaView style={s.safe}>
         <StatusBar barStyle="light-content" backgroundColor={C.brand} />
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, justifyContent: "center", minHeight: "100%" }}>
           <View style={{ alignItems: "center", marginBottom: 30 }}>
-            <Text style={{ fontSize: 40 }}>🍔</Text>
-            <Text style={{ fontSize: 24, fontWeight: "800", color: C.cream, marginBottom: 5 }}>Embejucão POS</Text>
-            <Text style={{ fontSize: 12, color: C.cream2 }}>Sistema de Sincronización</Text>
+            <Text style={{ fontSize: 40 }}>ðŸ”</Text>
+            <Text style={{ fontSize: 24, fontWeight: "800", color: C.cream, marginBottom: 5 }}>EmbejucÃ£o POS</Text>
+            <Text style={{ fontSize: 12, color: C.cream2 }}>Sistema de SincronizaciÃ³n</Text>
           </View>
 
           <View style={[s.card, { padding: 20, marginBottom: 20 }]}>
-            <Text style={{ fontSize: 14, fontWeight: "700", color: C.text, marginBottom: 12 }}>⚙️ Configuración del Servidor</Text>
+            <Text style={{ fontSize: 14, fontWeight: "700", color: C.text, marginBottom: 12 }}>âš™ï¸ ConfiguraciÃ³n del Servidor</Text>
 
             {isSearching ? (
               <View style={{ alignItems: "center", paddingVertical: 20 }}>
-                <Text style={{ fontSize: 36, marginBottom: 12 }}>🔍</Text>
+                <Text style={{ fontSize: 36, marginBottom: 12 }}>ðŸ”</Text>
                 <Text style={{ fontSize: 13, fontWeight: "600", color: C.text, textAlign: "center", lineHeight: 18 }}>
                   Buscando la computadora del servidor en la red WiFi...
                 </Text>
                 <Text style={{ fontSize: 11, color: C.text3, marginTop: 8, textAlign: "center" }}>
-                  Esto tomará unos segundos. Por favor espera.
+                  Esto tomarÃ¡ unos segundos. Por favor espera.
                 </Text>
               </View>
             ) : (
               <>
                 <Text style={{ fontSize: 11, color: C.text2, marginBottom: 10 }}>
-                  Ingresa la IP de la computadora donde está corriendo el servidor o presiona el botón para buscar automáticamente.
+                  Ingresa la IP de la computadora donde estÃ¡ corriendo el servidor o presiona el botÃ³n para buscar automÃ¡ticamente.
                 </Text>
 
                 <Text style={{ fontSize: 10, color: C.text3, marginBottom: 14, fontStyle: "italic" }}>
-                  Windows: Abre terminal → ipconfig → busca "IPv4 Address"
+                  Windows: Abre terminal â†’ ipconfig â†’ busca "IPv4 Address"
                 </Text>
 
-                <Text style={{ fontSize: 11, fontWeight: "600", color: C.text, marginBottom: 6 }}>Dirección IP:</Text>
+                <Text style={{ fontSize: 11, fontWeight: "600", color: C.text, marginBottom: 6 }}>DirecciÃ³n IP:</Text>
                 <TextInput
                   style={[s.formInput, { fontSize: 14, marginBottom: 16 }]}
                   placeholder="Ej: 192.168.1.100"
@@ -1423,7 +1482,7 @@ export default function App() {
                   style={[s.btnPrimary, s.btnFull, { marginBottom: 10, opacity: serverIP ? 1 : 0.5 }]}
                   onPress={async () => {
                     if (!serverIP) {
-                      alert("Ingresa una IP válida");
+                      alert("Ingresa una IP vÃ¡lida");
                       return;
                     }
                     try {
@@ -1440,15 +1499,15 @@ export default function App() {
                       if (response.status === 200) {
                         setIpConfigured(true);
                         await AsyncStorage.setItem('serverIP', cleanIP);
-                        showToast("✅ Conectado al servidor");
+                        showToast("âœ… Conectado al servidor");
                       }
                     } catch (e) {
-                      alert("❌ No puedo conectar a " + serverIP + "\n\nVerifica:\n1. Que la URL o IP sea correcta\n2. Que el túnel o servidor esté activo");
+                      alert("âŒ No puedo conectar a " + serverIP + "\n\nVerifica:\n1. Que la URL o IP sea correcta\n2. Que el tÃºnel o servidor estÃ© activo");
                     }
                   }}
                   disabled={!serverIP}
                 >
-                  <Text style={s.btnPrimaryTxt}>Conectar IP Manual →</Text>
+                  <Text style={s.btnPrimaryTxt}>Conectar IP Manual â†’</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -1456,7 +1515,7 @@ export default function App() {
                   onPress={buscarServidorAut}
                 >
                   <Text style={{ color: C.text, fontWeight: "600", fontSize: 12, textAlign: "center" }}>
-                    🔍 Buscar Servidor Automáticamente
+                    ðŸ” Buscar Servidor AutomÃ¡ticamente
                   </Text>
                 </TouchableOpacity>
               </>
@@ -1465,7 +1524,7 @@ export default function App() {
 
           <View style={[s.card, { padding: 16, backgroundColor: "rgba(245,230,200,0.05)" }]}>
             <Text style={{ fontSize: 10, color: C.text3, lineHeight: 14 }}>
-              📡 <Text style={{ fontWeight: "600" }}>Nota:</Text> Ambos teléfonos deben estar en la MISMA red WiFi que el servidor.
+              ðŸ“¡ <Text style={{ fontWeight: "600" }}>Nota:</Text> Ambos telÃ©fonos deben estar en la MISMA red WiFi que el servidor.
             </Text>
           </View>
         </ScrollView>
@@ -1479,15 +1538,15 @@ export default function App() {
         <StatusBar barStyle="light-content" backgroundColor={C.brand} />
         <View style={{ flex: 1, padding: 20, justifyContent: "center", alignItems: "center" }}>
           <View style={{ alignItems: "center", marginBottom: 30 }}>
-            <Text style={{ fontSize: 40 }}>🍔</Text>
-            <Text style={{ fontSize: 24, fontWeight: "800", color: C.cream, marginBottom: 5 }}>Embejucão POS</Text>
-            <Text style={{ fontSize: 13, color: C.cream2 }}>Sesión Activa Detectada</Text>
+            <Text style={{ fontSize: 40 }}>ðŸ”</Text>
+            <Text style={{ fontSize: 24, fontWeight: "800", color: C.cream, marginBottom: 5 }}>EmbejucÃ£o POS</Text>
+            <Text style={{ fontSize: 13, color: C.cream2 }}>SesiÃ³n Activa Detectada</Text>
           </View>
 
           <View style={[s.card, { padding: 20, width: "100%", alignItems: "center" }]}>
             <Ionicons name="people-circle" size={64} color={C.orange} style={{ marginBottom: 14 }} />
             <Text style={{ fontSize: 16, fontWeight: "800", color: C.text, textAlign: "center", marginBottom: 6 }}>
-              ¿Continuar como {pendingRecoveryUser.nombre}?
+              Â¿Continuar como {pendingRecoveryUser.nombre}?
             </Text>
             <Text style={{ fontSize: 12, color: C.text2, textAlign: "center", marginBottom: 20 }}>
               Roles: {pendingRecoveryUser.roles ? pendingRecoveryUser.roles.map(r => r === 'admin' ? 'Administrador' : r === 'pedido' ? 'Mesero' : r).join(', ') : ''}
@@ -1501,7 +1560,7 @@ export default function App() {
                 setUserRol(principalRole);
                 setTab(principalRole);
                 setPendingRecoveryUser(null);
-                showToast(`✅ Sesión recuperada: ${pendingRecoveryUser.nombre}`);
+                showToast(`âœ… SesiÃ³n recuperada: ${pendingRecoveryUser.nombre}`);
               }}
             >
               <Text style={s.btnPrimaryTxt}>Continuar como {pendingRecoveryUser.nombre}</Text>
@@ -1528,7 +1587,7 @@ export default function App() {
         <StatusBar barStyle="light-content" backgroundColor={C.brand} />
         <View style={{ flex: 1, padding: 20, justifyContent: "center" }}>
           <View style={{ alignItems: "center", marginBottom: 30 }}>
-            <Text style={{ fontSize: 40 }}>🔒</Text>
+            <Text style={{ fontSize: 40 }}>ðŸ”’</Text>
             <Text style={{ fontSize: 22, fontWeight: "800", color: C.cream, marginBottom: 5 }}>Cambio de PIN Obligatorio</Text>
             <Text style={{ fontSize: 12, color: C.cream2, textAlign: "center" }}>
               Por seguridad, debes cambiar el PIN por defecto del Administrador.
@@ -1536,10 +1595,10 @@ export default function App() {
           </View>
 
           <View style={[s.card, { padding: 20 }]}>
-            <Text style={{ fontSize: 12, fontWeight: "700", color: C.text, marginBottom: 6 }}>Nuevo PIN (4 a 6 dígitos)</Text>
+            <Text style={{ fontSize: 12, fontWeight: "700", color: C.text, marginBottom: 6 }}>Nuevo PIN (4 a 6 dÃ­gitos)</Text>
             <TextInput
               style={[s.formInput, { marginBottom: 14, letterSpacing: 5, fontSize: 18, textAlign: 'center' }]}
-              placeholder="••••••"
+              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢"
               placeholderTextColor={C.text3}
               keyboardType="numeric"
               maxLength={6}
@@ -1551,7 +1610,7 @@ export default function App() {
             <Text style={{ fontSize: 12, fontWeight: "700", color: C.text, marginBottom: 6 }}>Confirmar Nuevo PIN</Text>
             <TextInput
               style={[s.formInput, { marginBottom: 20, letterSpacing: 5, fontSize: 18, textAlign: 'center' }]}
-              placeholder="••••••"
+              placeholder="â€¢â€¢â€¢â€¢â€¢â€¢"
               placeholderTextColor={C.text3}
               keyboardType="numeric"
               maxLength={6}
@@ -1564,7 +1623,7 @@ export default function App() {
               style={[s.btnPrimary, s.btnFull, { backgroundColor: C.orange }]}
               onPress={async () => {
                 if (newAdminPin.length < 4 || newAdminPin.length > 6 || isNaN(Number(newAdminPin))) {
-                  Alert.alert("Error", "El PIN debe tener entre 4 y 6 dígitos numéricos.");
+                  Alert.alert("Error", "El PIN debe tener entre 4 y 6 dÃ­gitos numÃ©ricos.");
                   return;
                 }
                 if (newAdminPin !== confirmNewAdminPin) {
@@ -1589,7 +1648,7 @@ export default function App() {
                     setUserRol("admin");
                     setTab("admin");
                     await AsyncStorage.setItem('loggedUser', JSON.stringify(userSes));
-                    showToast("✅ PIN cambiado y sesión iniciada");
+                    showToast("âœ… PIN cambiado y sesiÃ³n iniciada");
                     setNewAdminPin('');
                     setConfirmNewAdminPin('');
                     setSelectedUserLogin(null);
@@ -1613,17 +1672,17 @@ export default function App() {
         <StatusBar barStyle="light-content" backgroundColor={C.brand} />
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, justifyContent: "center", minHeight: "100%" }}>
           <View style={{ alignItems: "center", marginBottom: 25 }}>
-            <Text style={{ fontSize: 44 }}>🍔</Text>
+            <Text style={{ fontSize: 44 }}>ðŸ”</Text>
             <Text style={{ fontSize: 26, fontWeight: "900", color: C.cream, marginBottom: 5, letterSpacing: 0.8 }}>
               EMBEJUCAO <Text style={{ color: C.orange }}>POS</Text>
             </Text>
-            <Text style={{ fontSize: 12, color: C.cream2 }}>Ráquira, Boyacá</Text>
+            <Text style={{ fontSize: 12, color: C.cream2 }}>RÃ¡quira, BoyacÃ¡</Text>
           </View>
 
           {/* LISTA DE USUARIOS (Ingreso Directo) */}
           <View style={[s.card, { padding: 20, gap: 12 }]}>
             <Text style={{ fontSize: 15, fontWeight: "800", color: C.text, marginBottom: 6, textAlign: "center" }}>
-              👥 Seleccionar Usuario
+              ðŸ‘¥ Seleccionar Usuario
             </Text>
             {usuarios.length === 0 ? (
               <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center', paddingVertical: 10 }}>
@@ -1662,7 +1721,7 @@ export default function App() {
         </ScrollView>
         {renderUpdateModal()}
 
-        {/* Modal de Inicio de Sesión con PIN */}
+        {/* Modal de Inicio de SesiÃ³n con PIN */}
         <Modal visible={loginModalVisible} animationType="slide" transparent={true} onRequestClose={() => setLoginModalVisible(false)}>
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 20 }}>
             <View style={{ backgroundColor: C.surface, padding: 24, borderRadius: 16 }}>
@@ -1671,7 +1730,7 @@ export default function App() {
               
               <TextInput
                 style={[s.formInput, { fontSize: 24, letterSpacing: 8, textAlign: 'center', marginBottom: 20, backgroundColor: C.bg }]}
-                placeholder="••••"
+                placeholder="â€¢â€¢â€¢â€¢"
                 placeholderTextColor={C.text3}
                 secureTextEntry
                 keyboardType="numeric"
@@ -1692,23 +1751,25 @@ export default function App() {
                     if (res.data && res.data.success) {
                       await AsyncStorage.setItem('userToken', res.data.token);
                       const principalRole = res.data.roles && res.data.roles.length > 0 ? res.data.roles[0] : 'pedido';
-                      setLoggedUser({ nombre: loginTargetUser.nombre, roles: res.data.roles });
-                      setUserRol(principalRole);
-                      
-                      if (loginPinInput === '1234' && res.data.roles.includes('admin')) {
-                        setLoginModalVisible(false);
-                        setSelectedUserLogin(loginTargetUser);
-                        setForceChangeAdminPin(true);
-                      } else {
-                        setTab(principalRole);
-                        setLoginModalVisible(false);
-                        showToast('✅ Sesión iniciada');
-                      }
+                      Keyboard.dismiss();
+                      setLoginModalVisible(false);
+                      setTimeout(() => {
+                        setLoggedUser({ nombre: loginTargetUser.nombre, roles: res.data.roles });
+                        setUserRol(principalRole);
+                        
+                        if (loginPinInput === '1234' && res.data.roles.includes('admin')) {
+                          setSelectedUserLogin(loginTargetUser);
+                          setForceChangeAdminPin(true);
+                        } else {
+                          setTab(principalRole);
+                          showToast('âœ… SesiÃ³n iniciada');
+                        }
+                      }, 250);
                     } else {
                       Alert.alert('Error', res.data.message || 'PIN Incorrecto');
                     }
                   } catch (e) {
-                    Alert.alert('Error', 'No se pudo contactar con el servidor. Verifica tu conexión.');
+                    Alert.alert('Error', 'No se pudo contactar con el servidor. Verifica tu conexiÃ³n.');
                   }
                 }}
               >
@@ -1742,13 +1803,13 @@ export default function App() {
         {/* Row 1: Brand + Settings */}
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={{ fontSize: 22 }}>🍔</Text>
+            <Text style={{ fontSize: 22 }}>ðŸ”</Text>
             <View>
               <Text style={{ fontSize: 17, fontWeight: "900", color: C.cream, letterSpacing: 0.4 }}>
                 Embejucao <Text style={{ color: C.orange, fontWeight: "800" }}>POS</Text>
               </Text>
               <Text style={{ fontSize: 9, color: C.text3, letterSpacing: 0.5, marginTop: 1 }}>
-                Ráquira, Boyacá
+                RÃ¡quira, BoyacÃ¡
               </Text>
             </View>
           </View>
@@ -1782,7 +1843,7 @@ export default function App() {
             ) : (
               <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
                 <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.red }} />
-                <Text style={{ fontSize: 10, color: C.red, fontWeight: "600" }}>Sin conexión</Text>
+                <Text style={{ fontSize: 10, color: C.red, fontWeight: "600" }}>Sin conexiÃ³n</Text>
               </View>
             )}
 
@@ -1795,7 +1856,7 @@ export default function App() {
                   const nextRole = loggedUser.roles[nextIdx];
                   setUserRol(nextRole);
                   setTab(nextRole);
-                  showToast(`🔄 Rol cambiado a ${nextRole}`);
+                  showToast(`ðŸ”„ Rol cambiado a ${nextRole}`);
                 }
               }}
               style={{
@@ -1809,10 +1870,10 @@ export default function App() {
               }}
             >
               <Text style={{ fontSize: 11, fontWeight: "700", color: "white", letterSpacing: 0.3 }}>
-                {userRol === "pedido" ? "🧾 Mesero" :
-                 userRol === "cocina" ? `👨‍🍳 Cocina (${cocinaPendientes})` :
-                 userRol === "caja" ? "💰 Caja" :
-                 "⚙️ Admin"}
+                {userRol === "pedido" ? "ðŸ§¾ Mesero" :
+                 userRol === "cocina" ? `ðŸ‘¨â€ðŸ³ Cocina (${cocinaPendientes})` :
+                 userRol === "caja" ? "ðŸ’° Caja" :
+                 "âš™ï¸ Admin"}
               </Text>
               {loggedUser && loggedUser.roles && loggedUser.roles.length > 1 && (
                 <Ionicons name="swap-horizontal" size={12} color="white" />
@@ -1959,7 +2020,7 @@ export default function App() {
         </View>
       )}
 
-      {/* Modal de Cancelación de Pedidos */}
+      {/* Modal de CancelaciÃ³n de Pedidos */}
       {cancelModalVisible && pedidoACancelar && (
         <Modal
           visible={cancelModalVisible}
@@ -1975,7 +2036,7 @@ export default function App() {
                 </TouchableOpacity>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>
-                    ⚠️ ¿Desea cancelar este pedido?
+                    âš ï¸ Â¿Desea cancelar este pedido?
                   </Text>
                   <Text style={{ fontSize: 12, color: C.cream2, marginTop: 2 }}>
                     Mesa: {pedidoACancelar.mesa}
@@ -1985,7 +2046,7 @@ export default function App() {
               
               <View style={{ padding: 18 }}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 8 }}>
-                  Ingresa el motivo de cancelación (Obligatorio):
+                  Ingresa el motivo de cancelaciÃ³n (Obligatorio):
                 </Text>
                 <TextInput
                   style={{
@@ -2027,7 +2088,7 @@ export default function App() {
                   <TouchableOpacity
                     onPress={async () => {
                       if (!cancelMotivo.trim()) {
-                        showToast('⚠️ Ingresa el motivo');
+                        showToast('âš ï¸ Ingresa el motivo');
                         return;
                       }
                       try {
@@ -2038,19 +2099,19 @@ export default function App() {
                         }, { timeout: 15000 });
 
                         if (res.data && res.data.success) {
-                          // Liberar mesa localmente si es física
+                          // Liberar mesa localmente si es fÃ­sica
                           const mesaNum = Number(pedidoACancelar.mesa);
                           if (!isNaN(mesaNum)) {
                             setMesas(prev => prev.map(m => m.num === mesaNum ? { ...m, estado: 'libre' } : m));
                           }
                           // Quitar de pedidos locales
                           setPedidos(prev => prev.filter(p => p.uuid !== pedidoACancelar.uuid));
-                          showToast('✅ Pedido cancelado');
+                          showToast('âœ… Pedido cancelado');
                           setCancelModalVisible(false);
                           sincronizar();
                         }
                       } catch (e) {
-                        showToast('⚠️ Error al cancelar pedido');
+                        showToast('âš ï¸ Error al cancelar pedido');
                       }
                     }}
                     style={{
@@ -2061,7 +2122,7 @@ export default function App() {
                       alignItems: 'center',
                     }}
                   >
-                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>Sí, Cancelar</Text>
+                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>SÃ­, Cancelar</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -2084,7 +2145,7 @@ export default function App() {
                 <TouchableOpacity onPress={() => setAjustesModalVisible(false)}>
                   <Ionicons name="arrow-back" size={20} color={C.cream2} />
                 </TouchableOpacity>
-                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>⚙️ Ajustes</Text>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>âš™ï¸ Ajustes</Text>
               </View>
 
               <View style={{ padding: 18, gap: 12 }}>
@@ -2094,12 +2155,12 @@ export default function App() {
                   onPress={() => {
                     setAjustesModalVisible(false);
                     Alert.alert(
-                      "¿Deseas cerrar sesión?",
+                      "Â¿Deseas cerrar sesiÃ³n?",
                       "",
                       [
                         { text: "Cancelar", style: "cancel" },
                         {
-                          text: "Cerrar Sesión",
+                          text: "Cerrar SesiÃ³n",
                           style: "destructive",
                           onPress: async () => {
                             const currentName = loggedUser ? loggedUser.nombre : '';
@@ -2111,7 +2172,7 @@ export default function App() {
                             try {
                               await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/logout`, { usuario: currentName }, { timeout: 15000 });
                             } catch (e) {}
-                            showToast("🚪 Sesión cerrada");
+                            showToast("ðŸšª SesiÃ³n cerrada");
                           }
                         }
                       ]
@@ -2128,8 +2189,8 @@ export default function App() {
                     gap: 10
                   }}
                 >
-                  <Text style={{ fontSize: 18 }}>🚪</Text>
-                  <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>Cerrar Sesión</Text>
+                  <Text style={{ fontSize: 18 }}>ðŸšª</Text>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>Cerrar SesiÃ³n</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -2191,10 +2252,10 @@ export default function App() {
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <View>
                       <Text style={{ fontSize: 14, color: C.text2, fontWeight: 'bold', marginBottom: 4 }}>Estado Cocina:</Text>
-                      {cocina.pendientes > 0 && <Text style={{ fontSize: 14, color: C.red }}>• {cocina.pendientes} Pendientes</Text>}
-                      {cocina.preparando > 0 && <Text style={{ fontSize: 14, color: C.orange }}>• {cocina.preparando} Preparando</Text>}
-                      {cocina.listos > 0 && <Text style={{ fontSize: 14, color: C.green }}>• {cocina.listos} Listos</Text>}
-                      {cocina.pendientes === 0 && cocina.preparando === 0 && cocina.listos === 0 && <Text style={{ fontSize: 14, color: C.text3 }}>Sin ítems de cocina</Text>}
+                      {cocina.pendientes > 0 && <Text style={{ fontSize: 14, color: C.red }}>â€¢ {cocina.pendientes} Pendientes</Text>}
+                      {cocina.preparando > 0 && <Text style={{ fontSize: 14, color: C.orange }}>â€¢ {cocina.preparando} Preparando</Text>}
+                      {cocina.listos > 0 && <Text style={{ fontSize: 14, color: C.green }}>â€¢ {cocina.listos} Listos</Text>}
+                      {cocina.pendientes === 0 && cocina.preparando === 0 && cocina.listos === 0 && <Text style={{ fontSize: 14, color: C.text3 }}>Sin Ã­tems de cocina</Text>}
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
                       <Text style={{ fontSize: 12, color: C.text3 }}>Inicio:</Text>
@@ -2212,7 +2273,7 @@ export default function App() {
     </SafeAreaView>
   );
 }
-// â”€â”€â”€ VISTA PEDIDO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ VISTA PEDIDO Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function PedidoView({
   mesas, productos, pedidos, onEnviar, showToast, paraLlevarNextNum, pedidoEditando, setPedidoEditando, borradores, guardarBorrador, eliminarBorrador,
   paso, setPaso, mesaSel, setMesaSel, carrito, setCarrito, mesaActivaModalVisible, setMesaActivaModalVisible, mesaActivaSelected, setMesaActivaSelected,
@@ -2235,7 +2296,7 @@ function PedidoView({
     if (draft) {
       Alert.alert(
         "Pedido en borrador encontrado",
-        `Se encontró un pedido en borrador para la Mesa ${m.num}. ¿Deseas continuarlo?`,
+        `Se encontrÃ³ un pedido en borrador para la Mesa ${m.num}. Â¿Deseas continuarlo?`,
         [
           {
             text: "Continuar",
@@ -2277,10 +2338,10 @@ function PedidoView({
         if (mesaSel && mesaSel.num !== m.num && carrito.length > 0) {
           Alert.alert(
             "Cambiar de Mesa",
-            `¿Deseas descartar el pedido actual de la ${mesaSel.num}?`,
+            `Â¿Deseas descartar el pedido actual de la ${mesaSel.num}?`,
             [
               {
-                text: "Sí, descartar",
+                text: "SÃ­, descartar",
                 onPress: () => {
                   setCarrito([]);
                   setPedidoEditando(null);
@@ -2340,7 +2401,7 @@ function PedidoView({
       }
       return [...c, nuevoItem];
     });
-    showToast(`➕ ${configCantidad}x ${prodToConfig.nombre}`);
+    showToast(`âž• ${configCantidad}x ${prodToConfig.nombre}`);
     setProdConfigModalVisible(false);
     setProdToConfig(null);
   };
@@ -2417,7 +2478,7 @@ function PedidoView({
           </View>
         </View>
 
-        {/* Tables grid — 2 columns */}
+        {/* Tables grid â€” 2 columns */}
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', padding: 10 }}>
           {mesas.map(m => {
             const sel = mesaSel?.id === m.id;
@@ -2452,7 +2513,7 @@ function PedidoView({
                 </View>
                 {borradores[m.num] && (
                   <Text style={{ fontSize: 10, fontWeight: "700", color: C.orange, marginTop: 4 }}>
-                    📝 Borrador
+                    ðŸ“ Borrador
                   </Text>
                 )}
                 {sel && (
@@ -2474,7 +2535,7 @@ function PedidoView({
             if (draft) {
               Alert.alert(
                 "Pedido en borrador encontrado",
-                `Se encontró un pedido en borrador para ${numParaLlevar}. ¿Deseas continuarlo?`,
+                `Se encontrÃ³ un pedido en borrador para ${numParaLlevar}. Â¿Deseas continuarlo?`,
                 [
                   {
                     text: "Continuar",
@@ -2502,10 +2563,10 @@ function PedidoView({
               if (mesaSel && mesaSel.num !== numParaLlevar && carrito.length > 0) {
                 Alert.alert(
                   "Cambiar de Mesa",
-                  `¿Deseas descartar el pedido actual de la ${mesaSel.num}?`,
+                  `Â¿Deseas descartar el pedido actual de la ${mesaSel.num}?`,
                   [
                     {
-                      text: "Sí, descartar",
+                      text: "SÃ­, descartar",
                       onPress: () => {
                         setCarrito([]);
                         setPedidoEditando(null);
@@ -2535,14 +2596,14 @@ function PedidoView({
           }}
         >
           <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: "rgba(232,82,10,0.15)", alignItems: "center", justifyContent: "center" }}>
-            <Text style={{ fontSize: 18 }}>🛍️</Text>
+            <Text style={{ fontSize: 18 }}>ðŸ›ï¸</Text>
           </View>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Text style={{ fontSize: 14, fontWeight: "800", color: C.orange }}>Pedido Para Llevar</Text>
               {borradores['Para Llevar #' + String(paraLlevarNextNum).padStart(3, '0')] && (
                 <Text style={{ fontSize: 10, fontWeight: "700", color: C.orange }}>
-                  (📝 Pedido en Borrador)
+                  (ðŸ“ Pedido en Borrador)
                 </Text>
               )}
             </View>
@@ -2567,7 +2628,7 @@ function PedidoView({
           disabled={!mesaSel}
         >
           <Text style={{ color: "white", fontWeight: "800", fontSize: 15 }}>
-            {mesaSel ? `Continuar con Mesa ${mesaSel.num} →` : "Selecciona una mesa"}
+            {mesaSel ? `Continuar con Mesa ${mesaSel.num} â†’` : "Selecciona una mesa"}
           </Text>
         </TouchableOpacity>
 
@@ -2605,7 +2666,7 @@ function PedidoView({
                       }
                       return activeOrder.items.map((it, idx) => (
                         <Text key={idx} style={{ fontSize: 12, color: C.text2, marginBottom: 4 }}>
-                          • {it.cantidad}x {it.nombre} ({it.estado === 'listo' ? '✅ Listo' : it.estado === 'preparando' ? '🔥 Prep.' : '⏳ Pend.'}) {it.nota ? `- 📝 ${it.nota}` : ''}
+                          â€¢ {it.cantidad}x {it.nombre} ({it.estado === 'listo' ? 'âœ… Listo' : it.estado === 'preparando' ? 'ðŸ”¥ Prep.' : 'â³ Pend.'}) {it.nota ? `- ðŸ“ ${it.nota}` : ''}
                         </Text>
                       ));
                     })()}
@@ -2642,7 +2703,7 @@ function PedidoView({
                                 nombre: item.nombre,
                                 precio: item.precio || prod.precio || 0,
                                 desc: prod.desc || '',
-                                emoji: prod.emoji || '🍽️',
+                                emoji: prod.emoji || 'ðŸ½ï¸',
                                 cantidad: item.cantidad,
                                 nota: item.nota || '',
                                 estado: item.estado || 'pendiente'
@@ -2657,10 +2718,10 @@ function PedidoView({
                           if (mesaSel && mesaSel.num !== mesaActivaSelected.num && carrito.length > 0) {
                             Alert.alert(
                               "Cambiar de Mesa",
-                              `¿Deseas descartar el pedido actual de la ${mesaSel.num}?`,
+                              `Â¿Deseas descartar el pedido actual de la ${mesaSel.num}?`,
                               [
                                 {
-                                  text: "Sí, descartar",
+                                  text: "SÃ­, descartar",
                                   onPress: loadAndEdit
                                 },
                                 { text: "Cancelar", style: "cancel" }
@@ -2682,7 +2743,7 @@ function PedidoView({
                         justifyContent: 'center',
                       }}
                     >
-                      <Text style={{ color: 'white', fontWeight: '700', fontSize: 13 }}>✏️ Editar Pedido</Text>
+                      <Text style={{ color: 'white', fontWeight: '700', fontSize: 13 }}>âœï¸ Editar Pedido</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -2694,7 +2755,7 @@ function PedidoView({
     );
   }
 
-  // PASO 2: Menú + Carrito
+  // PASO 2: MenÃº + Carrito
   return (
     <View style={{ flex: 1 }}>
       {/* Barra sup */}
@@ -2704,13 +2765,13 @@ function PedidoView({
           onPress={() => {
             if (carrito.length > 0 && mesaSel) {
               guardarBorrador(mesaSel.num, carrito, !!pedidoEditando, pedidoEditando?.uuid);
-              showToast(`📝 Borrador guardado: ${mesaSel.num}`);
+              showToast(`ðŸ“ Borrador guardado: ${mesaSel.num}`);
             }
             setPaso(1);
           }}
         >
           <Text style={{ color: C.cream, fontSize: 13 }}>
-            {pedidoEditando ? '⬅ Volver' : '⬅ Volver a Mesas'}
+            {pedidoEditando ? 'â¬… Volver' : 'â¬… Volver a Mesas'}
           </Text>
         </TouchableOpacity>
         <Text style={{ fontFamily: undefined, fontWeight: "800", fontSize: 16, color: C.cream }}>
@@ -2719,7 +2780,7 @@ function PedidoView({
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
-        {/* Categorías scroll horizontal */}
+        {/* CategorÃ­as scroll horizontal */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -2782,8 +2843,8 @@ function PedidoView({
           <View style={[s.card, { margin: 14, marginTop: 8 }]}>
             <View style={s.cardHeader}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Text style={s.cardTitle}>🛒 Pedido</Text>
-                <View style={s.badgeOrange}><Text style={s.badgeTxt}>{count} ítems</Text></View>
+                <Text style={s.cardTitle}>ðŸ›’ Pedido</Text>
+                <View style={s.badgeOrange}><Text style={s.badgeTxt}>{count} Ã­tems</Text></View>
               </View>
               {!pedidoEditando && (
                 <TouchableOpacity
@@ -2805,7 +2866,7 @@ function PedidoView({
                       <Text style={s.carritoNombre}>{item.nombre}</Text>
                       {item.estado && (
                         <Text style={{ fontSize: 9, color: isLocked ? C.green : item.estado === 'preparando' ? C.orange : C.yellow, fontWeight: '700' }}>
-                          {isLocked ? '✅ Listo' : item.estado === 'preparando' ? '🔥 Preparando' : '⏳ Pendiente'}
+                          {isLocked ? 'âœ… Listo' : item.estado === 'preparando' ? 'ðŸ”¥ Preparando' : 'â³ Pendiente'}
                         </Text>
                       )}
                     </View>
@@ -2822,7 +2883,7 @@ function PedidoView({
                         onPress={() => !isLocked && cambiarQty(idx, item.estado, -1)}
                         disabled={isLocked}
                       >
-                        <Text style={s.qtyBtnTxt}>−</Text>
+                        <Text style={s.qtyBtnTxt}>âˆ’</Text>
                       </TouchableOpacity>
                       <Text style={s.qtyNum}>{item.cantidad}</Text>
                       <TouchableOpacity
@@ -2874,11 +2935,11 @@ function PedidoView({
                   setPedidoEditando(null);
                 }}
               >
-                <Text style={{ color: C.text, fontWeight: "700", fontSize: 13 }}>❌ Cancelar</Text>
+                <Text style={{ color: C.text, fontWeight: "700", fontSize: 13 }}>âŒ Cancelar</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[s.btnPrimary, { flex: 2 }]} onPress={enviar}>
                 <Text style={s.btnPrimaryTxt}>
-                  {pedidoEditando ? 'Guardar Cambios ✏️' : 'Enviar a cocina 🔥'}
+                  {pedidoEditando ? 'Guardar Cambios âœï¸' : 'Enviar a cocina ðŸ”¥'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -2886,7 +2947,7 @@ function PedidoView({
         )}
       </ScrollView>
 
-      {/* ─── MODAL DE CONFIGURAR PRODUCTO (ADICIONALES Y NOTAS) ─── */}
+      {/* â”€â”€â”€ MODAL DE CONFIGURAR PRODUCTO (ADICIONALES Y NOTAS) â”€â”€â”€ */}
       {prodToConfig && (
         <Modal visible={prodConfigModalVisible} animationType="fade" transparent={true}>
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
@@ -2897,7 +2958,7 @@ function PedidoView({
               </View>
               <ScrollView style={{ padding: 18, maxHeight: 480 }}>
                 
-                <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>🍟 Adicionales Extra:</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>ðŸŸ Adicionales Extra:</Text>
                 <View style={{ gap: 8, marginBottom: 16 }}>
                   {adicionalesDisponibles.map(adic => {
                     const isSelected = configAdicionales.some(a => a.id === adic.id);
@@ -2925,7 +2986,7 @@ function PedidoView({
                   })}
                 </View>
 
-                <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>📝 Observaciones para cocina:</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>ðŸ“ Observaciones para cocina:</Text>
                 <TextInput
                   style={[s.formInput, { height: 60, textAlignVertical: 'top' }]}
                   placeholder="Ej. Sin tomate, poca salsa..."
@@ -2947,7 +3008,7 @@ function PedidoView({
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 24, paddingBottom: 14 }}>
                   <TouchableOpacity onPress={() => { setProdConfigModalVisible(false); setProdToConfig(null); }} style={{ flex: 1, padding: 14, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' }}><Text style={{ color: C.text, fontWeight: '700' }}>Cancelar</Text></TouchableOpacity>
                   <TouchableOpacity onPress={confirmarAgregarProducto} style={{ flex: 1, padding: 14, borderRadius: 8, backgroundColor: C.orange, alignItems: 'center', justifyContent: 'center' }}>
-                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>Añadir (${((prodToConfig.precio + configAdicionales.reduce((sum, a) => sum + a.precio, 0)) * configCantidad).toLocaleString("es-CO")})</Text>
+                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>AÃ±adir (${((prodToConfig.precio + configAdicionales.reduce((sum, a) => sum + a.precio, 0)) * configCantidad).toLocaleString("es-CO")})</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -2960,7 +3021,7 @@ function PedidoView({
   );
 }
 
-// ─── VISTA COCINA ─────────────────────────────────────────
+// â”€â”€â”€ VISTA COCINA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function CocinaView({ pedidos, onActualizar }) {
   const [ticker, setTicker] = useState(0);
   useEffect(() => {
@@ -2969,7 +3030,7 @@ function CocinaView({ pedidos, onActualizar }) {
   }, []);
   const estadoBadge = { pendiente: C.surf3, preparando: "#FEF3C7", lisdestPath: "#DCFCE7" };
   const estadoColor = { pendiente: C.text2, preparando: "#92400E", lisdestPath: "#15803D" };
-  const estadoLabel = { pendiente: "⏳ Pendiente", preparando: "🔥 Preparando", lisdestPath: "✅ Listo" };
+  const estadoLabel = { pendiente: "â³ Pendiente", preparando: "ðŸ”¥ Preparando", lisdestPath: "âœ… Listo" };
 
   const pedidosCocina = pedidos.map(p => {
     const itemsConIdx = p.items.map((it, idx) => ({ ...it, originalIdx: idx }));
@@ -2987,8 +3048,8 @@ function CocinaView({ pedidos, onActualizar }) {
   if (!pedidosCocina.length) {
     return (
       <View style={[s.content, { alignItems: "center", justifyContent: "center", flex: 1 }]}>
-        <Text style={{ fontSize: 40 }}>🎉</Text>
-        <Text style={{ color: C.cream2, marginTop: 10, fontSize: 15 }}>Todo al día — sin pedidos en Cocina</Text>
+        <Text style={{ fontSize: 40 }}>ðŸŽ‰</Text>
+        <Text style={{ color: C.cream2, marginTop: 10, fontSize: 15 }}>Todo al dÃ­a â€” sin pedidos en Cocina</Text>
       </View>
     );
   }
@@ -3004,7 +3065,7 @@ function CocinaView({ pedidos, onActualizar }) {
           <View style={[s.cardHeader, { backgroundColor: C.brand, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
             <View style={{ flex: 1 }}>
               <Text style={{ fontWeight: "800", fontSize: 17, color: C.cream }}>Mesa {p.mesa}</Text>
-              <Text style={{ fontSize: 11, color: C.cream2, opacity: 0.7 }}>🕒 {p.hora}</Text>
+              <Text style={{ fontSize: 11, color: C.cream2, opacity: 0.7 }}>ðŸ•’ {p.hora}</Text>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               {p.itemsFiltered.some(it => it.estado === "pendiente") && (
@@ -3024,7 +3085,7 @@ function CocinaView({ pedidos, onActualizar }) {
                     });
                   }}
                 >
-                  <Text style={{ color: 'white', fontWeight: '800', fontSize: 12 }}>🔥 Iniciar Mesa</Text>
+                  <Text style={{ color: 'white', fontWeight: '800', fontSize: 12 }}>ðŸ”¥ Iniciar Mesa</Text>
                 </TouchableOpacity>
               )}
               {(() => {
@@ -3036,7 +3097,7 @@ function CocinaView({ pedidos, onActualizar }) {
                     </View>
                     {mins >= 15 && (
                       <View style={[s.badgeBase, { backgroundColor: C.red, marginLeft: 6 }]}>
-                        <Text style={s.badgeTxt}>⚠️ DESPACHAR YA</Text>
+                        <Text style={s.badgeTxt}>âš ï¸ DESPACHAR YA</Text>
                       </View>
                     )}
                   </>
@@ -3051,10 +3112,10 @@ function CocinaView({ pedidos, onActualizar }) {
               
               const renderItem = (it) => (
                 <View key={it.originalIdx} style={s.itemCocina}>
-                  <Text style={s.itemQty}>×{it.cantidad}</Text>
+                  <Text style={s.itemQty}>Ã—{it.cantidad}</Text>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 14, fontWeight: "500", color: C.text }}>{it.nombre}</Text>
-                    {!!it.nota && <Text style={{ fontSize: 11, color: C.text2 }}>📝 {it.nota}</Text>}
+                    {!!it.nota && <Text style={{ fontSize: 11, color: C.text2 }}>ðŸ“ {it.nota}</Text>}
                   </View>
                   <TouchableOpacity 
                     style={[s.badgeBase, { backgroundColor: estadoBadge[it.estado] }]}
@@ -3071,7 +3132,7 @@ function CocinaView({ pedidos, onActualizar }) {
                   </TouchableOpacity>
                   {it.estado === "preparando" && (
                     <TouchableOpacity style={[s.btnSmGreen, { marginLeft: 6 }]} onPress={() => onActualizar(p.uuid, it.originalIdx, "listo")}>
-                      <Text style={{ color: "white", fontSize: 12 }}>✅ Listo</Text>
+                      <Text style={{ color: "white", fontSize: 12 }}>âœ… Listo</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -3081,13 +3142,13 @@ function CocinaView({ pedidos, onActualizar }) {
                 <>
                   {comidas.length > 0 && (
                     <>
-                      <Text style={{fontSize: 13, fontWeight: "bold", color: C.text2, marginBottom: 8, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5}}>🍔 Comidas</Text>
+                      <Text style={{fontSize: 13, fontWeight: "bold", color: C.text2, marginBottom: 8, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5}}>ðŸ” Comidas</Text>
                       {comidas.map(renderItem)}
                     </>
                   )}
                   {bebidas.length > 0 && (
                     <>
-                      <Text style={{fontSize: 13, fontWeight: "bold", color: C.text2, marginBottom: 8, marginTop: comidas.length > 0 ? 12 : 4, textTransform: 'uppercase', letterSpacing: 0.5}}>🥤 Bebidas</Text>
+                      <Text style={{fontSize: 13, fontWeight: "bold", color: C.text2, marginBottom: 8, marginTop: comidas.length > 0 ? 12 : 4, textTransform: 'uppercase', letterSpacing: 0.5}}>ðŸ¥¤ Bebidas</Text>
                       {bebidas.map(renderItem)}
                     </>
                   )}
@@ -3103,7 +3164,7 @@ function CocinaView({ pedidos, onActualizar }) {
 
 
 
-// ─── VISTA CAJA (CON ACUMULACIÓN REAL, SUGERENCIAS Y CORRECCIÓN DE SIMBOLO) ───
+// â”€â”€â”€ VISTA CAJA (CON ACUMULACIÃ“N REAL, SUGERENCIAS Y CORRECCIÃ“N DE SIMBOLO) â”€â”€â”€
 function CajaView({
   pedidos, productos, setPedidos, mesas, setMesas, ventas, setVentas, serverIP, showToast, sesionActiva, setSesionActiva, loggedUser, onSolicitarCancelar,
   cajaCobroModalVisible, setCajaCobroModalVisible, cierreModalVisible, setCierreModalVisible,
@@ -3133,14 +3194,14 @@ function CajaView({
     loadBase();
   }, []);
 
-  // Estados para Liquidación Posterior
+  // Estados para LiquidaciÃ³n Posterior
   const [liqModalVisible, setLiqModalVisible] = useState(false);
   const [deudorSel, setDeudorSel] = useState(null);
   const [metodoLiq, setMetodoLiq] = useState('efectivo');
   const [verDeudores, setVerDeudores] = useState(true);
   const [deudorExpandido, setDeudorExpandido] = useState(null);
 
-  // Función para calcular el valor total de cualquier pedido o cuenta acumulada
+  // FunciÃ³n para calcular el valor total de cualquier pedido o cuenta acumulada
   const calcularEstadoCocina = (items) => {
     let pendientes = 0;
     let preparando = 0;
@@ -3175,183 +3236,191 @@ function CajaView({
 
   // PROCESAR EL COBRO DESDE UNA MESA
   const confirmarCobro = async () => {
-    if (!pedidoSel) return;
+    try {
+      if (!pedidoSel) return;
 
-    if (metodoPago === 'fiado' && !nombreDeudor.trim()) {
-      showToast('⚠️ Escribe o selecciona el nombre de la persona');
-      return;
-    }
+      if (metodoPago === 'fiado' && !nombreDeudor.trim()) {
+        showToast('âš ï¸ Escribe o selecciona el nombre de la persona');
+        return;
+      }
 
-    const fechaActual = new Date().toISOString();
+      const fechaActual = new Date().toISOString();
 
-    if (metodoPago === 'fiado') {
-      const deudorLimpio = nombreDeudor.trim();
-      
-      // BUSQUEDA ESTRICTA: Ignora mayúsculas, minúsculas y espacios invisibles
-      const clienteExistenteIdx = fiados.findIndex(
-        f => f.deudor && f.deudor.trim().toLowerCase() === deudorLimpio.toLowerCase()
-      );
-      
-      let nuevosFiados = [...fiados];
-      const nuevaOrden = {
-        fecha: fechaActual,
-        mesa: String(pedidoSel.mesa),
-        items: pedidoSel.items.map(it => ({
-          nombre: it.nombre,
-          cantidad: it.cantidad,
-          precio: it.precio !== undefined ? it.precio : (productos.find(p => p.nombre === it.nombre)?.precio || 0),
-          cat: it.cat
-        }))
-      };
-
-      if (clienteExistenteIdx > -1) {
-        // ─── CLIENTE EXISTENTE: REGISTRAR EN EL HISTORIAL DE ÓRDENES ───
-        const existingFiado = fiados[clienteExistenteIdx];
-        const historialActualizado = [...(existingFiado.ordenes_historial || []), nuevaOrden];
-
-        // Evita duplicar el número de la mesa si vuelve a pedir de la misma
-        const mesasSet = new Set();
-        if (existingFiado.mesa) {
-          String(existingFiado.mesa).split(',').forEach(m => {
-            if (m.trim()) mesasSet.add(m.trim());
-          });
-        }
-        if (pedidoSel.mesa) {
-          String(pedidoSel.mesa).split(',').forEach(m => {
-            if (m.trim()) mesasSet.add(m.trim());
-          });
-        }
-        const updatedMesa = Array.from(mesasSet).join(', ');
-
-        nuevosFiados[clienteExistenteIdx] = {
-          ...existingFiado,
-          ordenes_historial: historialActualizado,
-          items: historialActualizado,
-          fecha_fiado: fechaActual,
-          mesa: updatedMesa
+      if (metodoPago === 'fiado') {
+        const deudorLimpio = nombreDeudor.trim();
+        
+        // BUSQUEDA ESTRICTA: Ignora mayÃºsculas, minÃºsculas y espacios invisibles
+        const clienteExistenteIdx = fiados.findIndex(
+          f => f.deudor && f.deudor.trim().toLowerCase() === deudorLimpio.toLowerCase()
+        );
+        
+        let nuevosFiados = [...fiados];
+        const nuevaOrden = {
+          fecha: fechaActual,
+          mesa: String(pedidoSel?.mesa || ''),
+          items: (pedidoSel?.items || []).map(it => ({
+            nombre: it.nombre,
+            cantidad: it.cantidad,
+            precio: it.precio !== undefined ? it.precio : (productos.find(p => p.nombre === it.nombre)?.precio || 0),
+            cat: it.cat
+          }))
         };
 
-        // Guardar estados y persistencia en caché del celular
-        setFiados(nuevosFiados);
-        await AsyncStorage.setItem('fiados', JSON.stringify(nuevosFiados));
+        if (clienteExistenteIdx > -1) {
+          // â”€â”€â”€ CLIENTE EXISTENTE: REGISTRAR EN EL HISTORIAL DE Ã“RDENES â”€â”€â”€
+          const existingFiado = fiados[clienteExistenteIdx];
+          const historialActualizado = [...(existingFiado.ordenes_historial || []), nuevaOrden];
 
-        // Liberar la mesa para el mapa de meseros
-        setPedidos(pedidos.filter(p => p.uuid !== pedidoSel.uuid));
-        const mNum = Number(pedidoSel.mesa);
-        if (!isNaN(mNum)) setMesas(mesas.map(m => m.num === mNum ? { ...m, estado: 'libre' } : m));
+          // Evita duplicar el nÃºmero de la mesa si vuelve a pedir de la misma
+          const mesasSet = new Set();
+          if (existingFiado.mesa) {
+            String(existingFiado.mesa).split(',').forEach(m => {
+              if (m.trim()) mesasSet.add(m.trim());
+            });
+          }
+          if (pedidoSel?.mesa) {
+            String(pedidoSel.mesa).split(',').forEach(m => {
+              if (m.trim()) mesasSet.add(m.trim());
+            });
+          }
+          const updatedMesa = Array.from(mesasSet).join(', ');
 
-        // Petición PUT al servidor SQLite
-        try {
-          const urlFiado = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${existingFiado.uuid}/fiado`;
-          await axios.put(urlFiado, {
-            deudor: existingFiado.deudor, // Conserva la capitalización original
-            fecha_fiado: fechaActual,
+          nuevosFiados[clienteExistenteIdx] = {
+            ...existingFiado,
+            ordenes_historial: historialActualizado,
             items: historialActualizado,
-            mesa: updatedMesa,
-            usuario: loggedUser ? loggedUser.nombre : 'Caja'
-          }, { timeout: 15000 });
-          showToast(`📝 Cuenta acumulada con éxito`);
-        } catch (e) {
-          console.error('Error merging fiado on server:', e.message);
-          showToast("⚠️ Guardado local en Cartera (sin conexión)");
-        }
+            fecha_fiado: fechaActual,
+            mesa: updatedMesa
+          };
 
-        // Completar/Eliminar el nuevo pedido en el servidor (DELETE)
-        try {
-          const urlDelete = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel.uuid}`;
-          await axios.delete(urlDelete, { timeout: 15000 });
-        } catch (e) {
-          console.error('Error completing merged order on server:', e.message);
-        }
+          // Guardar estados y persistencia en cachÃ© del celular
+          setFiados(nuevosFiados);
+          await AsyncStorage.setItem('fiados', JSON.stringify(nuevosFiados));
 
-      } else {
-        // ─── CLIENTE NUEVO: CREAR REGISTRO ÚNICO DESDE CERO CON HISTORIAL ───
-        const nuevoRegistro = {
-          uuid: pedidoSel.uuid, // Mantiene el id para el mapeo con el servidor
-          mesa: String(pedidoSel.mesa),
-          estado: 'fiado',
-          deudor: deudorLimpio,
-          fecha_fiado: fechaActual,
-          ordenes_historial: [nuevaOrden],
-          items: [nuevaOrden]
-        };
-        nuevosFiados = [nuevoRegistro, ...nuevosFiados];
+          // Liberar la mesa para el mapa de meseros
+          setPedidos(pedidos.filter(p => p.uuid !== pedidoSel?.uuid));
+          const mNum = Number(pedidoSel?.mesa);
+          if (!isNaN(mNum)) setMesas(mesas.map(m => m.num === mNum ? { ...m, estado: 'libre' } : m));
 
-        // Guardar estados y persistencia en caché del celular
-        setFiados(nuevosFiados);
-        await AsyncStorage.setItem('fiados', JSON.stringify(nuevosFiados));
+          // PeticiÃ³n PUT al servidor SQLite
+          try {
+            const urlFiado = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${existingFiado.uuid}/fiado`;
+            await axios.put(urlFiado, {
+              deudor: existingFiado.deudor, // Conserva la capitalizaciÃ³n original
+              fecha_fiado: fechaActual,
+              items: historialActualizado,
+              mesa: updatedMesa,
+              usuario: loggedUser?.nombre || 'Caja'
+            }, { timeout: 15000 });
+            showToast(`ðŸ“ Cuenta acumulada con Ã©xito`);
+          } catch (e) {
+            console.error('Error merging fiado on server:', e.message);
+            showToast("âš ï¸ Guardado local en Cartera (sin conexiÃ³n)");
+          }
 
-        // Liberar la mesa para el mapa de meseros
-        setPedidos(pedidos.filter(p => p.uuid !== pedidoSel.uuid));
-        const mNum = Number(pedidoSel.mesa);
-        if (!isNaN(mNum)) setMesas(mesas.map(m => m.num === mNum ? { ...m, estado: 'libre' } : m));
+          // Completar/Eliminar el nuevo pedido en el servidor (DELETE)
+          try {
+            const urlDelete = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel?.uuid}`;
+            await axios.delete(urlDelete, { timeout: 15000 });
+          } catch (e) {
+            console.error('Error completing merged order on server:', e.message);
+          }
 
-        // Petición PUT al servidor SQLite
-        try {
-          const urlFiado = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel.uuid}/fiado`;
-          await axios.put(urlFiado, {
+        } else {
+          // â”€â”€â”€ CLIENTE NUEVO: CREAR REGISTRO ÃšNICO DESDE CERO CON HISTORIAL â”€â”€â”€
+          const nuevoRegistro = {
+            uuid: pedidoSel?.uuid, // Mantiene el id para el mapeo con el servidor
+            mesa: String(pedidoSel?.mesa || ''),
+            estado: 'fiado',
             deudor: deudorLimpio,
             fecha_fiado: fechaActual,
-            items: [nuevaOrden],
-            mesa: String(pedidoSel.mesa),
-            usuario: loggedUser ? loggedUser.nombre : 'Caja'
-          }, { timeout: 15000 });
-          showToast(`📝 Cuenta creada con éxito`);
-        } catch (e) {
-          console.error('Error saving new fiado to server:', e.message);
-          showToast("⚠️ Guardado local en Cartera");
+            ordenes_historial: [nuevaOrden],
+            items: [nuevaOrden]
+          };
+          nuevosFiados = [nuevoRegistro, ...nuevosFiados];
+
+          // Guardar estados y persistencia en cachÃ© del celular
+          setFiados(nuevosFiados);
+          await AsyncStorage.setItem('fiados', JSON.stringify(nuevosFiados));
+
+          // Liberar la mesa para el mapa de meseros
+          setPedidos(pedidos.filter(p => p.uuid !== pedidoSel?.uuid));
+          const mNum = Number(pedidoSel?.mesa);
+          if (!isNaN(mNum)) setMesas(mesas.map(m => m.num === mNum ? { ...m, estado: 'libre' } : m));
+
+          // PeticiÃ³n PUT al servidor SQLite
+          try {
+            const urlFiado = `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel?.uuid}/fiado`;
+            await axios.put(urlFiado, {
+              deudor: deudorLimpio,
+              fecha_fiado: fechaActual,
+              items: [nuevaOrden],
+              mesa: String(pedidoSel?.mesa || ''),
+              usuario: loggedUser?.nombre || 'Caja'
+            }, { timeout: 15000 });
+            showToast(`ðŸ“ Cuenta creada con Ã©xito`);
+          } catch (e) {
+            console.error('Error saving new fiado to server:', e.message);
+            showToast("âš ï¸ Guardado local en Cartera");
+          }
         }
+
+        setNombreDeudor('');
+        setCajaCobroModalVisible(false);
+        setPedidoSel(null);
+        return;
       }
 
-      setNombreDeudor('');
+      // â”€â”€â”€ COBRO NORMAL (EFECTIVO O TRANSFERENCIA) â”€â”€â”€
+      const total = calcularTotal(pedidoSel) || 0;
+      const detallesVenta = (pedidoSel?.items || []).map(item => ({
+        producto_id: productos.find(p => p.nombre === item.nombre)?.id || null,
+        nombre_producdestPath: item.nombre,
+        cantidad: item.cantidad,
+        precio_unitario: item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0),
+        subtotal: (item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0)) * item.cantidad
+      }));
+
+      try {
+        if (metodoPago === 'mixto') {
+          const efectivoMonto = parseFloat(cleanNum(efectivoMixto)) || 0;
+          const transferenciaMonto = Math.max(0, total - efectivoMonto);
+          
+          await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel?.mesa || ''), total: efectivoMonto, metodo_pago: 'Efectivo', sesion_id: sesionActiva?.id || null, detalles: detallesVenta, usuario: loggedUser?.nombre || 'Caja' });
+          
+          if (transferenciaMonto > 0) {
+            await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel?.mesa || ''), total: transferenciaMonto, metodo_pago: 'Transferencia', sesion_id: sesionActiva?.id || null, detalles: [], usuario: loggedUser?.nombre || 'Caja' });
+          }
+        } else {
+          await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel?.mesa || ''), total, metodo_pago: metodoPago === 'efectivo' ? 'Efectivo' : 'Transferencia', sesion_id: sesionActiva?.id || null, detalles: detallesVenta, usuario: loggedUser?.nombre || 'Caja' });
+        }
+        
+        await axios.delete(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel?.uuid}`);
+        showToast("âœ… Cobro registrado");
+        
+        if (imprimirTicketCaja && savedPrinter) {
+          try {
+            printCustomerReceipt(total, metodoPago === 'efectivo' ? 'Efectivo' : (metodoPago === 'mixto' ? 'Mixto' : 'Transferencia'), JSON.stringify(detallesVenta), String(pedidoSel?.mesa || ''), savedPrinter.type);
+          } catch (printErr) {
+            console.error("Error al imprimir:", printErr);
+          }
+        }
+      } catch (e) {
+        showToast("âš ï¸ Respaldado en memoria local");
+      }
+
+      setVentas([{ id: Date.now(), mesa: pedidoSel?.mesa || '', total, metodo: metodoPago === 'efectivo' ? 'Efectivo' : (metodoPago === 'mixto' ? 'Mixto' : 'Transferencia'), hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }, ...ventas]);
+      setPedidos(pedidos.filter(p => p.uuid !== pedidoSel?.uuid));
+      const mesaNumero = Number(pedidoSel?.mesa);
+      if (!isNaN(mesaNumero)) setMesas(mesas.map(m => m.num === mesaNumero ? { ...m, estado: 'libre' } : m));
       setCajaCobroModalVisible(false);
       setPedidoSel(null);
-      return;
+    } catch (err) {
+      console.error("Error al procesar cobro:", err);
+      Alert.alert("Aviso", "No se pudo completar el cobro: " + (err.message || "Error desconocido"));
     }
-
-    // ─── COBRO NORMAL (EFECTIVO O TRANSFERENCIA) ───
-    const total = calcularTotal(pedidoSel);
-    const detallesVenta = pedidoSel.items.map(item => ({
-      producto_id: productos.find(p => p.nombre === item.nombre)?.id || null,
-      nombre_producdestPath: item.nombre,
-      cantidad: item.cantidad,
-      precio_unitario: item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0),
-      subtotal: (item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0)) * item.cantidad
-    }));
-
-    try {
-      if (metodoPago === 'mixto') {
-        const efectivoMonto = parseFloat(cleanNum(efectivoMixto)) || 0;
-        const transferenciaMonto = Math.max(0, total - efectivoMonto);
-        
-        await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total: efectivoMonto, metodo_pago: 'Efectivo', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
-        
-        if (transferenciaMonto > 0) {
-          await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total: transferenciaMonto, metodo_pago: 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: [], usuario: loggedUser ? loggedUser.nombre : 'Caja' });
-        }
-      } else {
-        await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { fecha: fechaActual, tipo_origen: 'Mesa', mesa: String(pedidoSel.mesa), total, metodo_pago: metodoPago === 'efectivo' ? 'Efectivo' : 'Transferencia', sesion_id: sesionActiva ? sesionActiva.id : null, detalles: detallesVenta, usuario: loggedUser ? loggedUser.nombre : 'Caja' });
-      }
-      
-      await axios.delete(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/pedidos/${pedidoSel.uuid}`);
-      showToast("✅ Cobro registrado");
-      
-      if (imprimirTicketCaja && savedPrinter) {
-        printCustomerReceipt(total, metodoPago === 'efectivo' ? 'Efectivo' : (metodoPago === 'mixto' ? 'Mixto' : 'Transferencia'), JSON.stringify(detallesVenta), String(pedidoSel.mesa), savedPrinter.type);
-      }
-    } catch (e) {
-      showToast("⚠️ Respaldado en memoria local");
-    }
-
-    setVentas([{ id: Date.now(), mesa: pedidoSel.mesa, total, metodo: metodoPago === 'efectivo' ? 'Efectivo' : (metodoPago === 'mixto' ? 'Mixto' : 'Transferencia'), hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }, ...ventas]);
-    setPedidos(pedidos.filter(p => p.uuid !== pedidoSel.uuid));
-    const mesaNumero = Number(pedidoSel.mesa);
-    if (!isNaN(mesaNumero)) setMesas(mesas.map(m => m.num === mesaNumero ? { ...m, estado: 'libre' } : m));
-    setCajaCobroModalVisible(false);
-    setPedidoSel(null);
   };
-
-  // LIQUIDAR LA TARJETA ÚNICA ACUMULADA
+  // LIQUIDAR LA TARJETA ÃšNICA ACUMULADA
   const procesarLiquidacionDeuda = async () => {
     if (!deudorSel) return;
     const totalAcumulado = calcularTotal(deudorSel);
@@ -3406,12 +3475,12 @@ function CajaView({
       setFiados(carteraActualizada);
       await AsyncStorage.setItem('fiados', JSON.stringify(carteraActualizada));
 
-      setVentas([{ id: Date.now(), mesa: `👤 ${deudorSel.deudor}`, total: totalAcumulado, metodo: metodoLiq === 'efectivo' ? 'Efectivo' : 'Transferencia', hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }, ...ventas]);
-      showToast("✅ Cuenta saldada por completo");
+      setVentas([{ id: Date.now(), mesa: `ðŸ‘¤ ${deudorSel.deudor}`, total: totalAcumulado, metodo: metodoLiq === 'efectivo' ? 'Efectivo' : 'Transferencia', hora: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) }, ...ventas]);
+      showToast("âœ… Cuenta saldada por completo");
       setLiqModalVisible(false);
       setDeudorSel(null);
     } catch (e) {
-      showToast("⚠️ Servidor desconectado");
+      showToast("âš ï¸ Servidor desconectado");
     }
   };
 
@@ -3419,14 +3488,14 @@ function CajaView({
   if (!sesionActiva) {
     return (
       <ScrollView style={{ flex: 1 }} contentContainerStyle={s.content}>
-        <Text style={[s.sectionTitle, { marginBottom: 12 }]}>💰 Control de Caja</Text>
+        <Text style={[s.sectionTitle, { marginBottom: 12 }]}>ðŸ’° Control de Caja</Text>
         <View style={[s.card, { padding: 20, backgroundColor: C.surf2, alignItems: 'center', marginTop: 10 }]}>
           <Ionicons name="lock-closed" size={56} color={C.orange} style={{ marginBottom: 14 }} />
           <Text style={{ fontSize: 16, fontWeight: '800', color: C.text, textAlign: 'center', marginBottom: 10 }}>
             La caja se encuentra CERRADA
           </Text>
           <Text style={{ fontSize: 12, color: C.text2, textAlign: 'center', marginBottom: 20, lineHeight: 18 }}>
-            Ingresa la base inicial de caja para abrir la sesión de cobro y poder facturar pedidos.
+            Ingresa la base inicial de caja para abrir la sesiÃ³n de cobro y poder facturar pedidos.
           </Text>
           
           <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, alignSelf: 'flex-start', marginBottom: 6 }}>
@@ -3447,14 +3516,14 @@ function CajaView({
             placeholder="Ej. 100000"
             placeholderTextColor={C.text3}
             keyboardType="decimal-pad"
-            value={aperturaBase}
+            value={String(aperturaBase || '')}
             onChangeText={(txt) => setAperturaBase(formatMoneyInput(txt))}
           />
           <TouchableOpacity
             onPress={async () => {
               const base = parseFloat(cleanNum(aperturaBase));
               if (isNaN(base) || base < 0) {
-                showToast('⚠️ Ingresa una base válida');
+                showToast('âš ï¸ Ingresa una base vÃ¡lida');
                 return;
               }
               try {
@@ -3462,10 +3531,10 @@ function CajaView({
                 if (res.data && res.data.success) {
                   setSesionActiva(res.data.sesion);
                   setAperturaBase('');
-                  showToast('✅ Caja abierta con éxito');
+                  showToast('âœ… Caja abierta con Ã©xito');
                 }
               } catch (e) {
-                showToast('⚠️ Error al conectar con el servidor');
+                showToast('âš ï¸ Error al conectar con el servidor');
               }
             }}
             style={{
@@ -3480,7 +3549,7 @@ function CajaView({
             }}
           >
             <Ionicons name="key" size={18} color="white" />
-            <Text style={{ color: 'white', fontWeight: '800', fontSize: 14 }}>ABRIR SESIÓN DE CAJA</Text>
+            <Text style={{ color: 'white', fontWeight: '800', fontSize: 14 }}>ABRIR SESIÃ“N DE CAJA</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -3502,7 +3571,7 @@ function CajaView({
         borderColor: C.green
       }}>
         <View>
-          <Text style={{ color: C.cream, fontSize: 13, fontWeight: '800' }}>🟢 SESIÓN DE CAJA ACTIVA</Text>
+          <Text style={{ color: C.cream, fontSize: 13, fontWeight: '800' }}>ðŸŸ¢ SESIÃ“N DE CAJA ACTIVA</Text>
           <Text style={{ color: C.cream2, fontSize: 11, marginTop: 2 }}>
             Base Inicial: {sesionActiva.base_inicial.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}
           </Text>
@@ -3517,7 +3586,7 @@ function CajaView({
                 setCierreModalVisible(true);
               }
             } catch (e) {
-              showToast('⚠️ Error al consultar el servidor');
+              showToast('âš ï¸ Error al consultar el servidor');
             }
           }}
           style={{
@@ -3535,7 +3604,7 @@ function CajaView({
         </TouchableOpacity>
       </View>
 
-      <Text style={[s.sectionTitle, { marginBottom: 12 }]}>💰 Cuentas Pendientes en Mesas</Text>
+      <Text style={[s.sectionTitle, { marginBottom: 12 }]}>ðŸ’° Cuentas Pendientes en Mesas</Text>
       {pedidos.length === 0 ? (
         <View style={{ padding: 15, alignItems: 'center' }}><Text style={{ color: C.cream2 }}>No hay mesas pendientes de pago</Text></View>
       ) : (
@@ -3546,10 +3615,10 @@ function CajaView({
             <View key={p.uuid} style={[s.card, { marginBottom: 12, padding: 14, backgroundColor: C.surf2 }]}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
                 <Text style={{ fontSize: 16, fontWeight: '800', color: C.text }}>{isLlevar ? p.mesa : `Mesa ${p.mesa}`}</Text>
-                <Text style={{ fontSize: 12, color: C.text3 }}>🕒 {p.hora}</Text>
+                <Text style={{ fontSize: 12, color: C.text3 }}>ðŸ•’ {p.hora}</Text>
               </View>
               {p.items.map((it, idx) => (
-                <Text key={idx} style={{ fontSize: 12, color: C.text2 }}>• {it.cantidad}x {it.nombre}</Text>
+                <Text key={idx} style={{ fontSize: 12, color: C.text2 }}>â€¢ {it.cantidad}x {it.nombre}</Text>
               ))}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.border }}>
                 <Text style={{ fontSize: 15, fontWeight: '800', color: C.orange }}>Total: {totalMesa.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
@@ -3568,10 +3637,10 @@ function CajaView({
                       gap: 4
                     }}
                   >
-                    <Text style={{ color: C.red, fontWeight: '700', fontSize: 13 }}>❌ Cancelar</Text>
+                    <Text style={{ color: C.red, fontWeight: '700', fontSize: 13 }}>âŒ Cancelar</Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={s.btnSmGreen} onPress={() => { setPedidoSel(p); setMetodoPago('efectivo'); setNombreDeudor(''); setCajaCobroModalVisible(true); }}><Text style={{ color: 'white', fontWeight: '700' }}>💰 Cobrar</Text></TouchableOpacity>
+                  <TouchableOpacity style={s.btnSmGreen} onPress={() => { setPedidoSel(p); setMetodoPago('efectivo'); setNombreDeudor(''); setCajaCobroModalVisible(true); }}><Text style={{ color: 'white', fontWeight: '700' }}>ðŸ’° Cobrar</Text></TouchableOpacity>
                 </View>
               </View>
             </View>
@@ -3579,7 +3648,7 @@ function CajaView({
         })
       )}
 
-      {/* Botón Interruptor Discreto */}
+      {/* BotÃ³n Interruptor Discreto */}
       <TouchableOpacity
         onPress={() => setVerDeudores(!verDeudores)}
         style={{
@@ -3599,7 +3668,7 @@ function CajaView({
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Ionicons name={verDeudores ? "eye-outline" : "eye-off-outline"} size={16} color={C.text2} />
-          <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, letterSpacing: 0.5 }}>Cartera / Créditos</Text>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, letterSpacing: 0.5 }}>Cartera / CrÃ©ditos</Text>
         </View>
         <Ionicons name={verDeudores ? "chevron-up" : "chevron-down"} size={16} color={C.text3} />
       </TouchableOpacity>
@@ -3614,7 +3683,7 @@ function CajaView({
               const expandido = deudorExpandido === f.uuid;
               return (
                 <View key={f.uuid} style={[s.card, { marginBottom: 12, padding: 12, backgroundColor: C.surf2, borderColor: C.border, borderWidth: 1 }]}>
-                  {/* Cabecera del Acordeón */}
+                  {/* Cabecera del AcordeÃ³n */}
                   <TouchableOpacity
                     onPress={() => setDeudorExpandido(expandido ? null : f.uuid)}
                     style={{
@@ -3625,7 +3694,7 @@ function CajaView({
                     }}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>👤 {f.deudor}</Text>
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: C.text }}>ðŸ‘¤ {f.deudor}</Text>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <Text style={{ fontSize: 13, fontWeight: '700', color: C.red, opacity: 0.85 }}>
@@ -3638,7 +3707,7 @@ function CajaView({
                   {/* Detalle Expandible */}
                   {expandido && (
                     <View style={{ marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: C.border }}>
-                      {/* Historial de Órdenes */}
+                      {/* Historial de Ã“rdenes */}
                       <View style={{ gap: 8, marginBottom: 12 }}>
                         {f.ordenes_historial && f.ordenes_historial.map((orden, oIdx) => {
                           const fechaOrd = orden.fecha ? new Date(orden.fecha).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }) : 'N/A';
@@ -3651,12 +3720,12 @@ function CajaView({
                               borderLeftColor: C.orange
                             }}>
                               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                                <Text style={{ fontSize: 10, fontWeight: '700', color: C.text2 }}>📅 {fechaOrd}</Text>
-                                <Text style={{ fontSize: 10, fontWeight: '700', color: C.text3 }}>📍 Mesa: {orden.mesa || 'N/A'}</Text>
+                                <Text style={{ fontSize: 10, fontWeight: '700', color: C.text2 }}>ðŸ“… {fechaOrd}</Text>
+                                <Text style={{ fontSize: 10, fontWeight: '700', color: C.text3 }}>ðŸ“ Mesa: {orden.mesa || 'N/A'}</Text>
                               </View>
                               {orden.items && orden.items.map((it, itIdx) => (
                                 <Text key={itIdx} style={{ fontSize: 11, color: C.text, marginBottom: 2 }}>
-                                  • {it.cantidad}x {it.nombre} <Text style={{ color: C.text3 }}>({((it.precio || 0) * it.cantidad).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })})</Text>
+                                  â€¢ {it.cantidad}x {it.nombre} <Text style={{ color: C.text3 }}>({((it.precio || 0) * it.cantidad).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })})</Text>
                                 </Text>
                               ))}
                             </View>
@@ -3664,7 +3733,7 @@ function CajaView({
                         })}
                       </View>
 
-                      {/* Botón de Liquidación */}
+                      {/* BotÃ³n de LiquidaciÃ³n */}
                       <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'space-between', alignItems: 'center' }}>
                         <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2 }}>Saldo: <Text style={{ color: C.orange, fontWeight: '800' }}>{totalAcumulado.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text></Text>
                         <TouchableOpacity onPress={() => { setDeudorSel(f); setMetodoLiq('efectivo'); setLiqModalVisible(true); }} style={{ backgroundColor: C.green, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6 }}><Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>Liquidar Deuda</Text></TouchableOpacity>
@@ -3683,7 +3752,7 @@ function CajaView({
         onPress={() => setShowHistorialVentas(!showHistorialVentas)} 
         style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 22, marginBottom: 10 }}
       >
-        <Text style={s.sectionTitle}>📋 Ventas del Día</Text>
+        <Text style={s.sectionTitle}>ðŸ“‹ Ventas del DÃ­a</Text>
         <Ionicons name={showHistorialVentas ? "chevron-up" : "chevron-down"} size={20} color={C.text} />
       </TouchableOpacity>
       
@@ -3694,7 +3763,7 @@ function CajaView({
           ) : (
             ventas.map((v, idx) => (
               <View key={idx} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: idx < ventas.length - 1 ? 1 : 0, borderBottomColor: C.border }}>
-                <View><Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{typeof v.mesa === 'string' && v.mesa.startsWith('Para') ? v.mesa : `Mesa ${v.mesa}`}</Text><Text style={{ fontSize: 10, color: C.text3 }}>{v.hora || 'Ahora'} • {v.metodo || 'Efectivo'}</Text></View>
+                <View><Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{typeof v.mesa === 'string' && v.mesa.startsWith('Para') ? v.mesa : `Mesa ${v.mesa}`}</Text><Text style={{ fontSize: 10, color: C.text3 }}>{v.hora || 'Ahora'} â€¢ {v.metodo || 'Efectivo'}</Text></View>
                 <Text style={{ fontSize: 14, fontWeight: '800', color: C.green }}>{v.total.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
               </View>
             ))
@@ -3703,7 +3772,7 @@ function CajaView({
       )}
 
 
-      {/* ─── MODAL DE COBRO DE MESA (CON FILTRO DE SELECCIÓN RÁPIDA) ─── */}
+      {/* â”€â”€â”€ MODAL DE COBRO DE MESA (CON FILTRO DE SELECCIÃ“N RÃPIDA) â”€â”€â”€ */}
       {pedidoSel && (
         <Modal visible={cajaCobroModalVisible} animationType="fade" transparent={true}>
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
@@ -3713,10 +3782,10 @@ function CajaView({
                 <Text style={{ fontSize: 18, fontWeight: '800', color: C.text, textAlign: 'center', marginBottom: 14 }}>Total Cuenta: {calcularTotal(pedidoSel).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
                 
                 <View style={{ gap: 8 }}>
-                  <TouchableOpacity onPress={() => setMetodoPago('efectivo')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'efectivo' && { borderColor: C.green, backgroundColor: 'rgba(45,106,63,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>💵 Efectivo</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setMetodoPago('transferencia')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'transferencia' && { borderColor: C.orange, backgroundColor: 'rgba(232,82,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>📲 Transferencia</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setMetodoPago('mixto')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'mixto' && { borderColor: C.brand, backgroundColor: 'rgba(61,26,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>💵📲 Cobro Mixto</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setMetodoPago('fiado')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'fiado' && { borderColor: C.yellow, backgroundColor: 'rgba(217,119,6,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>👤 Dar a Crédito (Anotar en Cuenta)</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => handlePaymentMethodChange('efectivo')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'efectivo' && { borderColor: C.green, backgroundColor: 'rgba(45,106,63,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>ðŸ’µ Efectivo</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => handlePaymentMethodChange('transferencia')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'transferencia' && { borderColor: C.orange, backgroundColor: 'rgba(232,82,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>ðŸ“² Transferencia</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => handlePaymentMethodChange('mixto')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'mixto' && { borderColor: C.brand, backgroundColor: 'rgba(61,26,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>ðŸ’µðŸ“² Cobro Mixto</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => handlePaymentMethodChange('fiado')} style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'fiado' && { borderColor: C.yellow, backgroundColor: 'rgba(217,119,6,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>ðŸ‘¤ Dar a CrÃ©dito (Anotar en Cuenta)</Text></TouchableOpacity>
                 </View>
 
                 {metodoPago === 'mixto' && (
@@ -3727,7 +3796,7 @@ function CajaView({
                       placeholder="Ej. 20000" 
                       placeholderTextColor={C.text3} 
                       keyboardType="decimal-pad"
-                      value={efectivoMixto} 
+                      value={String(efectivoMixto || '')} 
                       onChangeText={(txt) => setEfectivoMixto(formatMoneyInput(txt))} 
                     />
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, padding: 12, backgroundColor: C.surf3, borderRadius: 8 }}>
@@ -3744,22 +3813,30 @@ function CajaView({
                     <Text style={{ fontSize: 11, fontWeight: '700', color: C.text2, marginBottom: 4 }}>Nombre del Cliente Deudor:</Text>
                     <TextInput style={s.formInput} placeholder="Escribe el nombre del cliente..." placeholderTextColor={C.text3} value={nombreDeudor} onChangeText={setNombreDeudor} />
                     
-                    {/* SELECCIÓN RÁPIDA DE DEUDORES ACTUALES E HISTÓRICOS */}
+                    {/* SELECCIÃ“N RÃPIDA DE DEUDORES ACTUALES E HISTÃ“RICOS */}
                     {(() => {
-                      const deudoresActivos = fiados.map(f => f.deudor ? f.deudor.trim() : '').filter(d => d.length > 0);
-                      const deudoresExistentes = Array.from(new Set([...deudoresActivos, ...clientesGlobales])).sort((a,b) => a.localeCompare(b));
-                      
-                      if (deudoresExistentes.length > 0) {
-                        return (
-                          <View style={{ marginTop: 10 }}>
-                            <Text style={{ fontSize: 11, fontWeight: '700', color: C.text3, marginBottom: 6 }}>👥 Clientes registrados (Toca para seleccionar):</Text>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
-                              {deudoresExistentes.map((name, idx) => (
-                                <TouchableOpacity key={idx} onPress={() => setNombreDeudor(name)} style={{ backgroundColor: C.surf3, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.brand }}><Text style={{ fontSize: 12, color: C.text, fontWeight: '700' }}>👤 {name}</Text></TouchableOpacity>
-                              ))}
-                            </ScrollView>
-                          </View>
-                        );
+                      try {
+                        const fiadosArr = Array.isArray(fiados) ? fiados : [];
+                        const deudoresActivos = fiadosArr.map(f => (f && typeof f === 'object' && f.deudor) ? String(f.deudor).trim() : '').filter(d => d.length > 0);
+                        const globalesSeguros = Array.isArray(clientesGlobales) ? clientesGlobales : [];
+                        const deudoresExistentes = Array.from(new Set([...deudoresActivos, ...globalesSeguros]))
+                          .filter(d => d && typeof d === 'string' && d.trim().length > 0)
+                          .sort((a,b) => String(a).localeCompare(String(b)));
+                        
+                        if (deudoresExistentes.length > 0) {
+                          return (
+                            <View style={{ marginTop: 10 }}>
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: C.text3, marginBottom: 6 }}>ðŸ‘¥ Clientes registrados (Toca para seleccionar):</Text>
+                              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
+                                {deudoresExistentes.map((name, idx) => (
+                                  <TouchableOpacity key={idx} onPress={() => { setNombreDeudor(String(name)); Keyboard.dismiss(); }} style={{ backgroundColor: C.surf3, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1.5, borderColor: C.brand }}><Text style={{ fontSize: 12, color: C.text, fontWeight: '700' }}>ðŸ‘¤ {String(name)}</Text></TouchableOpacity>
+                                ))}
+                              </ScrollView>
+                            </View>
+                          );
+                        }
+                      } catch(e) {
+                        console.error('Error render deudores:', e);
                       }
                       return null;
                     })()}
@@ -3767,7 +3844,7 @@ function CajaView({
                 )}
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.border }}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>🖨️ Imprimir recibo para cliente</Text>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>ðŸ–¨ï¸ Imprimir recibo para cliente</Text>
                   <Switch value={imprimirTicketCaja} onValueChange={setImprimirTicketCaja} thumbColor={imprimirTicketCaja ? C.green : '#f4f3f4'} trackColor={{ false: '#767577', true: 'rgba(45,106,63,0.5)' }} />
                 </View>
 
@@ -3781,18 +3858,18 @@ function CajaView({
         </Modal>
       )}
 
-      {/* MODAL DE LIQUIDACIÓN POSTERIOR */}
+      {/* MODAL DE LIQUIDACIÃ“N POSTERIOR */}
       {deudorSel && (
         <Modal visible={liqModalVisible} animationType="fade" transparent={true}>
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
             <View style={{ width: '100%', backgroundColor: C.surface, borderRadius: 16, overflow: 'hidden', borderWidth: 1.5, borderColor: C.border }}>
-              <View style={{ backgroundColor: C.brand, padding: 16 }}><Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>💰 Saldar Cartera - {deudorSel.deudor}</Text></View>
+              <View style={{ backgroundColor: C.brand, padding: 16 }}><Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>ðŸ’° Saldar Cartera - {deudorSel.deudor}</Text></View>
               <View style={{ padding: 18 }}>
                 <Text style={{ fontSize: 18, fontWeight: '900', color: C.text, textAlign: 'center', marginBottom: 16 }}>Monto Acumulado: {calcularTotal(deudorSel).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 8 }}>¿Cómo cancela la deuda hoy?</Text>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 8 }}>Â¿CÃ³mo cancela la deuda hoy?</Text>
                 <View style={{ gap: 10, marginBottom: 20 }}>
-                  <TouchableOpacity onPress={() => setMetodoLiq('efectivo')} style={[s.cajaSelect, { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 }, metodoLiq === 'efectivo' && { borderColor: C.green, backgroundColor: 'rgba(45,106,63,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>💵 Pagó en Efectivo</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={() => setMetodoLiq('transferencia')} style={[s.cajaSelect, { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 }, metodoLiq === 'transferencia' && { borderColor: C.orange, backgroundColor: 'rgba(232,82,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>📲 Pagó por Transferencia</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => setMetodoLiq('efectivo')} style={[s.cajaSelect, { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 }, metodoLiq === 'efectivo' && { borderColor: C.green, backgroundColor: 'rgba(45,106,63,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>ðŸ’µ PagÃ³ en Efectivo</Text></TouchableOpacity>
+                  <TouchableOpacity onPress={() => setMetodoLiq('transferencia')} style={[s.cajaSelect, { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 }, metodoLiq === 'transferencia' && { borderColor: C.orange, backgroundColor: 'rgba(232,82,10,0.05)' }]}><Text style={{ fontWeight: '700', color: C.text }}>ðŸ“² PagÃ³ por Transferencia</Text></TouchableOpacity>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <TouchableOpacity onPress={() => setLiqModalVisible(false)} style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, alignItems: 'center' }}><Text style={{ color: C.text, fontWeight: '700' }}>Cerrar</Text></TouchableOpacity>
@@ -3819,30 +3896,30 @@ function CajaView({
                   <Ionicons name="arrow-back" size={20} color={C.cream2} />
                 </TouchableOpacity>
                 <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>
-                  🔒 Cierre de Caja
+                  ðŸ”’ Cierre de Caja
                 </Text>
               </View>
               
               <ScrollView contentContainerStyle={{ padding: 18 }}>
                 <View style={{ gap: 10, marginBottom: 16 }}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 6 }}>
-                    <Text style={{ color: C.text2, fontSize: 13 }}>💵 Base Inicial:</Text>
+                    <Text style={{ color: C.text2, fontSize: 13 }}>ðŸ’µ Base Inicial:</Text>
                     <Text style={{ color: C.text, fontWeight: '700', fontSize: 13 }}>{cierreReporte.base_inicial.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 6 }}>
-                    <Text style={{ color: C.text2, fontSize: 13 }}>💵 Ventas en Efectivo:</Text>
+                    <Text style={{ color: C.text2, fontSize: 13 }}>ðŸ’µ Ventas en Efectivo:</Text>
                     <Text style={{ color: C.green, fontWeight: '700', fontSize: 13 }}>+{cierreReporte.ingresos_efectivo.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 6 }}>
-                    <Text style={{ color: C.text2, fontSize: 13 }}>📲 Ventas en Transferencia:</Text>
+                    <Text style={{ color: C.text2, fontSize: 13 }}>ðŸ“² Ventas en Transferencia:</Text>
                     <Text style={{ color: C.orange, fontWeight: '700', fontSize: 13 }}>+{cierreReporte.ingresos_transferencia.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 6 }}>
-                    <Text style={{ color: C.text2, fontSize: 13 }}>💸 Gastos Registrados:</Text>
+                    <Text style={{ color: C.text2, fontSize: 13 }}>ðŸ’¸ Gastos Registrados:</Text>
                     <Text style={{ color: C.red, fontWeight: '700', fontSize: 13 }}>-{cierreReporte.gastos.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 6, backgroundColor: 'rgba(232,82,10,0.05)', padding: 6, borderRadius: 6 }}>
-                    <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>💰 Saldo Esperado en Caja:</Text>
+                    <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>ðŸ’° Saldo Esperado en Caja:</Text>
                     <Text style={{ color: C.orange, fontWeight: '800', fontSize: 14 }}>{cierreReporte.saldo_final_esperado.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
                   </View>
                 </View>
@@ -3862,7 +3939,7 @@ function CajaView({
                   placeholder="Digita el efectivo total contado"
                   placeholderTextColor={C.text3}
                   keyboardType="decimal-pad"
-                  value={cierreReal}
+                  value={String(cierreReal || '')}
                   onChangeText={(txt) => setCierreReal(formatMoneyInput(txt))}
                 />
 
@@ -3886,7 +3963,7 @@ function CajaView({
                     onPress={async () => {
                       const realVal = parseFloat(cleanNum(cierreReal));
                       if (isNaN(realVal) || realVal < 0) {
-                        showToast('⚠️ Ingresa un valor válido');
+                        showToast('âš ï¸ Ingresa un valor vÃ¡lido');
                         return;
                       }
                       try {
@@ -3900,24 +3977,24 @@ function CajaView({
                           setCierreModalVisible(false);
                           setCierreReporte(null);
                           
-                          // Pre-cargar la base para el día siguiente
+                          // Pre-cargar la base para el dÃ­a siguiente
                           setAperturaBase(res.data.base_inicial.toString());
                           await AsyncStorage.setItem('ultima_base_caja', res.data.base_inicial.toString());
 
                           Alert.alert(
                             "Caja Cerrada",
                             `Arqueo de Caja Completado:\n\n` +
-                            `• Base Inicial: ${res.data.base_inicial.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
-                            `• Ingresos Efectivo: ${res.data.ingresos_efectivo.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
-                            `• Gastos: ${res.data.gastos.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
-                            `• Esperado en Caja: ${res.data.saldo_final_esperado.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
-                            `• Real Contado: ${res.data.saldo_final_real.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
-                            `• Diferencia: ${res.data.diferencia.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n\n` +
-                            `${res.data.diferencia < 0 ? '⚠️ Falta dinero' : res.data.diferencia > 0 ? '🎉 Sobra dinero' : '✅ Caja cuadrada'}`
+                            `â€¢ Base Inicial: ${res.data.base_inicial.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
+                            `â€¢ Ingresos Efectivo: ${res.data.ingresos_efectivo.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
+                            `â€¢ Gastos: ${res.data.gastos.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
+                            `â€¢ Esperado en Caja: ${res.data.saldo_final_esperado.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
+                            `â€¢ Real Contado: ${res.data.saldo_final_real.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n` +
+                            `â€¢ Diferencia: ${res.data.diferencia.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}\n\n` +
+                            `${res.data.diferencia < 0 ? 'âš ï¸ Falta dinero' : res.data.diferencia > 0 ? 'ðŸŽ‰ Sobra dinero' : 'âœ… Caja cuadrada'}`
                           );
                         }
                       } catch (e) {
-                        showToast('⚠️ Error al cerrar caja');
+                        showToast('âš ï¸ Error al cerrar caja');
                       }
                     }}
                     style={{
@@ -3954,7 +4031,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   dashboardData, dashboardRango, setDashboardRango, modalGastoVisible, setModalGastoVisible, formGasto, setFormGasto, handleRegistrarGasto
 }) {
   
-  // ─── ESTADOS MENÚ ───
+  // â”€â”€â”€ ESTADOS MENÃš â”€â”€â”€
   const [mostrarVentasRecientes, setMostrarVentasRecientes] = useState(false);
   const [newProdName, setNewProdName] = useState('');
   const [newProdPrice, setNewProdPrice] = useState('');
@@ -3964,12 +4041,12 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [newProdDisp, setNewProdDisp] = useState(true);
   const [newProdImage, setNewProdImage] = useState(null);
 
-  // Estados dinámicos para categorías
+  // Estados dinÃ¡micos para categorÃ­as
   const [categorias, setCategorias] = useState(['Hamburguesas', 'Perros', 'Bebidas']);
   const [nuevaCategoria, setNuevaCategoria] = useState('');
   const [creandoNuevaCat, setCreandoNuevaCat] = useState(false);
 
-  // ─── ESTADOS FINANZAS Y GASTOS ───
+  // â”€â”€â”€ ESTADOS FINANZAS Y GASTOS â”€â”€â”€
   const [finanzasReporte, setFinanzasReporte] = useState(null);
   const [gastoModalVisible, setGastoModalVisible] = useState(false);
   const [gastoDesc, setGastoDesc] = useState('');
@@ -3978,7 +4055,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [gastoFechaFilter, setGastoFechaFilter] = useState('');
   const [gastoCalendarVisible, setGastoCalendarVisible] = useState(false);
 
-  // ─── ESTADOS INVENTARIO ───
+  // â”€â”€â”€ ESTADOS INVENTARIO â”€â”€â”€
   const [insumos, setInsumos] = useState([]);
   const [insumoModalVisible, setInsumoModalVisible] = useState(false);
   const [movimientoModalVisible, setMovimientoModalVisible] = useState(false);
@@ -3995,16 +4072,16 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [movMotivo, setMovMotivo] = useState('');
   const [movimientosLog, setMovimientosLog] = useState([]);
 
-  // ─── ESTADOS CANCELACIONES ───
+  // â”€â”€â”€ ESTADOS CANCELACIONES â”€â”€â”€
   const [pedidosCancelados, setPedidosCancelados] = useState([]);
   const [cancelFilterFecha, setCancelFilterFecha] = useState('');
   const [cancelFilterMesa, setCancelFilterMesa] = useState('');
   const [cancelFilterUsuario, setCancelFilterUsuario] = useState('');
 
-  // ─── ESTADOS HISTORIAL FACTURAS ───
+  // â”€â”€â”€ ESTADOS HISTORIAL FACTURAS â”€â”€â”€
   const [historialFacturas, setHistorialFacturas] = useState([]);
 
-  // ─── ESTADOS USUARIOS (CRUD) ───
+  // â”€â”€â”€ ESTADOS USUARIOS (CRUD) â”€â”€â”€
   const [userModalVisible, setUserModalVisible] = useState(false);
   const [editUserSel, setEditUserSel] = useState(null);
   const [newUserName, setNewUserName] = useState('');
@@ -4016,7 +4093,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [changePinUserSel, setChangePinUserSel] = useState(null);
   const [newPinVal, setNewPinVal] = useState('');
 
-  // ─── ESTADOS AUDITORÍA ───
+  // â”€â”€â”€ ESTADOS AUDITORÃA â”€â”€â”€
   const [auditoriaLogs, setAuditoriaLogs] = useState([]);
   const [expandedAuditId, setExpandedAuditId] = useState(null);
   const [showAuditoriaList, setShowAuditoriaList] = useState(false);
@@ -4026,20 +4103,20 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [auditAccionFilter, setAuditAccionFilter] = useState('');
   const [auditFechaFilter, setAuditFechaFilter] = useState('');
 
-  // ─── ESTADOS DETALLES DE VENTAS ───
+  // â”€â”€â”€ ESTADOS DETALLES DE VENTAS â”€â”€â”€
   const [ventaDetalleModalVisible, setVentaDetalleModalVisible] = useState(false);
   const [ventaDetalleSelected, setVentaDetalleSelected] = useState(null);
   const [ventaDetallesItems, setVentaDetallesItems] = useState([]);
 
   const emojiPorCategoria = {
-    1: "🍔",
-    2: "🌭",
-    3: "🌯",
-    4: "🍟",
-    5: "🌽",
-    6: "🥤",
-    7: "🍋",
-    8: "🍺"
+    1: "ðŸ”",
+    2: "ðŸŒ­",
+    3: "ðŸŒ¯",
+    4: "ðŸŸ",
+    5: "ðŸŒ½",
+    6: "ðŸ¥¤",
+    7: "ðŸ‹",
+    8: "ðŸº"
   };
 
   const getEmojiForCategory = (catId) => {
@@ -4048,10 +4125,10 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       const parts = cat.nombre.split(' ');
       if (parts[0]) return parts[0];
     }
-    return emojiPorCategoria[catId] || "🍽️";
+    return emojiPorCategoria[catId] || "ðŸ½ï¸";
   };
 
-  // ─── EFECTOS DE TAB Y AUTO-ACTUALIZACIÓN ───
+  // â”€â”€â”€ EFECTOS DE TAB Y AUTO-ACTUALIZACIÃ“N â”€â”€â”€
   useEffect(() => {
     if (!serverIP) return;
     
@@ -4082,7 +4159,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     return () => clearInterval(timer);
   }, [adminTab, serverIP]);
 
-  // Sincronizar categorías locales de forma dinámica desde los productos cargados
+  // Sincronizar categorÃ­as locales de forma dinÃ¡mica desde los productos cargados
   useEffect(() => {
     if (productos && productos.length > 0) {
       const cleanNameMap = {
@@ -4133,30 +4210,30 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       if (origCat) return origCat.nombre;
     }
     const cleanNameMap = {
-      'hamburguesas': '🍔 Hamburguesas',
-      'perros': '🌭 Perros Calientes',
-      'burritos': '🌯 Burritos',
-      'salchipapas': '🍟 Salchipapas',
-      'mazorcada': '🌽 Mazorcada',
-      'jugos naturales': '🥤 Jugos Naturales',
-      'limonadas': '🍋 Limonadas',
-      'bebidas': '🍺 Bebidas / Cervezas',
-      'bebidas calientes': '☕ Bebidas Calientes'
+      'hamburguesas': 'ðŸ” Hamburguesas',
+      'perros': 'ðŸŒ­ Perros Calientes',
+      'burritos': 'ðŸŒ¯ Burritos',
+      'salchipapas': 'ðŸŸ Salchipapas',
+      'mazorcada': 'ðŸŒ½ Mazorcada',
+      'jugos naturales': 'ðŸ¥¤ Jugos Naturales',
+      'limonadas': 'ðŸ‹ Limonadas',
+      'bebidas': 'ðŸº Bebidas / Cervezas',
+      'bebidas calientes': 'â˜• Bebidas Calientes'
     };
     const key = String(catVal).toLowerCase().trim();
     return cleanNameMap[key] || String(catVal);
   };
 
-  // ─── METODOS DE LLAMADAS API ───
+  // â”€â”€â”€ METODOS DE LLAMADAS API â”€â”€â”€
 
-  // MENÚ: Agregar producto en SQLite
+  // MENÃš: Agregar producto en SQLite
   const addProducto = async () => {
-    if (!newProdName.trim()) { showToast('⚠️ Nombre requerido'); return; }
+    if (!newProdName.trim()) { showToast('âš ï¸ Nombre requerido'); return; }
     const precioNum = parseFloat(cleanNum(newProdPrice));
-    if (newProdPrice && isNaN(precioNum)) { showToast('⚠️ Precio inválido'); return; }
+    if (newProdPrice && isNaN(precioNum)) { showToast('âš ï¸ Precio invÃ¡lido'); return; }
     
     let catVal = creandoNuevaCat ? nuevaCategoria.trim() : newProdCat;
-    if (!catVal) { showToast('⚠️ Categoría requerida'); return; }
+    if (!catVal) { showToast('âš ï¸ CategorÃ­a requerida'); return; }
 
     const catIsNumeric = !isNaN(Number(catVal));
     const catId = catIsNumeric ? Number(catVal) : catVal;
@@ -4179,7 +4256,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
           finalImageUrl = uploadRes.data.url;
         }
       } catch (err) {
-        showToast('⚠️ Error al subir imagen');
+        showToast('âš ï¸ Error al subir imagen');
         return;
       }
     }
@@ -4197,7 +4274,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     try {
       const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/productos`, nuevo, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast('✅ Producto guardado en SQLite');
+        showToast('âœ… Producto guardado en SQLite');
         
         if (creandoNuevaCat && !categorias.includes(nuevaCategoria.trim())) {
           setCategorias(prev => [...prev, nuevaCategoria.trim()]);
@@ -4213,20 +4290,20 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         sincronizar();
       }
     } catch (e) {
-      showToast('⚠️ Error al guardar producto');
+      showToast('âš ï¸ Error al guardar producto');
     }
   };
 
-  // MENÚ: Alternar disponibilidad
+  // MENÃš: Alternar disponibilidad
   const toggleProducto = async (id, currentDisp) => {
     try {
       const res = await axios.put(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/productos/${id}/disponibilidad`, { disp: !currentDisp }, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast('✅ Disponibilidad actualizada');
+        showToast('âœ… Disponibilidad actualizada');
         sincronizar();
       }
     } catch (e) {
-      showToast('⚠️ Error al actualizar disponibilidad');
+      showToast('âš ï¸ Error al actualizar disponibilidad');
     }
   };
 
@@ -4258,7 +4335,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const eliminarUsuario = async (userId, userName) => {
     Alert.alert(
       "Eliminar Usuario",
-      `¿Estás seguro de que quieres eliminar permanentemente al usuario "${userName}"? Esta acción no se puede deshacer.`,
+      `Â¿EstÃ¡s seguro de que quieres eliminar permanentemente al usuario "${userName}"? Esta acciÃ³n no se puede deshacer.`,
       [
         { text: "Cancelar", style: "cancel" },
         { 
@@ -4272,11 +4349,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                 timeout: 15000
               });
               if (res.data && res.data.success) {
-                showToast('✅ Usuario eliminado correctamente');
+                showToast('âœ… Usuario eliminado correctamente');
                 cargarUsuarios();
               }
             } catch (e) {
-              showToast('⚠️ Error al eliminar el usuario');
+              showToast('âš ï¸ Error al eliminar el usuario');
             }
           }
         }
@@ -4286,13 +4363,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
   // USUARIOS: Crear/Editar usuario
   const guardarUsuario = async () => {
-    if (!newUserName.trim()) { showToast('⚠️ Nombre requerido'); return; }
+    if (!newUserName.trim()) { showToast('âš ï¸ Nombre requerido'); return; }
     if (!editUserSel && (!newUserPin || newUserPin.length < 4 || newUserPin.length > 6)) {
-      showToast('⚠️ PIN debe tener entre 4 y 6 dígitos numéricos');
+      showToast('âš ï¸ PIN debe tener entre 4 y 6 dÃ­gitos numÃ©ricos');
       return;
     }
     if (newUserPin && (newUserPin.length < 4 || newUserPin.length > 6 || isNaN(Number(newUserPin)))) {
-      showToast('⚠️ PIN inválido (4 a 6 dígitos)');
+      showToast('âš ï¸ PIN invÃ¡lido (4 a 6 dÃ­gitos)');
       return;
     }
 
@@ -4308,7 +4385,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     try {
       const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios`, payload, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast(editUserSel ? '✅ Usuario actualizado' : '✅ Usuario creado');
+        showToast(editUserSel ? 'âœ… Usuario actualizado' : 'âœ… Usuario creado');
         setUserModalVisible(false);
         setEditUserSel(null);
         setNewUserName('');
@@ -4316,14 +4393,14 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         cargarUsuarios();
       }
     } catch (e) {
-      showToast('⚠️ Error al guardar usuario');
+      showToast('âš ï¸ Error al guardar usuario');
     }
   };
 
   // USUARIOS: Guardar nuevo PIN
   const guardarNuevoPin = async () => {
     if (!newPinVal || newPinVal.length < 4 || newPinVal.length > 6 || isNaN(Number(newPinVal))) {
-      showToast('⚠️ PIN debe tener entre 4 y 6 dígitos numéricos');
+      showToast('âš ï¸ PIN debe tener entre 4 y 6 dÃ­gitos numÃ©ricos');
       return;
     }
 
@@ -4338,18 +4415,18 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     try {
       const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/usuarios`, payload, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast('✅ PIN actualizado con éxito');
+        showToast('âœ… PIN actualizado con Ã©xito');
         setChangePinModalVisible(false);
         setChangePinUserSel(null);
         setNewPinVal('');
         cargarUsuarios();
       }
     } catch (e) {
-      showToast('⚠️ Error al actualizar PIN');
+      showToast('âš ï¸ Error al actualizar PIN');
     }
   };
 
-  // AUDITORÍA: Cargar logs de auditoría con filtros
+  // AUDITORÃA: Cargar logs de auditorÃ­a con filtros
   const cargarAuditoria = async () => {
     try {
       const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/auditoria`, {
@@ -4370,9 +4447,9 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
   // FINANZAS: Registrar Gasto
   const registrarGasto = async () => {
-    if (!gastoDesc.trim()) { showToast('⚠️ Descripción requerida'); return; }
+    if (!gastoDesc.trim()) { showToast('âš ï¸ DescripciÃ³n requerida'); return; }
     const valorNum = parseFloat(cleanNum(gastoValor));
-    if (isNaN(valorNum) || valorNum <= 0) { showToast('⚠️ Valor de gasto inválido'); return; }
+    if (isNaN(valorNum) || valorNum <= 0) { showToast('âš ï¸ Valor de gasto invÃ¡lido'); return; }
 
     const nuevoGasto = {
       descripcion: gastoDesc.trim(),
@@ -4384,14 +4461,14 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     try {
       const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/gastos`, nuevoGasto, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast('✅ Gasto registrado con éxito');
+        showToast('âœ… Gasto registrado con Ã©xito');
         setGastoDesc('');
         setGastoValor('');
         setGastoModalVisible(false);
         cargarFinanzas();
       }
     } catch (e) {
-      showToast('⚠️ Error al registrar gasto');
+      showToast('âš ï¸ Error al registrar gasto');
     }
   };
 
@@ -4410,7 +4487,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
   // INVENTARIO: Crear Insumo
   const registrarInsumo = async () => {
-    if (!insumoNombre.trim()) { showToast('⚠️ Nombre del insumo requerido'); return; }
+    if (!insumoNombre.trim()) { showToast('âš ï¸ Nombre del insumo requerido'); return; }
     const cantVal = parseFloat(cleanNum(insumoCant));
     const minVal = parseFloat(cleanNum(insumoMin));
     const compVal = parseFloat(cleanNum(insumoCompra));
@@ -4426,7 +4503,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     try {
       const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/insumos`, nuevoInsumo, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast('✅ Insumo registrado con éxito');
+        showToast('âœ… Insumo registrado con Ã©xito');
         setInsumoNombre('');
         setInsumoCant('');
         setInsumoMin('');
@@ -4435,14 +4512,14 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         cargarInventario();
       }
     } catch (e) {
-      showToast('⚠️ Error: Insumo ya registrado o de red');
+      showToast('âš ï¸ Error: Insumo ya registrado o de red');
     }
   };
 
   // INVENTARIO: Registrar Movimiento Kardex
   const registrarMovimiento = async () => {
     const cantVal = parseFloat(cleanNum(movCant));
-    if (isNaN(cantVal) || cantVal <= 0) { showToast('⚠️ Cantidad inválida'); return; }
+    if (isNaN(cantVal) || cantVal <= 0) { showToast('âš ï¸ Cantidad invÃ¡lida'); return; }
 
     const movimiento = {
       tipo: movTipo,
@@ -4453,7 +4530,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     try {
       const res = await axios.post(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/insumos/${insumoSel.id}/movimiento`, movimiento, { timeout: 15000 });
       if (res.data && res.data.success) {
-        showToast('✅ Movimiento registrado con éxito');
+        showToast('âœ… Movimiento registrado con Ã©xito');
         setMovCant('');
         setMovMotivo('');
         setInsumoSel(null);
@@ -4461,11 +4538,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         cargarInventario();
       }
     } catch (e) {
-      showToast('⚠️ Error al registrar movimiento');
+      showToast('âš ï¸ Error al registrar movimiento');
     }
   };
 
-  // ─── HISTORIAL FACTURAS ───
+  // â”€â”€â”€ HISTORIAL FACTURAS â”€â”€â”€
   const cargarHistorialFacturas = async () => {
     try {
       const res = await axios.get(`${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/ventas`, { timeout: 15000 });
@@ -4510,18 +4587,18 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   return (
     <View style={{ flex: 1 }}>
 
-      {/* ─── TAB PRINCIPAL: DASHBOARD ─── */}
+      {/* â”€â”€â”€ TAB PRINCIPAL: DASHBOARD â”€â”€â”€ */}
       {adminTab === 'principal' && (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={s.content}>
           <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, marginBottom: 12 }}>
-            ⚙️ Panel de Administración
+            âš™ï¸ Panel de AdministraciÃ³n
           </Text>
 
           {/* Tarjetas KPI */}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 18 }}>
             {/* Ventas Hoy */}
             <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
-              <Text style={{ fontSize: 24 }}>💰</Text>
+              <Text style={{ fontSize: 24 }}>ðŸ’°</Text>
               <Text style={[s.statValue, { color: C.green, marginTop: 4 }]}>
                 ${finanzasReporte ? finanzasReporte.ventasHoy.toLocaleString('es-CO') : '0'}
               </Text>
@@ -4530,7 +4607,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
             {/* Insumos con Stock Bajo */}
             <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
-              <Text style={{ fontSize: 24 }}>📦</Text>
+              <Text style={{ fontSize: 24 }}>ðŸ“¦</Text>
               <Text style={[s.statValue, { color: insumos.filter(i => i.cantidad_actual < i.stock_minimo).length > 0 ? C.red : C.text, marginTop: 4 }]}>
                 {insumos.filter(i => i.cantidad_actual < i.stock_minimo).length}
               </Text>
@@ -4539,7 +4616,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
             {/* Pedidos Activos */}
             <TouchableOpacity style={[s.statCard, { flex: 1, minWidth: '45%' }]} onPress={() => setModalAdminPedidosVisible(true)}>
-              <Text style={{ fontSize: 24 }}>🍔</Text>
+              <Text style={{ fontSize: 24 }}>ðŸ”</Text>
               <Text style={[s.statValue, { color: C.orange, marginTop: 4 }]}>
                 {pedidos.filter(p => p.estado === 'activo').length}
               </Text>
@@ -4548,25 +4625,25 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
             {/* Pedidos Cancelados */}
             <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
-              <Text style={{ fontSize: 24 }}>❌</Text>
+              <Text style={{ fontSize: 24 }}>âŒ</Text>
               <Text style={[s.statValue, { color: C.red, marginTop: 4 }]}>
                 {pedidosCancelados.length}
               </Text>
               <Text style={s.statLabel}>Pedidos Cancelados</Text>
             </View>
 
-            {/* Gastos del Día */}
+            {/* Gastos del DÃ­a */}
             <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
-              <Text style={{ fontSize: 24 }}>💸</Text>
+              <Text style={{ fontSize: 24 }}>ðŸ’¸</Text>
               <Text style={[s.statValue, { color: C.red, marginTop: 4 }]}>
                 ${finanzasReporte ? (finanzasReporte.gastosHoy || 0).toLocaleString('es-CO') : '0'}
               </Text>
-              <Text style={s.statLabel}>Gastos del Día</Text>
+              <Text style={s.statLabel}>Gastos del DÃ­a</Text>
             </View>
 
             {/* Balance Actual */}
             <View style={[s.statCard, { flex: 1, minWidth: '45%' }]}>
-              <Text style={{ fontSize: 24 }}>🏦</Text>
+              <Text style={{ fontSize: 24 }}>ðŸ¦</Text>
               <Text style={[s.statValue, { color: finanzasReporte && finanzasReporte.balanceActual >= 0 ? C.green : C.red, marginTop: 4 }]}>
                 ${finanzasReporte ? finanzasReporte.balanceActual.toLocaleString('es-CO') : '0'}
               </Text>
@@ -4574,20 +4651,20 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
             </View>
           </View>
 
-          {/* Grid de submódulos */}
+          {/* Grid de submÃ³dulos */}
           <Text style={{ fontSize: 13, fontWeight: '800', color: C.cream, marginBottom: 10 }}>
             Secciones disponibles
           </Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingBottom: 20 }}>
             {[
-              { id: 'menu', label: '🍔 Gestión de Menú', desc: 'Platos, precios y disponibilidad' },
-              { id: 'finanzas', label: '📊 Finanzas / Gastos', desc: 'Ventas, balance y registrar egresos' },
-              { id: 'inventario', label: '📦 Inventario Kardex', desc: 'Stock de insumos y movimientos' },
-              { id: 'usuarios', label: '👤 Gestión de Usuarios', desc: 'Roles, PINs y accesos' },
-              { id: 'auditoria', label: '📋 Log de Auditoría', desc: 'Registro de todas las acciones' },
-              { id: 'cancelados', label: '📋 Pedidos Cancelados', desc: 'Historial de cancelaciones' },
-              { id: 'historial', label: '🧾 Historial de Facturas', desc: 'Ventas y facturas cobradas' },
-              { id: 'impresora', label: '🖨️ Impresora Térmica', desc: 'Configurar conexión WiFi/Bluetooth' },
+              { id: 'menu', label: 'ðŸ” GestiÃ³n de MenÃº', desc: 'Platos, precios y disponibilidad' },
+              { id: 'finanzas', label: 'ðŸ“Š Finanzas / Gastos', desc: 'Ventas, balance y registrar egresos' },
+              { id: 'inventario', label: 'ðŸ“¦ Inventario Kardex', desc: 'Stock de insumos y movimientos' },
+              { id: 'usuarios', label: 'ðŸ‘¤ GestiÃ³n de Usuarios', desc: 'Roles, PINs y accesos' },
+              { id: 'auditoria', label: 'ðŸ“‹ Log de AuditorÃ­a', desc: 'Registro de todas las acciones' },
+              { id: 'cancelados', label: 'ðŸ“‹ Pedidos Cancelados', desc: 'Historial de cancelaciones' },
+              { id: 'historial', label: 'ðŸ§¾ Historial de Facturas', desc: 'Ventas y facturas cobradas' },
+              { id: 'impresora', label: 'ðŸ–¨ï¸ Impresora TÃ©rmica', desc: 'Configurar conexiÃ³n WiFi/Bluetooth' },
             ].map(item => (
               <TouchableOpacity
                 key={item.id}
@@ -4615,14 +4692,14 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </ScrollView>
       )}
 
-      {/* ─── TAB 1: PRODUCTOS / MENU ─── */}
+      {/* â”€â”€â”€ TAB 1: PRODUCTOS / MENU â”€â”€â”€ */}
       {adminTab === 'menu' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
-          {renderBackHeader('Gestión de Menú')}
+          {renderBackHeader('GestiÃ³n de MenÃº')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
             {Object.entries(productos.reduce((acc, p) => {
               const catObj = CATEGORIAS.find(c => c.id === Number(p.cat));
-              const catName = catObj ? catObj.nombre : (p.cat ? String(p.cat) : 'Sin categoría');
+              const catName = catObj ? catObj.nombre : (p.cat ? String(p.cat) : 'Sin categorÃ­a');
               (acc[catName] = acc[catName] || []).push(p);
               return acc;
             }, {})).map(([cat, items]) => (
@@ -4633,7 +4710,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     {p.imagen ? (
                       <Image source={{ uri: `http://${serverIP}:3001${p.imagen}` }} style={{ width: 40, height: 40, borderRadius: 8, marginRight: 12 }} resizeMode="cover" />
                     ) : (
-                      <Text style={{ fontSize: 24, marginRight: 12 }}>{p.emoji || '🍽️'}</Text>
+                      <Text style={{ fontSize: 24, marginRight: 12 }}>{p.emoji || 'ðŸ½ï¸'}</Text>
                     )}
                     
                     <View style={{ flex: 1 }}>
@@ -4666,7 +4743,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
             ))}
           </ScrollView>
 
-          {/* Botón flotante (+) */}
+          {/* BotÃ³n flotante (+) */}
           <TouchableOpacity
             onPress={() => {
               setNewProdName('');
@@ -4712,7 +4789,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <TouchableOpacity onPress={() => setModalVisible(false)}>
                     <Ionicons name="arrow-back" size={20} color={C.cream2} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>✨ Nuevo Producto (DB)</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>âœ¨ Nuevo Producto (DB)</Text>
                 </View>
 
                 <ScrollView contentContainerStyle={{ padding: 18 }}>
@@ -4731,11 +4808,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     placeholder="Ej. 18000"
                     placeholderTextColor={C.text3}
                     keyboardType="decimal-pad"
-                    value={newProdPrice}
+                    value={String(newProdPrice || '')}
                     onChangeText={(txt) => setNewProdPrice(formatMoneyInput(txt))}
                   />
 
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Descripción</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>DescripciÃ³n</Text>
                   <TextInput
                     style={[s.formInput, { minHeight: 60, textAlignVertical: 'top' }]}
                     placeholder="Ingredientes o detalles..."
@@ -4746,7 +4823,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     onChangeText={setNewProdDesc}
                   />
 
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Categoría</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>CategorÃ­a</Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
                     {categorias.map(catName => {
                       const catValue = getCatValueFromName(catName);
@@ -4789,14 +4866,14 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       }}
                     >
                       <Text style={{ fontSize: 11, color: creandoNuevaCat ? '#fff' : C.text, fontWeight: '600' }}>
-                        ➕ Agregar nueva categoría...
+                        âž• Agregar nueva categorÃ­a...
                       </Text>
                     </TouchableOpacity>
                   </View>
 
                   {creandoNuevaCat && (
                     <View style={{ marginTop: 8, marginBottom: 14 }}>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 6 }}>Nombre de la nueva categoría</Text>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 6 }}>Nombre de la nueva categorÃ­a</Text>
                       <TextInput
                         style={s.formInput}
                         placeholder="Ej: Empanadas"
@@ -4820,13 +4897,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                           }
                         } catch (err) {
                           if (!DocumentPicker.isCancel(err)) {
-                            showToast('⚠️ Error seleccionando imagen');
+                            showToast('âš ï¸ Error seleccionando imagen');
                           }
                         }
                       }}
                       style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.orange, borderStyle: 'dashed', alignItems: 'center', backgroundColor: C.surf2 }}
                     >
-                      <Text style={{ color: C.orange, fontWeight: '700', fontSize: 14 }}>{newProdImage ? 'Cambiar Foto' : '📸 Seleccionar Foto'}</Text>
+                      <Text style={{ color: C.orange, fontWeight: '700', fontSize: 14 }}>{newProdImage ? 'Cambiar Foto' : 'ðŸ“¸ Seleccionar Foto'}</Text>
                     </TouchableOpacity>
                     {newProdImage && (
                       <Image source={{ uri: newProdImage.uri }} style={{ width: 60, height: 60, borderRadius: 8, borderWidth: 1, borderColor: C.border }} />
@@ -4868,13 +4945,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB 2: FINANZAS Y GASTOS ─── */}
+      {/* â”€â”€â”€ TAB 2: FINANZAS Y GASTOS â”€â”€â”€ */}
       {adminTab === 'finanzas' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
           {renderBackHeader('Finanzas y Gastos')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <Text style={s.sectionTitle}>📊 Reporte Financiero</Text>
+            <Text style={s.sectionTitle}>ðŸ“Š Reporte Financiero</Text>
             <TouchableOpacity
               onPress={() => setModalGastoVisible(true)}
               style={{ backgroundColor: C.orange, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}
@@ -4903,7 +4980,6 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   </TouchableOpacity>
                 ))}
               </View>
-
               {(() => {
                 const screenWidth = Dimensions.get("window").width - 28;
                 const pieData = dashboardData.gastosPorCategoria && dashboardData.gastosPorCategoria.length > 0
@@ -4940,8 +5016,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       </View>
                     </View>
 
-                    {/* Gráfico de Dona - Gastos por Categoría */}
-                    <Text style={[s.sectionTitle, { fontSize: 14, marginTop: 4 }]}>📊 Distribución de Gastos</Text>
+                    {/* GrÃ¡fico de Dona - Gastos por CategorÃ­a */}
+                    <Text style={[s.sectionTitle, { fontSize: 14, marginTop: 4 }]}>ðŸ“Š DistribuciÃ³n de Gastos</Text>
                     <View style={[s.card, { padding: 10, backgroundColor: C.surface, alignItems: 'center' }]}>
                       <PieChart
                         data={pieData}
@@ -4961,7 +5037,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
               {/* Recent Expenses List */}
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 8 }}>
-                <Text style={[s.sectionTitle, { fontSize: 14 }]}>💸 Últimos Egresos</Text>
+                <Text style={[s.sectionTitle, { fontSize: 14 }]}>ðŸ’¸ Ãšltimos Egresos</Text>
               </View>
               <View style={[s.card, { padding: 14, backgroundColor: C.surface }]}>
                 {(() => {
@@ -4973,7 +5049,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     <View key={g.id || idx} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: idx < filteredGastos.length - 1 ? 1 : 0, borderBottomColor: C.border }}>
                       <View style={{ flex: 1, marginRight: 8 }}>
                         <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{g.descripcion}</Text>
-                        <Text style={{ fontSize: 10, color: C.text3 }}>🏷️ {g.categoria} • 📅 {g.fecha}</Text>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>ðŸ·ï¸ {g.categoria} â€¢ ðŸ“… {g.fecha}</Text>
                       </View>
                       <Text style={{ fontSize: 14, fontWeight: '800', color: C.red }}>
                         -${(g.valor || 0).toLocaleString('es-CO')}
@@ -5000,11 +5076,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <TouchableOpacity onPress={() => setGastoModalVisible(false)}>
                     <Ionicons name="arrow-back" size={20} color={C.cream2} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>💸 Registrar Gasto</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>ðŸ’¸ Registrar Gasto</Text>
                 </View>
 
                 <ScrollView contentContainerStyle={{ padding: 18 }}>
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 6 }}>Descripción del gasto</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 6 }}>DescripciÃ³n del gasto</Text>
                   <TextInput
                     style={s.formInput}
                     placeholder="Ej. Compra de tomate y cebolla"
@@ -5019,11 +5095,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     placeholder="Ej. 25000"
                     placeholderTextColor={C.text3}
                     keyboardType="decimal-pad"
-                    value={gastoValor}
+                    value={String(gastoValor || '')}
                     onChangeText={(txt) => setGastoValor(formatMoneyInput(txt))}
                   />
 
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Categoría del Gasto</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>CategorÃ­a del Gasto</Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
                     {['Carne', 'Pollo', 'Verduras', 'Pan', 'Queso', 'Bebidas', 'Gas', 'Servicios', 'Limpieza', 'Otros'].map(cat => {
                       const isSelected = gastoCat === cat;
@@ -5050,7 +5126,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
                   {!sesionActiva && (
                     <Text style={{ color: C.yellow, fontSize: 11, fontWeight: '600', marginBottom: 12, textAlign: 'center' }}>
-                      ⚠️ La caja está cerrada. El gasto se registrará sin sesión activa.
+                      âš ï¸ La caja estÃ¡ cerrada. El gasto se registrarÃ¡ sin sesiÃ³n activa.
                     </Text>
                   )}
 
@@ -5077,13 +5153,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB 3: INVENTARIO (INSUMOS) ─── */}
+      {/* â”€â”€â”€ TAB 3: INVENTARIO (INSUMOS) â”€â”€â”€ */}
       {adminTab === 'inventario' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
           {renderBackHeader('Control de Inventario')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <Text style={s.sectionTitle}>📦 Insumos del Sistema</Text>
+              <Text style={s.sectionTitle}>ðŸ“¦ Insumos del Sistema</Text>
               <TouchableOpacity
                 onPress={() => setInsumoModalVisible(true)}
                 style={{
@@ -5116,7 +5192,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>{ins.nombre}</Text>
                       {stockBajo && (
                         <View style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#EF4444' }}>
-                          <Text style={{ fontSize: 9, color: '#DC2626', fontWeight: '800' }}>⚠️ STOCK BAJO</Text>
+                          <Text style={{ fontSize: 9, color: '#DC2626', fontWeight: '800' }}>âš ï¸ STOCK BAJO</Text>
                         </View>
                       )}
                     </View>
@@ -5149,7 +5225,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         }}
                       >
                         <Ionicons name="add" size={14} color="white" />
-                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>➕ Entrada</Text>
+                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>âž• Entrada</Text>
                       </TouchableOpacity>
 
                       <TouchableOpacity
@@ -5170,7 +5246,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         }}
                       >
                         <Ionicons name="options-outline" size={14} color="white" />
-                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>➖ Ajuste</Text>
+                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>âž– Ajuste</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -5179,7 +5255,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
             )}
 
             {/* Kardex Movements Logs */}
-            <Text style={[s.sectionTitle, { marginTop: 20, marginBottom: 10 }]}>📋 Movimientos Recientes (Kardex)</Text>
+            <Text style={[s.sectionTitle, { marginTop: 20, marginBottom: 10 }]}>ðŸ“‹ Movimientos Recientes (Kardex)</Text>
             <View style={[s.card, { padding: 14, backgroundColor: C.surface }]}>
               {movimientosLog.length === 0 ? (
                 <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center', paddingVertical: 10 }}>No se han registrado movimientos</Text>
@@ -5190,10 +5266,10 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>
                         {m.insumo_nombre}
                       </Text>
-                      <Text style={{ fontSize: 10, color: C.text3 }}>📝 {m.motivo} • 📅 {m.fecha}</Text>
+                      <Text style={{ fontSize: 10, color: C.text3 }}>ðŸ“ {m.motivo} â€¢ ðŸ“… {m.fecha}</Text>
                     </View>
                     <Text style={{ fontSize: 13, fontWeight: '800', color: m.tipo === 'entrada' ? C.green : C.orange }}>
-                      {m.tipo === 'entrada' ? '+' : '⚙️ '}{m.cantidad} {m.unidad}
+                      {m.tipo === 'entrada' ? '+' : 'âš™ï¸ '}{m.cantidad} {m.unidad}
                     </Text>
                   </View>
                 ))
@@ -5214,7 +5290,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <TouchableOpacity onPress={() => setInsumoModalVisible(false)}>
                     <Ionicons name="arrow-back" size={20} color={C.cream2} />
                   </TouchableOpacity>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>📦 Nuevo Insumo</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>ðŸ“¦ Nuevo Insumo</Text>
                 </View>
 
                 <ScrollView contentContainerStyle={{ padding: 18 }}>
@@ -5258,7 +5334,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     onChangeText={setInsumoCant}
                   />
 
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Stock Mínimo Alerta</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Stock MÃ­nimo Alerta</Text>
                   <TextInput
                     style={s.formInput}
                     placeholder="Ej. 5"
@@ -5274,7 +5350,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     placeholder="Ej. 12000"
                     placeholderTextColor={C.text3}
                     keyboardType="decimal-pad"
-                    value={insumoCompra}
+                    value={String(insumoCompra || '')}
                     onChangeText={(txt) => setInsumoCompra(formatMoneyInput(txt))}
                   />
 
@@ -5314,7 +5390,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     </TouchableOpacity>
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>
-                        {movTipo === 'entrada' ? '➕ Registrar Entrada' : '⚙️ Ajuste de Stock'}
+                        {movTipo === 'entrada' ? 'âž• Registrar Entrada' : 'âš™ï¸ Ajuste de Stock'}
                       </Text>
                       <Text style={{ fontSize: 12, color: C.cream2, marginTop: 2 }}>Insumo: {insumoSel.nombre}</Text>
                     </View>
@@ -5322,7 +5398,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
                   <View style={{ padding: 18 }}>
                     <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6 }}>
-                      {movTipo === 'entrada' ? 'Cantidad a ingresar:' : 'Nueva cantidad de stock física:'} ({insumoSel.unidad})
+                      {movTipo === 'entrada' ? 'Cantidad a ingresar:' : 'Nueva cantidad de stock fÃ­sica:'} ({insumoSel.unidad})
                     </Text>
                     <TextInput
                       style={s.formInput}
@@ -5333,7 +5409,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       onChangeText={setMovCant}
                     />
 
-                    <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginTop: 14, marginBottom: 6 }}>Motivo / Observación:</Text>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginTop: 14, marginBottom: 6 }}>Motivo / ObservaciÃ³n:</Text>
                     <TextInput
                       style={s.formInput}
                       placeholder="Ej. Compra de inventario / conteo semanal"
@@ -5365,14 +5441,14 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB 4: PEDIDOS CANCELADOS (HISTORIAL) ─── */}
+      {/* â”€â”€â”€ TAB 4: PEDIDOS CANCELADOS (HISTORIAL) â”€â”€â”€ */}
       {adminTab === 'cancelados' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
           {renderBackHeader('Historial de Cancelados')}
           
-          {/* Filtros de Cancelación */}
+          {/* Filtros de CancelaciÃ³n */}
           <View style={[s.card, { padding: 14, backgroundColor: C.surf2, marginBottom: 14 }]}>
-            <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6 }}>🔍 Filtrar Cancelaciones:</Text>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6 }}>ðŸ” Filtrar Cancelaciones:</Text>
             <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
               <View style={{ flex: 1, minWidth: 90 }}>
                 <Text style={{ fontSize: 10, color: C.text3, marginBottom: 3 }}>Fecha:</Text>
@@ -5408,7 +5484,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
-          <Text style={[s.sectionTitle, { marginBottom: 12 }]}>📋 Historial de Cancelaciones</Text>
+          <Text style={[s.sectionTitle, { marginBottom: 12 }]}>ðŸ“‹ Historial de Cancelaciones</Text>
 
           {(() => {
             const filteredCancelados = pedidosCancelados.filter(c => {
@@ -5443,7 +5519,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>
                         {typeof c.mesa === 'string' && c.mesa.startsWith('Para') ? c.mesa : `Mesa ${c.mesa}`}
                       </Text>
-                      <Text style={{ fontSize: 10, color: C.text3 }}>📅 {new Date(c.fecha).toLocaleString('es-CO')}</Text>
+                      <Text style={{ fontSize: 10, color: C.text3 }}>ðŸ“… {new Date(c.fecha).toLocaleString('es-CO')}</Text>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                       {!isExpanded && (
@@ -5461,7 +5537,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       <View style={{ marginBottom: 8, paddingLeft: 6 }}>
                         {c.items.map((it, idx) => (
                           <Text key={idx} style={{ fontSize: 12, color: C.text2 }}>
-                            • {it.cantidad}x {it.nombre} {it.nota ? `(📝 ${it.nota})` : ''}
+                            â€¢ {it.cantidad}x {it.nombre} {it.nota ? `(ðŸ“ ${it.nota})` : ''}
                           </Text>
                         ))}
                       </View>
@@ -5476,7 +5552,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                           </Text>
                         </View>
                         <Text style={{ fontSize: 10, color: C.text3 }}>
-                          Usuario: {c.usuario} • Estado: <Text style={{ color: C.red, fontWeight: '700' }}>{c.estado.toUpperCase()}</Text>
+                          Usuario: {c.usuario} â€¢ Estado: <Text style={{ color: C.red, fontWeight: '700' }}>{c.estado.toUpperCase()}</Text>
                         </Text>
                       </View>
                     </>
@@ -5489,19 +5565,19 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB: HISTORIAL DE FACTURAS ─── */}
+      {/* â”€â”€â”€ TAB: HISTORIAL DE FACTURAS â”€â”€â”€ */}
       {adminTab === 'historial' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
           {renderBackHeader('Historial de Facturas')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <Text style={s.sectionTitle}>🧾 Facturas Completadas</Text>
+              <Text style={s.sectionTitle}>ðŸ§¾ Facturas Completadas</Text>
             </View>
 
             {historialFacturas.length === 0 ? (
               <View style={[s.card, { padding: 20, alignItems: 'center', backgroundColor: C.surf2 }]}>
                 <Ionicons name="receipt-outline" size={40} color={C.text3} />
-                <Text style={{ fontSize: 13, color: C.text2, marginTop: 8 }}>No hay facturas cerradas aún</Text>
+                <Text style={{ fontSize: 13, color: C.text2, marginTop: 8 }}>No hay facturas cerradas aÃºn</Text>
               </View>
             ) : (
               historialFacturas.map((f, idx) => {
@@ -5512,7 +5588,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         <Text style={{ fontSize: 15, fontWeight: '800', color: C.text }}>
                           Mesa {f.mesa}
                         </Text>
-                        <Text style={{ fontSize: 10, color: C.text3 }}>📅 {new Date(f.fecha).toLocaleString('es-CO')}</Text>
+                        <Text style={{ fontSize: 10, color: C.text3 }}>ðŸ“… {new Date(f.fecha).toLocaleString('es-CO')}</Text>
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
                         <Text style={{ fontSize: 16, color: C.green, fontWeight: '800' }}>
@@ -5529,13 +5605,13 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB 5: USUARIOS ─── */}
+      {/* â”€â”€â”€ TAB 5: USUARIOS â”€â”€â”€ */}
       {adminTab === 'usuarios' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
-          {renderBackHeader('Gestión de Usuarios')}
+          {renderBackHeader('GestiÃ³n de Usuarios')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <Text style={s.sectionTitle}>👤 Usuarios del Sistema</Text>
+              <Text style={s.sectionTitle}>ðŸ‘¤ Usuarios del Sistema</Text>
               <TouchableOpacity
                 onPress={() => {
                   setEditUserSel(null);
@@ -5590,11 +5666,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                                   administrador_usuario: loggedUser ? loggedUser.nombre : 'Admin'
                                 }, { timeout: 15000 });
                                 if (res.data && res.data.success) {
-                                  showToast('✅ Estado de usuario actualizado');
+                                  showToast('âœ… Estado de usuario actualizado');
                                   cargarUsuarios();
                                 }
                               } catch (e) {
-                                showToast('⚠️ Error al cambiar estado');
+                                showToast('âš ï¸ Error al cambiar estado');
                               }
                             }}
                             style={{
@@ -5690,12 +5766,12 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB 6: AUDITORÍA ─── */}
+      {/* â”€â”€â”€ TAB 6: AUDITORÃA â”€â”€â”€ */}
       {adminTab === 'auditoria' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
-          {renderBackHeader('Log de Auditoría')}
+          {renderBackHeader('Log de AuditorÃ­a')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
-            <Text style={[s.sectionTitle, { marginBottom: 10 }]}>📋 Filtros de Auditoría</Text>
+            <Text style={[s.sectionTitle, { marginBottom: 10 }]}>ðŸ“‹ Filtros de AuditorÃ­a</Text>
             <View style={[s.card, { padding: 14, backgroundColor: C.surf2, marginBottom: 14 }]}>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
                 <View style={{ flex: 1 }}>
@@ -5720,7 +5796,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                 </View>
               </View>
 
-              <Text style={{ fontSize: 11, color: C.text2, marginBottom: 4 }}>Acción:</Text>
+              <Text style={{ fontSize: 11, color: C.text2, marginBottom: 4 }}>AcciÃ³n:</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 4 }}>
                 {[
                   { id: '', label: 'Todos' },
@@ -5774,7 +5850,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               onPress={() => setShowAuditoriaList(!showAuditoriaList)} 
               style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}
             >
-              <Text style={s.sectionTitle}>Log de Eventos (Máx. 20)</Text>
+              <Text style={s.sectionTitle}>Log de Eventos (MÃ¡x. 20)</Text>
               <Ionicons name={showAuditoriaList ? "chevron-up" : "chevron-down"} size={20} color={C.text} />
             </TouchableOpacity>
             
@@ -5782,7 +5858,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               <>
                 {auditoriaLogs.length === 0 ? (
                   <View style={[s.card, { padding: 20, alignItems: 'center', backgroundColor: C.surface }]}>
-                    <Text style={{ fontSize: 12, color: C.text3 }}>No se encontraron registros de auditoría</Text>
+                    <Text style={{ fontSize: 12, color: C.text3 }}>No se encontraron registros de auditorÃ­a</Text>
                   </View>
                 ) : (
                   auditoriaLogs.slice(0, 20).map((l) => {
@@ -5812,10 +5888,10 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       >
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                           <Text style={{ fontSize: 11, color: C.text2, fontWeight: '700' }}>
-                            👤 {l.usuario}
+                            ðŸ‘¤ {l.usuario}
                           </Text>
                           <Text style={{ fontSize: 9, color: C.text3 }}>
-                            🕒 {new Date(l.fecha).toLocaleString('es-CO')}
+                            ðŸ•’ {new Date(l.fecha).toLocaleString('es-CO')}
                           </Text>
                         </View>
 
@@ -5847,12 +5923,12 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </View>
       )}
 
-      {/* ─── TAB 7: IMPRESORA ─── */}
+      {/* â”€â”€â”€ TAB 7: IMPRESORA â”€â”€â”€ */}
       {adminTab === 'impresora' && (
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
-          {renderBackHeader('Configuración de Impresora')}
+          {renderBackHeader('ConfiguraciÃ³n de Impresora')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
-            <Text style={[s.sectionTitle, { marginBottom: 15 }]}>🖨️ Ajustes de Impresión</Text>
+            <Text style={[s.sectionTitle, { marginBottom: 15 }]}>ðŸ–¨ï¸ Ajustes de ImpresiÃ³n</Text>
             
             <View style={{ flexDirection: 'row', gap: 10, marginBottom: 15 }}>
               <TouchableOpacity onPress={() => setPrinterType('ble')} style={[s.btnPrimary, { flex: 1, backgroundColor: printerType === 'ble' ? C.brand : C.surf2, borderWidth: 1, borderColor: printerType === 'ble' ? C.brand : C.border }]}>
@@ -5893,7 +5969,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
             {printerType === 'net' && (
               <View style={[s.card, { padding: 15 }]}>
-                <Text style={{ fontSize: 13, fontWeight: '700', marginBottom: 10 }}>2. Conectar por Dirección IP</Text>
+                <Text style={{ fontSize: 13, fontWeight: '700', marginBottom: 10 }}>2. Conectar por DirecciÃ³n IP</Text>
                 <TextInput style={[s.formInput, { marginBottom: 10 }]} placeholder="Ej. 192.168.1.100" value={printerIP} onChangeText={setPrinterIP} />
                 <TouchableOpacity onPress={async () => {
                   if(!printerIP) return showToast("Ingresa una IP");
@@ -5912,7 +5988,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
             {savedPrinter && (
               <View style={{ marginTop: 20, padding: 15, backgroundColor: 'rgba(45,106,63,0.1)', borderRadius: 10, borderWidth: 1, borderColor: C.green }}>
-                <Text style={{ fontWeight: '800', color: C.green }}>✅ Impresora Configurada</Text>
+                <Text style={{ fontWeight: '800', color: C.green }}>âœ… Impresora Configurada</Text>
                 <Text style={{ fontSize: 12, marginTop: 4 }}>
                   Tipo: {savedPrinter.type === 'ble' ? 'Bluetooth' : 'Red IP'}{'\n'}
                   {savedPrinter.type === 'ble' ? `Dispositivo: ${savedPrinter.device_name || savedPrinter.inner_mac_address}` : `IP: ${savedPrinter.host}`}
@@ -5938,7 +6014,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <Ionicons name="arrow-back" size={20} color={C.cream2} />
                 </TouchableOpacity>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>📋 Detalle de Venta</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>ðŸ“‹ Detalle de Venta</Text>
                   <Text style={{ fontSize: 11, color: C.cream2, marginTop: 2 }}>
                     ID Venta: #{ventaDetalleSelected.id}
                   </Text>
@@ -5948,17 +6024,17 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               <View style={{ padding: 18 }}>
                 <View style={{ gap: 6, marginBottom: 14, borderBottomWidth: 1.5, borderBottomColor: C.border, paddingBottom: 10 }}>
                   <Text style={{ fontSize: 12, color: C.text2 }}>
-                    📅 Fecha: <Text style={{ fontWeight: '700', color: C.text }}>{new Date(ventaDetalleSelected.fecha).toLocaleString('es-CO')}</Text>
+                    ðŸ“… Fecha: <Text style={{ fontWeight: '700', color: C.text }}>{new Date(ventaDetalleSelected.fecha).toLocaleString('es-CO')}</Text>
                   </Text>
                   <Text style={{ fontSize: 12, color: C.text2 }}>
-                    📍 Origen: <Text style={{ fontWeight: '700', color: C.text }}>{ventaDetalleSelected.tipo_origen === 'Para Llevar' ? ventaDetalleSelected.mesa : `Mesa ${ventaDetalleSelected.mesa}`}</Text>
+                    ðŸ“ Origen: <Text style={{ fontWeight: '700', color: C.text }}>{ventaDetalleSelected.tipo_origen === 'Para Llevar' ? ventaDetalleSelected.mesa : `Mesa ${ventaDetalleSelected.mesa}`}</Text>
                   </Text>
                   <Text style={{ fontSize: 12, color: C.text2 }}>
-                    💳 Método Pago: <Text style={{ fontWeight: '700', color: C.text }}>{ventaDetalleSelected.metodo_pago}</Text>
+                    ðŸ’³ MÃ©todo Pago: <Text style={{ fontWeight: '700', color: C.text }}>{ventaDetalleSelected.metodo_pago}</Text>
                   </Text>
                 </View>
 
-                <Text style={{ fontSize: 13, fontWeight: '800', color: C.text, marginBottom: 8 }}>Artículos vendidos:</Text>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: C.text, marginBottom: 8 }}>ArtÃ­culos vendidos:</Text>
                 <ScrollView style={{ maxHeight: 200, marginBottom: 18 }}>
                   <View style={{ gap: 8 }}>
                     {ventaDetallesItems.map((det) => (
@@ -6009,7 +6085,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <Ionicons name="arrow-back" size={20} color={C.cream2} />
                 </TouchableOpacity>
                 <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream, flex: 1 }}>
-                  {editUserSel ? '👤 Editar Usuario' : '👤 Nuevo Usuario'}
+                  {editUserSel ? 'ðŸ‘¤ Editar Usuario' : 'ðŸ‘¤ Nuevo Usuario'}
                 </Text>
               </View>
 
@@ -6017,7 +6093,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                 <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 6 }}>Nombre del usuario</Text>
                 <TextInput
                   style={s.formInput}
-                  placeholder="Ej. Juan Pérez"
+                  placeholder="Ej. Juan PÃ©rez"
                   placeholderTextColor={C.text3}
                   value={newUserName}
                   onChangeText={setNewUserName}
@@ -6025,7 +6101,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
                 {!editUserSel && (
                   <>
-                    <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>PIN Inicial (4 a 6 dígitos)</Text>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>PIN Inicial (4 a 6 dÃ­gitos)</Text>
                     <TextInput
                       style={s.formInput}
                       placeholder="Ej. 1234"
@@ -6067,7 +6143,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         }}
                       >
                         <Text style={{ fontSize: 11, color: isSelected ? '#fff' : C.text, fontWeight: '600' }}>
-                          {isSelected ? '✓ ' : ''}{r.label}
+                          {isSelected ? 'âœ“ ' : ''}{r.label}
                         </Text>
                       </TouchableOpacity>
                     );
@@ -6125,16 +6201,16 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   <Ionicons name="arrow-back" size={20} color={C.cream2} />
                 </TouchableOpacity>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>🔑 Cambiar PIN de Usuario</Text>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>ðŸ”‘ Cambiar PIN de Usuario</Text>
                   <Text style={{ fontSize: 12, color: C.cream2, marginTop: 2 }}>Usuario: {changePinUserSel.nombre}</Text>
                 </View>
               </View>
 
               <View style={{ padding: 18 }}>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6 }}>Nuevo PIN (4 a 6 dígitos)</Text>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6 }}>Nuevo PIN (4 a 6 dÃ­gitos)</Text>
                 <TextInput
                   style={[s.formInput, { letterSpacing: 4, textAlign: 'center', fontSize: 18 }]}
-                  placeholder="••••••"
+                  placeholder="â€¢â€¢â€¢â€¢â€¢â€¢"
                   placeholderTextColor={C.text3}
                   keyboardType="numeric"
                   maxLength={6}
@@ -6173,12 +6249,12 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                 <TouchableOpacity onPress={() => setModalGastoVisible(false)}>
                   <Ionicons name="close" size={20} color={C.cream2} />
                 </TouchableOpacity>
-                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>💸 Registrar Gasto</Text>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>ðŸ’¸ Registrar Gasto</Text>
               </View>
 
               <View style={{ padding: 18, gap: 12 }}>
                 <View>
-                  <Text style={s.formLabel}>Descripción del Gasto</Text>
+                  <Text style={s.formLabel}>DescripciÃ³n del Gasto</Text>
                   <TextInput
                     style={s.formInput}
                     placeholder="Ej. Pago de Internet"
@@ -6189,9 +6265,9 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                 </View>
 
                 <View>
-                  <Text style={s.formLabel}>Categoría</Text>
+                  <Text style={s.formLabel}>CategorÃ­a</Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                    {["Proveedores", "Servicios", "Nómina", "Mantenimiento", "Varios"].map(cat => (
+                    {["Proveedores", "Servicios", "NÃ³mina", "Mantenimiento", "Varios"].map(cat => (
                       <TouchableOpacity
                         key={cat}
                         onPress={() => setFormGasto({...formGasto, categoria: cat})}
@@ -6214,7 +6290,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     placeholder="0"
                     placeholderTextColor={C.text3}
                     keyboardType="decimal-pad"
-                    value={formGasto.valor}
+                    value={String(formGasto.valor || '')}
                     onChangeText={txt => setFormGasto({...formGasto, valor: formatMoneyInput(txt)})}
                   />
                 </View>
@@ -6243,7 +6319,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   );
 }
 
-// ─── ESTILOS ───────────────────────────────────────────────
+// â”€â”€â”€ ESTILOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.brand },
   content: { padding: 14 },
@@ -6287,7 +6363,7 @@ const s = StyleSheet.create({
   mesaNum: { fontSize: 24, fontWeight: "800", color: C.text },
   mesaLabel: { fontSize: 9, color: C.text2, fontWeight: "500", textTransform: "uppercase", letterSpacing: 0.5 },
 
-  // CATEGORÍAS CARRUSEL
+  // CATEGORÃAS CARRUSEL
   catRow: { flexDirection: "row", alignItems: "center", backgroundColor: C.brand, paddingHorizontal: 10, paddingVertical: 10, gap: 6 },
   catArrow: { width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: "rgba(245,230,200,0.25)", backgroundColor: "rgba(245,230,200,0.08)", alignItems: "center", justifyContent: "center" },
   catArrowTxt: { fontSize: 20, color: C.cream, lineHeight: 22 },
