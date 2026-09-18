@@ -1,6 +1,10 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.4",
   "notes": [
-    "Versión estable inicial"
+    "Fix: Cierre forzoso al cobrar mesa en App Móvil.",
+    "Fix: Optimización en la detección de actualizaciones de GitHub en el Servidor.",
+    "Corrección de caída en app móvil al conectar mediante Ngrok.",
+    "Renombre de módulos de 'Fiado' a 'Crédito'.",
+    "Corrección de cierre forzoso tras introducir el PIN de usuario."
   ]
 }
