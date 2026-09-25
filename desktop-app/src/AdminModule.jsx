@@ -31,6 +31,24 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
 export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [listaProductos, setListaProductos] = useState(productos || []);
 
+  const [adminToken, setAdminToken] = useState(null);
+  const [loginPin, setLoginPin] = useState('');
+  const [loginUser, setLoginUser] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [adminTab, setAdminTab] = useState('dashboard');
+
+  // Estados de Impresora
+  const [printerType, setPrinterType] = useState(localStorage.getItem('printerType') || 'ip');
+  const [printerIP, setPrinterIP] = useState(localStorage.getItem('printerIP') || '');
+  const [systemPrinters, setSystemPrinters] = useState([]);
+  const [selectedSystemPrinter, setSelectedSystemPrinter] = useState(localStorage.getItem('selectedSystemPrinter') || '');
+  
+  // Estados para el Modal de Productos
+  const [modalVisible, setModalVisible] = useState(false);
+  const [productoEditando, setProductoEditando] = useState(null); // null = Crear Nuevo, Object = Editar
+  const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '' });
+  const [catFiltro, setCatFiltro] = useState('Todos');
+
   const [categoriasDinamicas, setCategoriasDinamicas] = useState(['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros']);
   const [modalCategoriasOpen, setModalCategoriasOpen] = useState(false);
   const [categoriasFull, setCategoriasFull] = useState([]);
@@ -70,22 +88,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   }, [productos]);
 
-  const [adminToken, setAdminToken] = useState(null);
-  const [loginPin, setLoginPin] = useState('');
-  const [loginUser, setLoginUser] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [adminTab, setAdminTab] = useState('dashboard');
 
-  // Estados de Impresora
-  const [printerType, setPrinterType] = useState(localStorage.getItem('printerType') || 'ip');
-  const [printerIP, setPrinterIP] = useState(localStorage.getItem('printerIP') || '');
-  const [systemPrinters, setSystemPrinters] = useState([]);
-  const [selectedSystemPrinter, setSelectedSystemPrinter] = useState(localStorage.getItem('selectedSystemPrinter') || '');
-  // Estados para el Modal de Productos
-  const [modalVisible, setModalVisible] = useState(false);
-  const [productoEditando, setProductoEditando] = useState(null); // null = Crear Nuevo, Object = Editar
-  const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '' });
-  const [catFiltro, setCatFiltro] = useState('Todos');
 
   const obtenerCategoriaReal = (prod) => {
     const cat = (prod?.categoria || '').trim();
