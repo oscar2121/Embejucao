@@ -35,15 +35,27 @@ const db = new sqlite3.Database(dbPath, (err) => {
       // 2. Mantener las mesas en 'libre'
       db.run("UPDATE mesas SET estado = 'libre'", (errMesa) => {
         if (!errMesa) console.log("Mesas verificadas como libre.");
-        try {
-          const { getIO, emitirSincronizacionCompleta } = require('../utils/socket');
-          const io = getIO();
-          if (io) {
-            io.emit('pedidos_actualizados');
-            io.emit('mesas_actualizadas');
-            emitirSincronizacionCompleta();
+        
+        // Limpieza automática de pedidos fantasma de pruebas anteriores
+        db.run(`
+          UPDATE pedidos 
+          SET estado = 'cancelado', notas = COALESCE(notas, '') || ' [Cancelado por sistema (Ghost Order)]'
+          WHERE id = 77 OR (estado IN ('activo', 'pendiente', 'en_cocina', 'cocinando') AND datetime(fecha) <= datetime('now', '-2 hours'))
+        `, function(errLimpieza) {
+          if (!errLimpieza && this.changes > 0) {
+            console.log(`Se limpiaron ${this.changes} pedidos fantasma atascados en cocina.`);
           }
-        } catch (e) {}
+          
+          try {
+            const { getIO, emitirSincronizacionCompleta } = require('../utils/socket');
+            const io = getIO();
+            if (io) {
+              io.emit('pedidos_actualizados');
+              io.emit('mesas_actualizadas');
+              emitirSincronizacionCompleta();
+            }
+          } catch (e) {}
+        });
       });
     });
   }

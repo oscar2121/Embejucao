@@ -143,6 +143,31 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
     }
   };
 
+  const handleDescartarComanda = async (pedido) => {
+    if (!window.confirm(`¿Estás seguro de forzar el cierre/descartar el pedido de la mesa ${pedido.mesa}?`)) return;
+    
+    isUpdating.current = true;
+    const pedidoActualizado = { ...pedido, estado: 'cancelado', notas: (pedido.notas || '') + ' [Descartado en cocina]' };
+
+    // Optimistic Update: remover el pedido de la lista local inmediatamente
+    setLocalPedidos(prev => prev.filter(p => p.uuid !== pedido.uuid && p.id !== pedido.id));
+
+    try {
+      await axios.post(`${serverUrl}/api/pedidos/estado`, {
+        uuid: pedidoActualizado.uuid || pedidoActualizado.id,
+        items: pedidoActualizado.items,
+        nuevoEstado: 'cancelado'
+      }, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+    } catch (error) {
+      console.warn('Error al descartar comanda:', error);
+      setLocalPedidos(pedidos || []);
+    } finally {
+      setTimeout(() => { isUpdating.current = false; }, 800);
+    }
+  };
+
   const getColorTiempo = (minutos) => {
     if (minutos >= 20) return 'var(--red)';
     if (minutos >= 10) return 'var(--orange)';
@@ -324,12 +349,12 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
                   const todosListos = items.length > 0 && items.every(it => it.estado === 'listo');
 
                   return (
-                    <div style={{ marginTop: 'auto', padding: '10px 12px', borderTop: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                    <div style={{ marginTop: 'auto', padding: '10px 12px', borderTop: '1px solid #e2e8f0', backgroundColor: '#f8fafc', display: 'flex', gap: '8px' }}>
                       {!todosListos ? (
                         <button
                           onClick={() => handleMarcarTodosListos(pedido)}
                           style={{
-                            width: '100%',
+                            flex: 1,
                             padding: '10px',
                             backgroundColor: '#e2e8f0',
                             color: '#334155',
@@ -346,7 +371,7 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
                         <button
                           onClick={() => handleDespacharComanda(pedido)}
                           style={{
-                            width: '100%',
+                            flex: 1,
                             padding: '10px',
                             backgroundColor: '#16a34a',
                             color: '#ffffff',
@@ -361,6 +386,27 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
                           🚀 Despachar Comanda
                         </button>
                       )}
+                      
+                      <button
+                        onClick={() => handleDescartarComanda(pedido)}
+                        title="Forzar Cierre / Descartar (Fantasma)"
+                        style={{
+                          width: '42px',
+                          padding: '10px',
+                          backgroundColor: '#fee2e2',
+                          color: '#dc2626',
+                          borderRadius: '6px',
+                          fontWeight: '700',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        🗑️
+                      </button>
                     </div>
                   );
                 })()}
