@@ -32,6 +32,11 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [listaProductos, setListaProductos] = useState(productos || []);
 
   const [categoriasDinamicas, setCategoriasDinamicas] = useState(['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros']);
+  const [modalCategoriasOpen, setModalCategoriasOpen] = useState(false);
+  const [categoriasFull, setCategoriasFull] = useState([]);
+  const [nuevaCatNombre, setNuevaCatNombre] = useState('');
+  const [catEditando, setCatEditando] = useState(null);
+  const [catEditNombre, setCatEditNombre] = useState('');
 
   const cargarCatalogo = async () => {
     try {
@@ -42,7 +47,9 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       ]);
       if (resProd.data.productos) setListaProductos(resProd.data.productos);
       if (resCat.data.categorias) {
-        const uniqueCats = ['Todos', ...new Set([...resCat.data.categorias, 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros'])];
+        setCategoriasFull(resCat.data.categorias);
+        const catNames = resCat.data.categorias.map(c => typeof c === 'string' ? c : c.nombre);
+        const uniqueCats = ['Todos', ...new Set([...catNames, 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros'])];
         setCategoriasDinamicas(uniqueCats);
       }
     } catch (e) {
@@ -760,22 +767,39 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   Administra los productos, precios y disponibilidad en el menú
                 </p>
               </div>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => abrirModalNuevo()}
-                style={{
-                  backgroundColor: 'var(--brand, #16A34A)',
-                  color: '#fff',
-                  padding: '10px 18px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  fontWeight: 'bold',
-                  cursor: 'pointer'
-                }}
-              >
-                + Agregar Nuevo Producto
-              </button>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setModalCategoriasOpen(true)}
+                  style={{
+                    backgroundColor: 'var(--surf3)',
+                    color: 'var(--text)',
+                    padding: '10px 18px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ⚙️ Administrar Categorías
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => abrirModalNuevo()}
+                  style={{
+                    backgroundColor: 'var(--brand, #16A34A)',
+                    color: '#fff',
+                    padding: '10px 18px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  + Agregar Nuevo Producto
+                </button>
+              </div>
             </div>
 
             {/* Barra de Filtros por Categoría */}
@@ -1602,6 +1626,64 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
           </div>
         )}
       </div>
+
+      {/* Modal de Categorías */}
+      {modalCategoriasOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 105 }}>
+          <div className="animate-fade-in" style={{ backgroundColor: 'var(--card-bg, #fff)', borderRadius: '16px', width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto', padding: '24px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <h2 style={{ color: 'var(--brand)', margin: '0' }}>⚙️ Administrar Categorías</h2>
+            
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input type="text" placeholder="+ Añadir nueva categoría..." value={nuevaCatNombre} onChange={e => setNuevaCatNombre(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid var(--border)' }} />
+              <button onClick={async () => {
+                if (!nuevaCatNombre.trim()) return;
+                try {
+                  await axios.post(`${serverUrl || 'http://localhost:3001'}/api/categorias`, { nombre: nuevaCatNombre });
+                  setNuevaCatNombre('');
+                  cargarCatalogo();
+                } catch (e) { console.error(e); }
+              }} style={{ padding: '10px 16px', backgroundColor: 'var(--brand)', color: 'white', borderRadius: '8px', border: 'none', fontWeight: 'bold', cursor: 'pointer' }}>Añadir</button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {categoriasFull.map(c => (
+                <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', border: '1px solid var(--border)', borderRadius: '8px' }}>
+                  {catEditando === c.id ? (
+                    <input type="text" value={catEditNombre} onChange={e => setCatEditNombre(e.target.value)} style={{ flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid var(--brand)', marginRight: '8px' }} />
+                  ) : (
+                    <span style={{ flex: 1, fontWeight: 'bold' }}>{c.nombre}</span>
+                  )}
+                  
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {catEditando === c.id ? (
+                      <button onClick={async () => {
+                        try {
+                          await axios.put(`${serverUrl || 'http://localhost:3001'}/api/categorias/${c.id}`, { nombre: catEditNombre, nombreAntiguo: c.nombre });
+                          setCatEditando(null);
+                          cargarCatalogo();
+                        } catch (e) { console.error(e); }
+                      }} style={{ background: '#DCFCE7', color: '#16A34A', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>✔️</button>
+                    ) : (
+                      <button onClick={() => { setCatEditando(c.id); setCatEditNombre(c.nombre); }} style={{ background: 'none', border: '1px solid var(--border)', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>✏️</button>
+                    )}
+                    
+                    <button onClick={async () => {
+                      if (window.confirm(`¿Eliminar la categoría "${c.nombre}"? Sus productos pasarán a "Otros".`)) {
+                        try {
+                          await axios.delete(`${serverUrl || 'http://localhost:3001'}/api/categorias/${c.id}?nombre=${encodeURIComponent(c.nombre)}`);
+                          cargarCatalogo();
+                        } catch (e) { console.error(e); }
+                      }
+                    }} style={{ background: '#FEE2E2', color: '#DC2626', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>🗑️</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button onClick={() => setModalCategoriasOpen(false)} style={{ marginTop: '16px', padding: '12px', backgroundColor: 'var(--surf3)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>Cerrar</button>
+          </div>
+        </div>
+      )}
 
       {/* Modal de Producto */}
       {modalVisible && (

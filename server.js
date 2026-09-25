@@ -391,11 +391,90 @@ app.delete('/api/productos/:id', (req, res) => {
 });
 
 app.get('/api/categorias', (req, res) => {
-  db.all(`SELECT DISTINCT cat as categoria FROM productos WHERE cat IS NOT NULL AND cat != '' ORDER BY cat ASC`, [], (err, rows) => {
+  // Intenta sacar las de la tabla categorias, pero también de productos para no perder ninguna en la migración
+  db.all(`SELECT id, nombre, color FROM categorias ORDER BY nombre ASC`, [], (err, rowsCat) => {
     if (err) return res.status(500).json({ error: err.message });
-    const categorias = rows.map(r => r.categoria);
-    res.json({ categorias });
+    
+    db.all(`SELECT DISTINCT cat as categoria FROM productos WHERE cat IS NOT NULL AND cat != ''`, [], (err2, rowsProd) => {
+      let categorias = [...(rowsCat || [])];
+      
+      // Añadir las que estén en productos pero no en categorias (migración silenciosa)
+      if (rowsProd && rowsProd.length > 0) {
+        rowsProd.forEach(p => {
+          const n = String(p.categoria).trim();
+          if (!categorias.find(c => String(c.nombre).trim().toLowerCase() === n.toLowerCase()) && isNaN(Number(n))) {
+            categorias.push({ id: `temp-${n}`, nombre: n, color: '#cccccc' });
+          }
+        });
+      }
+      res.json({ categorias });
+    });
   });
+});
+
+app.post('/api/categorias', (req, res) => {
+  const { nombre, color } = req.body;
+  db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nombre, color || '#cccccc'], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, id: this.lastID, nombre, color });
+  });
+});
+
+app.put('/api/categorias/:id', (req, res) => {
+  const { id } = req.params;
+  const { nombre, nombreAntiguo } = req.body;
+  
+  const updateProducts = (oldName, newName) => {
+    db.run(`UPDATE productos SET cat = ? WHERE cat = ?`, [newName, oldName], (err2) => {
+      if (err2) console.error("Error en cascada:", err2);
+      if (typeof io !== 'undefined') io.emit('productos_actualizados');
+      res.json({ success: true });
+    });
+  };
+
+  if (String(id).startsWith('temp-')) {
+    // Es una categoría que solo existía en productos, la creamos ahora
+    db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nombre, '#cccccc'], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      updateProducts(nombreAntiguo, nombre);
+    });
+  } else {
+    db.run(`UPDATE categorias SET nombre = ? WHERE id = ?`, [nombre, id], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      updateProducts(nombreAntiguo, nombre);
+    });
+  }
+});
+
+app.delete('/api/categorias/:id', (req, res) => {
+  const { id } = req.params;
+  const nombre = req.query.nombre || req.body.nombre; 
+
+  const deleteAndReassign = (catName) => {
+    db.run(`UPDATE productos SET cat = 'Otros' WHERE cat = ?`, [catName], (errUpdate) => {
+      if (errUpdate) console.error("Error reasignando productos:", errUpdate);
+      
+      if (!String(id).startsWith('temp-')) {
+        db.run(`DELETE FROM categorias WHERE id = ?`, [id], function (errDel) {
+           if (errDel) return res.status(500).json({ error: errDel.message });
+           if (typeof io !== 'undefined') io.emit('productos_actualizados');
+           res.json({ success: true });
+        });
+      } else {
+         if (typeof io !== 'undefined') io.emit('productos_actualizados');
+         res.json({ success: true });
+      }
+    });
+  };
+
+  if (nombre) {
+    deleteAndReassign(nombre);
+  } else {
+    db.get(`SELECT nombre FROM categorias WHERE id = ?`, [id], (errGet, catRow) => {
+      if (!catRow) return res.status(404).json({ error: "Categoría no encontrada" });
+      deleteAndReassign(catRow.nombre);
+    });
+  }
 });
 
 // ─── GASTOS ───
