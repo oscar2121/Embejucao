@@ -311,33 +311,61 @@ app.post('/api/productos/:id/insumos', (req, res) => {
 });
 
 app.get('/api/productos', (req, res) => {
-  db.all(`SELECT * FROM productos ORDER BY cat ASC, nombre ASC`, [], (err, rows) => {
+  db.all(`SELECT * FROM productos ORDER BY categoria ASC, nombre ASC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ productos: rows.map(r => ({ ...r, disp: !!r.disp })) });
+    res.json({
+      productos: (rows || []).map(r => ({
+        ...r,
+        categoria: r.categoria || r.cat || 'Otros',
+        cat: r.cat || r.categoria || 'Otros',
+        disp: !!r.disp,
+        disponible: !!r.disp
+      }))
+    });
   });
 });
 
 app.post('/api/productos', (req, res) => {
-  const { id, cat, nombre, precio, desc, emoji, disp, usuario, imagen } = req.body;
-  const dispVal = disp !== false ? 1 : 0;
-  
+  const { id, cat, categoria, nombre, precio, desc, descripcion, emoji, disp, disponible, usuario, imagen } = req.body;
+  const dispVal = disp !== false && disponible !== false ? 1 : 0;
+  const categoriaFinal = (categoria || cat || '').toString().trim() || 'Otros';
+  const descFinal = desc || descripcion || '';
+
   if (id) {
     db.run(
-      `UPDATE productos SET cat=?, nombre=?, precio=?, desc=?, emoji=?, disp=?, imagen=? WHERE id=?`,
-      [cat, nombre, precio, desc, emoji, dispVal, imagen, id],
+      `UPDATE productos SET cat=?, categoria=?, nombre=?, precio=?, desc=?, descripcion=?, emoji=?, disp=?, imagen=? WHERE id=?`,
+      [categoriaFinal, categoriaFinal, nombre, precio, descFinal, descFinal, emoji, dispVal, imagen, id],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'producto_editado', `Producto modificado: ${nombre} ($${precio})`);
+
+        if (categoriaFinal.toLowerCase() !== 'otros') {
+          db.run(`INSERT OR IGNORE INTO categorias (nombre, color) VALUES (?, ?)`, [categoriaFinal, '#16a34a']);
+        }
+
+        if (req.io) req.io.emit('catalogo_actualizado');
+        if (typeof io !== 'undefined') io.emit('productos_actualizados');
+        broadcastComandasActivas();
+
         res.json({ success: true, updated: this.changes });
       }
     );
   } else {
     db.run(
-      `INSERT INTO productos (cat, nombre, precio, desc, emoji, disp, imagen) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [cat, nombre, precio, desc, emoji, dispVal, imagen],
+      `INSERT INTO productos (cat, categoria, nombre, precio, desc, descripcion, emoji, disp, imagen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [categoriaFinal, categoriaFinal, nombre, precio, descFinal, descFinal, emoji, dispVal, imagen],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'producto_creado', `Nuevo producto agregado al catálogo: ${nombre} ($${precio})`);
+
+        if (categoriaFinal.toLowerCase() !== 'otros') {
+          db.run(`INSERT OR IGNORE INTO categorias (nombre, color) VALUES (?, ?)`, [categoriaFinal, '#16a34a']);
+        }
+
+        if (req.io) req.io.emit('catalogo_actualizado');
+        if (typeof io !== 'undefined') io.emit('productos_actualizados');
+        broadcastComandasActivas();
+
         res.json({ success: true, id: this.lastID });
       }
     );
@@ -345,15 +373,19 @@ app.post('/api/productos', (req, res) => {
 });
 
 app.put('/api/productos/:id', (req, res) => {
-  const { nombre, precio, cat, activo } = req.body;
+  const { nombre, precio, cat, categoria, activo } = req.body;
   const usuario = req.body.usuario || 'Admin';
+  const catVal = categoria || cat;
   
   db.run(
-    `UPDATE productos SET nombre = COALESCE(?, nombre), precio = COALESCE(?, precio), cat = COALESCE(?, cat), disp = COALESCE(?, disp) WHERE id = ?`,
-    [nombre, precio, cat, activo !== undefined ? activo : 1, req.params.id],
+    `UPDATE productos SET nombre = COALESCE(?, nombre), precio = COALESCE(?, precio), cat = COALESCE(?, cat), categoria = COALESCE(?, categoria), disp = COALESCE(?, disp) WHERE id = ?`,
+    [nombre, precio, catVal, catVal, activo !== undefined ? activo : 1, req.params.id],
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
       logAuditoria(usuario, 'producto_actualizado', `Producto modificado: ${nombre || req.params.id} ($${precio || 'Sin cambio'})`);
+      if (req.io) req.io.emit('catalogo_actualizado');
+      if (typeof io !== 'undefined') io.emit('productos_actualizados');
+      broadcastComandasActivas();
       res.json({ success: true, updatedID: req.params.id });
     }
   );
@@ -369,6 +401,9 @@ app.put('/api/productos/:id/disponibilidad', (req, res) => {
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'disponibilidad_cambiada', `Disponibilidad de ${prodName} cambiada a: ${disp ? 'Disponible' : 'No Disponible'}`);
+        if (req.io) req.io.emit('catalogo_actualizado');
+        if (typeof io !== 'undefined') io.emit('productos_actualizados');
+        broadcastComandasActivas();
         res.json({ success: true });
       }
     );
@@ -384,95 +419,129 @@ app.delete('/api/productos/:id', (req, res) => {
     db.run(`DELETE FROM productos WHERE id = ?`, [id], function (err) {
       if (err) return res.status(500).json({ error: err.message });
       logAuditoria(usuario, 'producto_eliminado', `Producto eliminado: ${prodName}`);
+      if (req.io) req.io.emit('catalogo_actualizado');
       if (typeof io !== 'undefined') io.emit('productos_actualizados');
+      broadcastComandasActivas();
       res.json({ success: true, deleted: this.changes });
     });
   });
 });
 
 app.get('/api/categorias', (req, res) => {
-  // Intenta sacar las de la tabla categorias, pero también de productos para no perder ninguna en la migración
   db.all(`SELECT id, nombre, color FROM categorias ORDER BY nombre ASC`, [], (err, rowsCat) => {
-    if (err) return res.status(500).json({ error: err.message });
-    
-    db.all(`SELECT DISTINCT cat as categoria FROM productos WHERE cat IS NOT NULL AND cat != ''`, [], (err2, rowsProd) => {
-      let categorias = [...(rowsCat || [])];
-      
-      // Añadir las que estén en productos pero no en categorias (migración silenciosa)
+    db.all(`SELECT DISTINCT categoria FROM productos WHERE categoria IS NOT NULL AND TRIM(categoria) != '' ORDER BY categoria ASC`, [], (err2, rowsProd) => {
+      let categoriasMap = new Map();
+
+      // 1. Agregar desde tabla categorias
+      (rowsCat || []).forEach(c => {
+        const nom = String(c.nombre || '').trim();
+        if (nom) categoriasMap.set(nom.toLowerCase(), { id: c.id, nombre: nom, categoria: nom, color: c.color || '#cccccc' });
+      });
+
+      // 2. Agregar desde productos existentes
       if (rowsProd && rowsProd.length > 0) {
         rowsProd.forEach(p => {
-          const n = String(p.categoria).trim();
-          if (!categorias.find(c => String(c.nombre).trim().toLowerCase() === n.toLowerCase()) && isNaN(Number(n))) {
-            categorias.push({ id: `temp-${n}`, nombre: n, color: '#cccccc' });
+          const nom = String(p.categoria || '').trim();
+          if (nom && !categoriasMap.has(nom.toLowerCase())) {
+            categoriasMap.set(nom.toLowerCase(), { id: `temp-${nom}`, nombre: nom, categoria: nom, color: '#cccccc' });
           }
         });
       }
-      res.json({ categorias });
+
+      // 3. Siempre incluir 'Otros'
+      if (!categoriasMap.has('otros')) {
+        categoriasMap.set('otros', { id: 'temp-otros', nombre: 'Otros', categoria: 'Otros', color: '#64748b' });
+      }
+
+      const lista = Array.from(categoriasMap.values());
+      res.json(lista);
     });
   });
 });
 
 app.post('/api/categorias', (req, res) => {
   const { nombre, color } = req.body;
-  db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nombre, color || '#cccccc'], function (err) {
+  if (!nombre || !nombre.trim()) return res.status(400).json({ error: "Nombre de categoría requerido" });
+  const nombreLimpio = nombre.trim();
+  
+  db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nombreLimpio, color || '#16a34a'], function (err) {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true, id: this.lastID, nombre, color });
+    if (req.io) req.io.emit('catalogo_actualizado');
+    if (typeof io !== 'undefined') io.emit('productos_actualizados');
+    broadcastComandasActivas();
+    res.json({ success: true, id: this.lastID, nombre: nombreLimpio, color: color || '#16a34a' });
   });
 });
 
 app.put('/api/categorias/:id', (req, res) => {
   const { id } = req.params;
   const { nombre, nombreAntiguo } = req.body;
+  const nuevoNombre = String(nombre || '').trim();
+  const antiguo = String(nombreAntiguo || '').trim();
   
   const updateProducts = (oldName, newName) => {
-    db.run(`UPDATE productos SET cat = ? WHERE cat = ?`, [newName, oldName], (err2) => {
+    db.run(`UPDATE productos SET categoria = ?, cat = ? WHERE LOWER(categoria) = LOWER(?) OR LOWER(cat) = LOWER(?)`, [newName, newName, oldName, oldName], (err2) => {
       if (err2) console.error("Error en cascada:", err2);
+      if (req.io) req.io.emit('catalogo_actualizado');
       if (typeof io !== 'undefined') io.emit('productos_actualizados');
+      broadcastComandasActivas();
       res.json({ success: true });
     });
   };
 
   if (String(id).startsWith('temp-')) {
-    // Es una categoría que solo existía en productos, la creamos ahora
-    db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nombre, '#cccccc'], function (err) {
+    db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nuevoNombre, '#16a34a'], function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      updateProducts(nombreAntiguo, nombre);
+      updateProducts(antiguo, nuevoNombre);
     });
   } else {
-    db.run(`UPDATE categorias SET nombre = ? WHERE id = ?`, [nombre, id], function (err) {
+    db.run(`UPDATE categorias SET nombre = ? WHERE id = ?`, [nuevoNombre, id], function (err) {
       if (err) return res.status(500).json({ error: err.message });
-      updateProducts(nombreAntiguo, nombre);
+      updateProducts(antiguo, nuevoNombre);
     });
   }
 });
 
-app.delete('/api/categorias/:id', (req, res) => {
-  const { id } = req.params;
-  const nombre = req.query.nombre || req.body.nombre; 
+app.delete('/api/categorias/:nombre', (req, res) => {
+  const param = req.params.nombre;
+  const nombreQuery = req.query.nombre || req.body?.nombre;
 
-  const deleteAndReassign = (catName) => {
-    db.run(`UPDATE productos SET cat = 'Otros' WHERE cat = ?`, [catName], (errUpdate) => {
-      if (errUpdate) console.error("Error reasignando productos:", errUpdate);
-      
-      if (!String(id).startsWith('temp-')) {
-        db.run(`DELETE FROM categorias WHERE id = ?`, [id], function (errDel) {
-           if (errDel) return res.status(500).json({ error: errDel.message });
-           if (typeof io !== 'undefined') io.emit('productos_actualizados');
-           res.json({ success: true });
-        });
-      } else {
-         if (typeof io !== 'undefined') io.emit('productos_actualizados');
-         res.json({ success: true });
+  const ejecutarEliminacion = (catNombre) => {
+    const nombreLimpio = String(catNombre || '').trim();
+    if (!nombreLimpio || nombreLimpio.toLowerCase() === 'otros' || nombreLimpio.toLowerCase() === 'todos') {
+      return res.status(400).json({ error: "No se puede eliminar esta categoría" });
+    }
+
+    db.run(
+      `UPDATE productos SET categoria = 'Otros', cat = 'Otros' WHERE LOWER(categoria) = LOWER(?) OR LOWER(cat) = LOWER(?)`,
+      [nombreLimpio, nombreLimpio],
+      function (errUpdate) {
+        if (errUpdate) console.error("Error al reasignar productos:", errUpdate);
+
+        db.run(
+          `DELETE FROM categorias WHERE LOWER(nombre) = LOWER(?) OR id = ?`,
+          [nombreLimpio, isNaN(Number(param)) ? -1 : Number(param)],
+          function (errDel) {
+            if (errDel) console.error("Error al eliminar de tabla categorias:", errDel);
+
+            if (req.io) req.io.emit('catalogo_actualizado');
+            if (typeof io !== 'undefined') io.emit('productos_actualizados');
+            broadcastComandasActivas();
+
+            res.json({ success: true, mensaje: "Categoría eliminada y productos reasignados a 'Otros'" });
+          }
+        );
       }
-    });
+    );
   };
 
-  if (nombre) {
-    deleteAndReassign(nombre);
+  if (nombreQuery) {
+    ejecutarEliminacion(nombreQuery);
+  } else if (isNaN(Number(param))) {
+    ejecutarEliminacion(param);
   } else {
-    db.get(`SELECT nombre FROM categorias WHERE id = ?`, [id], (errGet, catRow) => {
-      if (!catRow) return res.status(404).json({ error: "Categoría no encontrada" });
-      deleteAndReassign(catRow.nombre);
+    db.get(`SELECT nombre FROM categorias WHERE id = ?`, [param], (err, row) => {
+      ejecutarEliminacion(row?.nombre || param);
     });
   }
 });

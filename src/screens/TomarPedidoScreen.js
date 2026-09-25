@@ -16,7 +16,10 @@ import ModalAdicionales from '../components/ModalAdicionales';
 export default function TomarPedidoScreen({
   mesas = [],
   productos = [],
+  categorias = [],
   pedidos = [],
+  socket,
+  cargarProductos,
   onEnviar,
   serverIP,
   showToast = () => {},
@@ -53,12 +56,29 @@ export default function TomarPedidoScreen({
   setMetodoAbono,
   setAbonoModalVisible
 }) {
-  const [catActiva, setCatActiva] = useState(1);
+  const [catActiva, setCatActiva] = useState('Otros');
+
+  const safeProductos = productos || [];
+  const safeCategorias = categorias || [];
 
   useEffect(() => {
-    if (productos && productos.length > 0) {
+    if (socket) {
+      const recargar = () => {
+        if (typeof cargarProductos === 'function') cargarProductos();
+      };
+      socket.on('catalogo_actualizado', recargar);
+      socket.on('productos_actualizados', recargar);
+      return () => {
+        socket.off('catalogo_actualizado', recargar);
+        socket.off('productos_actualizados', recargar);
+      };
+    }
+  }, [socket, cargarProductos]);
+
+  useEffect(() => {
+    if (safeProductos.length > 0) {
       const activeStr = String(catActiva);
-      const availableCatsStr = Array.from(new Set(productos.map(p => String(p.cat))));
+      const availableCatsStr = Array.from(new Set(safeProductos.map(p => String(p?.categoria || p?.cat || 'Otros'))));
       if (!availableCatsStr.includes(activeStr) && availableCatsStr.length > 0) {
         setCatActiva(availableCatsStr[0]);
       }
@@ -357,7 +377,12 @@ export default function TomarPedidoScreen({
     setPedidoEditando(null);
   };
 
-  const prods = productos.filter(p => String(p.cat) === String(catActiva) && p.disp);
+  const prods = (safeProductos || []).filter(p => {
+    if (!p) return false;
+    const catVal = String(p?.categoria || p?.cat || 'Otros');
+    const dispVal = p?.disp !== false && p?.disponible !== false;
+    return (catVal === String(catActiva) || (catActiva === 'Otros' && !p?.categoria && !p?.cat)) && dispVal;
+  });
 
   // PASO 1: Mesas
   if (paso === 1) {
@@ -860,9 +885,11 @@ export default function TomarPedidoScreen({
           contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 10, gap: 8 }}
           style={{ flexGrow: 0 }}
         >
-          {Array.from(new Set(productos.map(p => p.cat))).map(catVal => {
-            const origCat = CATEGORIAS.find(c => c.id === Number(catVal));
-            const catName = origCat ? origCat.nombre : String(catVal);
+          {Array.from(new Set((safeProductos || []).map(p => String(p?.categoria || p?.cat || 'Otros')).filter(Boolean))).map(catVal => {
+            const origCat = (safeCategorias || []).find(c => String(c?.id) === String(catVal) || String(c?.nombre).toLowerCase() === String(catVal).toLowerCase());
+            const origThemeCat = (CATEGORIAS || []).find(c => String(c?.id) === String(catVal) || String(c?.nombre).toLowerCase() === String(catVal).toLowerCase());
+            const catName = origCat?.nombre || origThemeCat?.nombre || String(catVal);
+            const isActiva = String(catActiva) === String(catVal);
             return (
               <TouchableOpacity
                 key={String(catVal)}
@@ -871,16 +898,16 @@ export default function TomarPedidoScreen({
                   paddingHorizontal: 14,
                   borderRadius: 20,
                   borderWidth: 1.5,
-                  borderColor: String(catActiva) === String(catVal) ? C.orange : "rgba(245,230,200,0.2)",
-                  backgroundColor: String(catActiva) === String(catVal) ? C.orange : "rgba(245,230,200,0.07)",
+                  borderColor: isActiva ? C.orange : "rgba(245,230,200,0.2)",
+                  backgroundColor: isActiva ? C.orange : "rgba(245,230,200,0.07)",
                 }}
                 onPress={() => setCatActiva(catVal)}
               >
                 <Text
                   style={{
                     fontSize: 12,
-                    fontWeight: String(catActiva) === String(catVal) ? "700" : "500",
-                    color: String(catActiva) === String(catVal) ? "white" : "rgba(245,230,200,0.7)",
+                    fontWeight: isActiva ? "700" : "500",
+                    color: isActiva ? "white" : "rgba(245,230,200,0.7)",
                   }}
                   numberOfLines={1}
                 >
@@ -893,22 +920,26 @@ export default function TomarPedidoScreen({
 
         {/* Productos */}
         <View style={s.prodsGrid}>
-          {prods.map(p => (
-            <TouchableOpacity key={p.id} style={s.prodCard} onPress={() => iniciarAgregarProducto(p)}>
-              {p.imagen ? (
-                <Image
-                  source={{ uri: `http://${serverIP}:3001${p.imagen}` }}
-                  style={{ width: 80, height: 80, borderRadius: 12, marginBottom: 8 }}
-                  resizeMode="cover"
-                />
-              ) : (
-                <Text style={{ fontSize: 28 }}>{p.emoji}</Text>
-              )}
-              <Text style={s.prodNombre}>{p.nombre}</Text>
-              <Text style={s.prodDesc} numberOfLines={2}>{p.desc}</Text>
-              <Text style={s.prodPrecio}>${p.precio.toLocaleString("es-CO")}</Text>
-            </TouchableOpacity>
-          ))}
+          {(prods || []).map(p => {
+            if (!p) return null;
+            const precioFormatted = Number(p?.precio || 0).toLocaleString("es-CO");
+            return (
+              <TouchableOpacity key={p?.id || Math.random()} style={s.prodCard} onPress={() => iniciarAgregarProducto(p)}>
+                {p?.imagen ? (
+                  <Image
+                    source={{ uri: `http://${serverIP}:3001${p.imagen}` }}
+                    style={{ width: 80, height: 80, borderRadius: 12, marginBottom: 8 }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={{ fontSize: 28 }}>{p?.emoji || '🍽️'}</Text>
+                )}
+                <Text style={s.prodNombre}>{p?.nombre || 'Producto'}</Text>
+                <Text style={s.prodDesc} numberOfLines={2}>{p?.desc || p?.descripcion || ''}</Text>
+                <Text style={s.prodPrecio}>${precioFormatted}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         {/* Carrito */}

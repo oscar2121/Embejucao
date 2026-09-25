@@ -55,6 +55,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [nuevaCatNombre, setNuevaCatNombre] = useState('');
   const [catEditando, setCatEditando] = useState(null);
   const [catEditNombre, setCatEditNombre] = useState('');
+  const [modoNuevaCat, setModoNuevaCat] = useState(false);
+  const [categoriaInput, setCategoriaInput] = useState('');
 
   const cargarCatalogo = async () => {
     try {
@@ -63,13 +65,15 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         axios.get(`${targetUrl}/api/productos`, { headers: { 'ngrok-skip-browser-warning': 'true' } }),
         axios.get(`${targetUrl}/api/categorias`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
       ]);
-      if (resProd.data.productos) setListaProductos(resProd.data.productos);
-      if (resCat.data.categorias) {
-        setCategoriasFull(resCat.data.categorias);
-        const catNames = resCat.data.categorias.map(c => typeof c === 'string' ? c : c.nombre);
-        const uniqueCats = ['Todos', ...new Set([...catNames, 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros'])];
-        setCategoriasDinamicas(uniqueCats);
-      }
+      const prodsCargados = resProd.data?.productos || [];
+      setListaProductos(prodsCargados);
+
+      const rawCats = Array.isArray(resCat.data) ? resCat.data : (resCat.data?.categorias || []);
+      setCategoriasFull(rawCats);
+      const catNames = rawCats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria)).filter(Boolean);
+      const prodsCats = prodsCargados.map(p => p.categoria || p.cat).filter(Boolean);
+      const uniqueCats = ['Todos', ...new Set([...catNames, ...prodsCats, 'Otros'])];
+      setCategoriasDinamicas(uniqueCats);
     } catch (e) {
       console.error("Error cargando catalogo", e);
     }
@@ -81,6 +85,21 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   }, [adminTab, serverUrl]);
 
+  // Escucha de Socket en Desktop para tiempo real
+  useEffect(() => {
+    if (socket) {
+      const recargarCatalogo = () => {
+        cargarCatalogo();
+      };
+      socket.on('catalogo_actualizado', recargarCatalogo);
+      socket.on('productos_actualizados', recargarCatalogo);
+      return () => {
+        socket.off('catalogo_actualizado', recargarCatalogo);
+        socket.off('productos_actualizados', recargarCatalogo);
+      };
+    }
+  }, [socket]);
+
   // Sincronizar si la prop externa cambia
   useEffect(() => {
     if (Array.isArray(productos)) {
@@ -88,11 +107,9 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   }, [productos]);
 
-
-
   const obtenerCategoriaReal = (prod) => {
-    const cat = (prod?.categoria || '').trim();
-    if (cat && cat.toLowerCase() !== 'general') return cat;
+    const cat = (prod?.categoria || prod?.cat || '').trim();
+    if (cat && cat.toLowerCase() !== 'general' && isNaN(Number(cat))) return cat;
 
     const nombre = (prod?.nombre || '').toLowerCase();
     if (nombre.includes('perro') || nombre.includes('chori') || nombre.includes('sencillo')) return 'Perros';
@@ -590,9 +607,18 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const { totalVentas, totalOrdenes, productosVendidos, totalGastos, balance: localBalance, porcentajeGastos, deudoresMonto, donutData, ventasPorHora } = dashboardDataLocal;
 
+  const listaCategorias = useMemo(() => {
+    const sinTodos = categoriasDinamicas.filter(c => c !== 'Todos');
+    if (!sinTodos.includes('Otros')) sinTodos.push('Otros');
+    return sinTodos;
+  }, [categoriasDinamicas]);
+
   const abrirModalNuevo = () => {
     setProductoEditando(null);
-    setFormProd({ nombre: '', precio: '', emoji: '🍔', cat: 1, desc: '', imagen: '' });
+    const initialCat = listaCategorias[0] || 'Otros';
+    setFormProd({ nombre: '', precio: '', emoji: '🍔', cat: initialCat, categoria: initialCat, desc: '', imagen: '' });
+    setModoNuevaCat(false);
+    setCategoriaInput(initialCat);
     setImageFile(null);
     setImagePreviewUrl(null);
     setModalVisible(true);
@@ -600,14 +626,22 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const abrirModalEditar = (prod) => {
     setProductoEditando(prod);
+    const prodCat = prod.categoria || prod.cat || 'Otros';
     setFormProd({
       nombre: prod.nombre,
       precio: prod.precio,
       emoji: prod.emoji || '🍔',
-      categoria: prod.cat || prod.categoria || 'Otros',
-      desc: prod.desc || '',
+      categoria: prodCat,
+      cat: prodCat,
+      desc: prod.desc || prod.descripcion || '',
       imagen: prod.imagen || ''
     });
+    setCategoriaInput(prodCat);
+    if (listaCategorias.includes(prodCat)) {
+      setModoNuevaCat(false);
+    } else {
+      setModoNuevaCat(true);
+    }
     setImageFile(null);
     setImagePreviewUrl(prod.imagen || null);
     setModalVisible(true);
@@ -615,6 +649,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const guardarProducto = async () => {
     if (!formProd.nombre || !formProd.precio) return toast.error("Completa los campos.");
+    const catFinal = (categoriaInput || formProd.categoria || 'Otros').trim() || 'Otros';
     try {
       let finalImageUrl = formProd.imagen;
 
@@ -632,7 +667,10 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
       const payload = {
         nombre: formProd.nombre,
-        cat: formProd.categoria,
+        cat: catFinal,
+        categoria: catFinal,
+        desc: formProd.desc,
+        descripcion: formProd.desc,
         emoji: formProd.emoji,
         precio: Number(cleanNum(formProd.precio)),
         imagen: finalImageUrl,
@@ -806,7 +844,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
             </div>
 
             {/* Barra de Filtros por Categoría */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
               {categoriasDinamicas.map((cat) => {
                 const activa = catFiltro === cat;
                 return (
@@ -835,6 +873,43 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   </button>
                 );
               })}
+
+              {/* Botón para eliminar la categoría seleccionada (excepto 'Todos' y 'Otros') */}
+              {catFiltro !== 'Todos' && catFiltro !== 'Otros' && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (window.confirm(`¿Eliminar la categoría "${catFiltro}"? Sus productos pasarán automáticamente a "Otros".`)) {
+                      try {
+                        const targetUrl = serverUrl || 'http://localhost:3001';
+                        await axios.delete(`${targetUrl}/api/categorias/${encodeURIComponent(catFiltro)}`);
+                        setCatFiltro('Todos');
+                        await cargarCatalogo();
+                      } catch (e) {
+                        console.error("Error al eliminar categoría:", e);
+                        alert("Error al eliminar la categoría del servidor.");
+                      }
+                    }
+                  }}
+                  style={{
+                    padding: '7px 14px',
+                    borderRadius: '20px',
+                    border: '1px solid #DC2626',
+                    backgroundColor: '#FEE2E2',
+                    color: '#DC2626',
+                    fontWeight: 'bold',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    marginLeft: '4px'
+                  }}
+                  title={`Eliminar categoría "${catFiltro}"`}
+                >
+                  🗑️ Eliminar "{catFiltro}"
+                </button>
+              )}
             </div>
 
             {/* Grid de Productos Filtrados */}
@@ -1712,28 +1787,71 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={{ marginBottom: '14px' }}>
                 <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px' }}>
-                  Categoría (Escribe una nueva o selecciona):
+                  Categoría:
                 </label>
-                <input
-                  type="text"
-                  list="lista-categorias-existentes"
-                  value={formProd.categoria || ''}
-                  onChange={(e) => handleCambioCategoria(e.target.value)}
-                  placeholder="Ej: Hamburguesas, Salchipapas, Pizzas..."
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg)',
-                    color: 'var(--text)'
-                  }}
-                />
-                <datalist id="lista-categorias-existentes">
-                  {Array.from(new Set(productos.map((p) => p.categoria).filter(Boolean))).map((cat) => (
-                    <option key={cat} value={cat} />
-                  ))}
-                </datalist>
+                {!modoNuevaCat ? (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <select
+                      value={categoriaInput}
+                      onChange={(e) => {
+                        setCategoriaInput(e.target.value);
+                        handleCambioCategoria(e.target.value);
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '10px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                        color: 'var(--text)',
+                        fontSize: '14px'
+                      }}
+                    >
+                      {listaCategorias.map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => { setModoNuevaCat(true); setCategoriaInput(''); }}
+                      style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
+                    >
+                      + Nueva
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input
+                      type="text"
+                      placeholder="Nombre de la nueva categoría..."
+                      value={categoriaInput}
+                      onChange={(e) => {
+                        setCategoriaInput(e.target.value);
+                        handleCambioCategoria(e.target.value);
+                      }}
+                      autoFocus
+                      style={{
+                        flex: 1,
+                        padding: '10px',
+                        borderRadius: '6px',
+                        border: '1px solid #16a34a',
+                        background: 'var(--bg)',
+                        color: 'var(--text)',
+                        fontSize: '14px'
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModoNuevaCat(false);
+                        setCategoriaInput(listaCategorias[0] || 'Otros');
+                      }}
+                      style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Selector y vista previa de Emoji */}

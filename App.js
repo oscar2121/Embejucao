@@ -805,6 +805,14 @@ export default function App() {
       if (data.sesionCaja !== undefined) setSesionActiva(data.sesionCaja);
     });
 
+    socketRef.current.on('catalogo_actualizado', () => {
+      if (socketRef.current) socketRef.current.emit('solicitar_sincronizacion');
+    });
+
+    socketRef.current.on('productos_actualizados', () => {
+      if (socketRef.current) socketRef.current.emit('solicitar_sincronizacion');
+    });
+
     socketRef.current.on('caja:estado', (data) => {
       const estaAbierta = Boolean(data?.abierta && data?.sesion);
       setSesionActiva(estaAbierta ? data.sesion : null);
@@ -2207,7 +2215,12 @@ export default function App() {
           <TomarPedidoScreen
             mesas={mesas}
             productos={productos}
+            categorias={categorias}
             pedidos={pedidos}
+            socket={socketRef.current}
+            cargarProductos={() => {
+              if (socketRef.current) socketRef.current.emit('solicitar_sincronizacion');
+            }}
             onEnviar={enviarPedido}
             serverIP={serverIP}
             showToast={showToast}

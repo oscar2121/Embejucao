@@ -142,6 +142,14 @@ export function useAppStore() {
       sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
+    socketRef.current.on('catalogo_actualizado', () => {
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
+    socketRef.current.on('productos_actualizados', () => {
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
