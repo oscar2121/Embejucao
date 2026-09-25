@@ -1230,6 +1230,80 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                 </div>
               </div>
             )}
+
+            {modalMovimiento && insumoSeleccionado && (
+              <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+                <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '16px', width: '420px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+                  <h3 style={{ margin: '0 0 16px 0', color: 'var(--brand, #144c3c)' }}>
+                    {tipoMov === 'entrada' ? 'Entrada de Insumo' : 'Ajuste de Inventario'}
+                  </h3>
+                  <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: 'var(--text2)' }}>
+                    Insumo: <strong style={{ color: 'var(--text)' }}>{insumoSeleccionado.nombre}</strong><br/>
+                    Stock actual: <strong>{insumoSeleccionado.cantidad_actual} {insumoSeleccionado.unidad}</strong>
+                  </p>
+
+                  <form onSubmit={async (e) => {
+                    e.preventDefault();
+                    const f = e.target;
+                    try {
+                      const targetUrl = serverUrl || 'http://localhost:3001';
+                      const payload = {
+                        insumo_id: insumoSeleccionado.id,
+                        tipo: tipoMov,
+                        cantidad: Number(f.cantidad.value),
+                        motivo: f.motivo ? f.motivo.value : (tipoMov === 'entrada' ? 'Compra' : 'Ajuste manual'),
+                        costo: f.costo ? Number(f.costo.value) : 0,
+                        usuario: 'Admin'
+                      };
+                      await axios.post(`${targetUrl}/api/inventario/movimientos`, payload, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+                      
+                      setModalMovimiento(false);
+                      setInsumoSeleccionado(null);
+                      if (typeof cargarInventarioDesktop === 'function') cargarInventarioDesktop();
+                      toast.success(tipoMov === 'entrada' ? 'Entrada registrada' : 'Ajuste registrado');
+                    } catch (err) {
+                      console.error('Error registrando movimiento:', err);
+                      toast.error('Error al guardar el movimiento');
+                    }
+                  }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    
+                    {tipoMov === 'entrada' ? (
+                      <>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Cantidad a ingresar ({insumoSeleccionado.unidad})</label>
+                          <input name="cantidad" type="number" step="any" required placeholder="Ej. 10" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Costo total de esta entrada ($)</label>
+                          <input name="costo" type="number" step="any" required placeholder="Ej. 50000" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Nuevo Stock Real ({insumoSeleccionado.unidad})</label>
+                          <input name="cantidad" type="number" step="any" required placeholder={`Actual: ${insumoSeleccionado.cantidad_actual}`} style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                          <small style={{ color: 'var(--text3)' }}>* Reemplazará el stock actual</small>
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Motivo / Justificación</label>
+                          <input name="motivo" required placeholder="Ej. Merma, Descuadre..." style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                        </div>
+                      </>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>
+                      <button type="button" onClick={() => { setModalMovimiento(false); setInsumoSeleccionado(null); }} style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer' }}>
+                        Cancelar
+                      </button>
+                      <button type="submit" style={{ padding: '8px 18px', borderRadius: '6px', border: 'none', background: 'var(--brand, #144c3c)', color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}>
+                        {tipoMov === 'entrada' ? 'Registrar Entrada' : 'Aplicar Ajuste'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
