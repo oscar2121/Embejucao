@@ -30,8 +30,8 @@
     "wait-on": "^9.1.0"
   },
   "build": {
-    "appId": "com.embejucao.pos",
-    "productName": "Embejucao POS",
+    "appId": "com.embejucao.pos2",
+    "productName": "Embejucao POS v2",
     "directories": {
       "output": "dist-electron"
     },
@@ -39,13 +39,15 @@
       "target": "nsis"
     },
     "extraResources": [
+      { "from": "extraResources/ngrok.exe", "to": "ngrok.exe" },
+      { "from": "../printerService.js", "to": "printerService.js" },
       {
         "from": "../server.js",
         "to": "server.js"
       },
       {
-        "from": "../database.sqlite",
-        "to": "database.sqlite"
+        "from": "../embejucao.db",
+        "to": "embejucao.db"
       },
       {
         "from": "../uploads",
@@ -53,7 +55,12 @@
       },
       {
         "from": "../node_modules",
-        "to": "node_modules"
+        "to": "node_modules",
+        "filter": [
+          "**/*",
+          "!react-native{,/**/*}",
+          "!expo{,/**/*}"
+        ]
       },
       {
         "from": "../.env",

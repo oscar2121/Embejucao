@@ -15,24 +15,31 @@ function startBackend() {
     
   console.log("Levantando servidor Node en:", serverPath);
   
-  serverProcess = spawn('node', [serverPath], {
+  serverProcess = spawn(process.execPath, [serverPath], {
     cwd: path.dirname(serverPath),
-    stdio: 'pipe'
+    stdio: 'pipe',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
   });
   
+  serverProcess.on('error', (err) => console.error("Error al iniciar serverProcess:", err));
   serverProcess.stdout.on('data', data => console.log(`Server: ${data}`));
   serverProcess.stderr.on('data', data => console.error(`Server Error: ${data}`));
 
-  const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
   const authtoken = '3HkZltl26m4mtrULvL9FCkU3XVZ_77k13UozCab8kvYSxoW3K';
   const url = 'https://brisket-pregnant-squiggly.ngrok-free.dev';
   
-  console.log("Levantando túnel Ngrok en:", url);
-  ngrokProcess = spawn(npxCmd, ['--yes', 'ngrok', 'http', `--url=${url}`, `--authtoken=${authtoken}`, '3001'], {
+  // En desarrollo ngrok esta en extraResources, en produccion en resources
+  const ngrokExe = isPackaged 
+    ? path.join(process.resourcesPath, 'ngrok.exe')
+    : path.join(__dirname, '..', 'ngrok.exe');
+
+  console.log("Levantando tnel Ngrok con binario en:", ngrokExe);
+  ngrokProcess = spawn(ngrokExe, ['http', `--url=${url}`, `--authtoken=${authtoken}`, '3001'], {
     stdio: 'pipe',
-    shell: process.platform === 'win32'
+    shell: false
   });
   
+  ngrokProcess.on('error', (err) => console.error("Error al iniciar ngrokProcess:", err));
   ngrokProcess.stdout.on('data', data => console.log(`Ngrok: ${data}`));
   ngrokProcess.stderr.on('data', data => console.error(`Ngrok Error: ${data}`));
 }
@@ -55,8 +62,7 @@ function createWindow() {
     }
   });
 
-  // development URL, you can change this later
-  const isDev = true;
+  const isDev = !app.isPackaged;
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');

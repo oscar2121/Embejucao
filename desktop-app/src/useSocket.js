@@ -7,6 +7,10 @@ const DEFAULT_SERVER_URL = 'http://localhost:3001';
 export function useAppStore() {
   const [isOnline, setIsOnline] = useState(false);
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
+  const serverUrlRef = useRef(DEFAULT_SERVER_URL);
+  useEffect(() => {
+    serverUrlRef.current = serverUrl;
+  }, [serverUrl]);
   
   // Data states
   const [productos, setProductos] = useState([]);
@@ -31,13 +35,24 @@ export function useAppStore() {
     socketRef.current.on('connect', () => {
       console.log('✅ Conectado al servidor WebSocket');
       setIsOnline(true);
-      sincronizarDatos(serverUrl);
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      
+      socketRef.current.emit('solicitar_sincronizacion');
       
       // Registrar este dispositivo como cocina para recibir pedidos en vivo
       socketRef.current.emit('registrar_dispositivo', {
         rol: 'cocina',
         usuarioId: 'POS-Desktop'
       });
+    });
+
+    socketRef.current.on('sync_datos', (data) => {
+      if (!data) return;
+      if (data.pedidos) setPedidos(data.pedidos);
+      if (data.productos) setProductos(data.productos);
+      if (data.adicionales) setAdicionales(data.adicionales);
+      if (data.mesas) setBaseMesas(data.mesas);
+      if (data.sesionCaja !== undefined) setSesionActiva(data.sesionCaja);
     });
 
     socketRef.current.on('disconnect', () => {
@@ -47,7 +62,21 @@ export function useAppStore() {
 
     // Real-time events based on App.js
     socketRef.current.on('pedido_estado_cambiado', (data) => {
-      setPedidos(prev => prev.map(p => p.uuid === data.uuid ? { ...p, items: data.items, estado: data.nuevoEstado } : p));
+      setPedidos(prev => prev.map(p => (p.uuid === data.uuid || p.id === data.uuid || (data.id && p.id === data.id)) ? { ...p, items: data.items, estado: data.nuevoEstado } : p));
+    });
+
+    socketRef.current.on('cocina_item_cambiado', (data) => {
+      const pId = data.pedidoId || data.id;
+      setPedidos(prev => prev.map(p => {
+        if (p.uuid === pId || p.id === pId || String(p.id) === String(pId)) {
+          const items = [...(p.items || [])];
+          if (items[data.itemIndex]) {
+            items[data.itemIndex] = { ...items[data.itemIndex], estado: data.nuevoEstado };
+          }
+          return { ...p, items };
+        }
+        return p;
+      }));
     });
     
     socketRef.current.on('mesas_actualizadas', (nuevasMesas) => {
@@ -82,12 +111,43 @@ export function useAppStore() {
       setSesionActiva(sesion);
     });
 
+    socketRef.current.on('caja:estado', (data) => {
+      setSesionActiva(data.turno || null);
+    });
+
+    socketRef.current.on('pedidos:lista', (data) => {
+      const lista = Array.isArray(data) ? data : (data?.pedidos || []);
+      setPedidos([...lista]);
+    });
+
+    socketRef.current.on('sync_comandas', (data) => {
+      const lista = Array.isArray(data) ? data : (data?.pedidos || []);
+      setPedidos([...lista]);
+    });
+
+    socketRef.current.on('nuevo_pedido', (nuevo) => {
+      if (!nuevo) return;
+      setPedidos(prev => {
+        if (prev.some(p => p.uuid === nuevo.uuid)) return prev;
+        return [nuevo, ...prev];
+      });
+    });
+
+    socketRef.current.on('actualizar_pedidos', () => {
+      // Re-fetch activos al recibir señal genérica
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
+    socketRef.current.on('pedidos_actualizados', () => {
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
     };
-  }, [serverUrl]);
+  }, []); // <-- ARREGLO DE DEPENDENCIAS VACÍO PARA EVITAR EL BUCLE
 
   // Initial Sync Logic
   const sincronizarDatos = async (url) => {
@@ -166,11 +226,20 @@ export function useAppStore() {
     if (!baseMesas || baseMesas.length === 0) return;
 
     const nuevasMesas = baseMesas.map(m => {
-      // Consideramos un pedido activo si NO está completado, cancelado ni fiado
-      const pedidoActivo = pedidos.find(p => Number(p.mesa) === m.num && p.estado !== 'completado' && p.estado !== 'cancelado' && p.estado !== 'fiado');
+      const mesaNumStr = String(m.num || m.id || '');
+      const pedidoActivo = (pedidos || []).find(p => {
+        const pMesaStr = String(p.mesa_id || p.mesa || '').trim().toLowerCase();
+        const matchesMesa = pMesaStr === mesaNumStr.toLowerCase() || 
+                            pMesaStr === `mesa ${mesaNumStr}`.toLowerCase() || 
+                            Number(p.mesa) === m.num;
+        const noFinalizado = !['cobrado', 'cancelado', 'archivado', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
+                             (p.pagado === 0 || p.pagado === null || p.pagado === undefined);
+        return matchesMesa && noFinalizado;
+      });
+
       if (!pedidoActivo) return { ...m, estado: 'libre' };
       
-      const estadoActual = pedidoActivo.estado;
+      const estadoActual = String(pedidoActivo.estado || '').toLowerCase();
       return { ...m, estado: (estadoActual === 'cuenta') ? 'cuenta' : 'ocupada' };
     });
     
@@ -184,6 +253,7 @@ export function useAppStore() {
     productos,
     mesas,
     pedidos,
+    setPedidos,
     sesionActiva,
     setSesionActiva,
     adicionales,

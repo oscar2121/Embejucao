@@ -1,0 +1,622 @@
+diff --git a/desktop-app/src/AdminModule.jsx b/desktop-app/src/AdminModule.jsx
+index 686a60c..6f26c5b 100644
+--- a/desktop-app/src/AdminModule.jsx
++++ b/desktop-app/src/AdminModule.jsx
+@@ -12,6 +12,21 @@ const cleanNum = (val) => {
+   if (!val) return '0';
+   return String(val).replace(/\./g, '');
+ };
++
++const sugerirEmojiPorCategoria = (categoriaTexto) => {
++  const c = (categoriaTexto || '').toLowerCase().trim();
++  if (c.includes('hamburguesa') || c.includes('burger')) return '🍔';
++  if (c.includes('perro') || c.includes('chori')) return '🌭';
++  if (c.includes('burro') || c.includes('burrito') || c.includes('wrap')) return '🌯';
++  if (c.includes('mazorcada')) return '🌽';
++  if (c.includes('papa') || c.includes('salchipapa')) return '🍟';
++  if (c.includes('bebida') || c.includes('jugo') || c.includes('gaseosa') || c.includes('agua')) return '🥤';
++  if (c.includes('cerveza') || c.includes('trago')) return '🍺';
++  if (c.includes('postre') || c.includes('helado')) return '🍰';
++  if (c.includes('pizza')) return '🍕';
++  return '🍽️';
++};
++
+ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+   const [adminToken, setAdminToken] = useState(null);
+   const [loginPin, setLoginPin] = useState('');
+@@ -27,11 +42,34 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+   // Estados para el Modal de Productos
+   const [modalVisible, setModalVisible] = useState(false);
+   const [productoEditando, setProductoEditando] = useState(null); // null = Crear Nuevo, Object = Editar
+-  const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍔', cat: 1, desc: '', imagen: '' });
++  const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '' });
++  const [catFiltro, setCatFiltro] = useState('Todos');
++
++  const obtenerCategoriaReal = (prod) => {
++    const cat = (prod?.categoria || '').trim();
++    if (cat && cat.toLowerCase() !== 'general') return cat;
++
++    const nombre = (prod?.nombre || '').toLowerCase();
++    if (nombre.includes('perro') || nombre.includes('chori') || nombre.includes('sencillo')) return 'Perros';
++    if (nombre.includes('burro') || nombre.includes('burrito')) return 'Burritos';
++    if (nombre.includes('hamburguesa') || nombre.includes('clásica') || nombre.includes('doble') || nombre.includes('especial') || nombre.includes('mexicana')) return 'Hamburguesas';
++    if (nombre.includes('sandwich')) return 'Sandwich';
++    if (nombre.includes('bebida') || nombre.includes('gaseosa') || nombre.includes('jugo') || nombre.includes('agua')) return 'Bebidas';
++    return 'Otros';
++  };
+   const [imageFile, setImageFile] = useState(null);
+   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
+   const fileInputRef = useRef(null);
+ 
++  const handleCambioCategoria = (valor) => {
++    const emojiDetectado = sugerirEmojiPorCategoria(valor);
++    setFormProd((prev) => ({
++      ...prev,
++      categoria: valor,
++      emoji: emojiDetectado
++    }));
++  };
++
+   // Estados para Adicionales
+   const [adicionalesAdmin, setAdicionalesAdmin] = useState([]);
+   const [modalAdicionalVisible, setModalAdicionalVisible] = useState(false);
+@@ -66,6 +104,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+ 
+   const [historialFacturas, setHistorialFacturas] = useState([]);
+ 
++  // Estados para Insumos
++  const [insumos, setInsumos] = useState([]);
++  const [movimientos, setMovimientos] = useState([]);
++  const [modalInsumoOpen, setModalInsumoOpen] = useState(false);
++  const [insumoSeleccionado, setInsumoSeleccionado] = useState(null);
++  const [tipoMov, setTipoMov] = useState('entrada');
++  const [modalMovimiento, setModalMovimiento] = useState(false);
++
+   useEffect(() => {
+     if (adminTab === 'historial') {
+       axios.get(`${serverUrl}/api/ventas`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+@@ -76,6 +122,27 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+     }
+   }, [adminTab, serverUrl]);
+ 
++  const cargarInventarioDesktop = async () => {
++    try {
++      const baseUrl = window.location.port === '3000' ? '' : 'http://localhost:3000';
++      const [resIns, resMov] = await Promise.all([
++        fetch(`${baseUrl}/api/inventario/insumos`).then(r => r.json()),
++        fetch(`${baseUrl}/api/inventario/movimientos`).then(r => r.json())
++      ]);
++
++      if (resIns?.insumos) setInsumos(resIns.insumos);
++      if (resMov?.movimientos) setMovimientos(resMov.movimientos);
++    } catch (err) {
++      console.error("Error al cargar insumos/kardex:", err);
++    }
++  };
++
++  useEffect(() => {
++    if (adminTab === 'insumos') {
++      cargarInventarioDesktop();
++    }
++  }, [adminTab]);
++
+   const ROLES_DISPONIBLES = [
+     { id: 'admin', label: 'Admin' },
+     { id: 'caja', label: 'Caja' },
+@@ -490,7 +557,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+ 
+       const nuevoProd = {
+         nombre: formProd.nombre,
+-        categoria: formProd.categoria,
++        cat: formProd.categoria,
++        emoji: formProd.emoji,
+         precio: Number(cleanNum(formProd.precio)),
+         imagen: finalImageUrl
+       };
+@@ -542,7 +610,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+           <button onClick={() => setAdminTab('dashboard')} style={navBtnStyle(adminTab === 'dashboard')}>📊 Dashboard de Hoy</button>
+           <button onClick={() => setAdminTab('productos')} style={navBtnStyle(adminTab === 'productos')}>🍔 Catálogo</button>
+           <button onClick={() => setAdminTab('adicionales')} style={navBtnStyle(adminTab === 'adicionales')}>🍟 Adicionales</button>
+-          <button onClick={() => setAdminTab('historial')} style={navBtnStyle(adminTab === 'historial')}>🧾 Historial de Facturas</button>
++          <button onClick={() => setAdminTab('historial')} style={navBtnStyle(adminTab === 'historial')}>📄 Historial de Facturas</button>
++          <button onClick={() => setAdminTab('insumos')} style={navBtnStyle(adminTab === 'insumos')}>📦 Insumos y Kardex</button>
+           <button onClick={() => setAdminTab('usuarios')} style={navBtnStyle(adminTab === 'usuarios')}>👤 Gestión de Usuarios</button>
+           <button onClick={() => setAdminTab('auditoria')} style={navBtnStyle(adminTab === 'auditoria')}>📋 Log de Auditoría</button>
+           <button onClick={() => setAdminTab('mesas')} style={navBtnStyle(adminTab === 'mesas')}>🪑 Gestión de Mesas</button>
+@@ -813,36 +882,194 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+ 
+         {adminTab === 'productos' && (
+           <div className="animate-fade-in">
+-            <h2 style={{ fontSize: '28px', color: 'var(--brand)', marginBottom: '24px' }}>Gestión de Catálogo</h2>
+-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+-              <div 
+-                onClick={abrirModalNuevo}
+-                style={{ padding: '20px', border: '2px dashed var(--orange)', borderRadius: '16px', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--orange)', fontWeight: 'bold', cursor: 'pointer', backgroundColor: 'rgba(232, 82, 10, 0.05)', transition: 'all 0.2s' }}
++            {/* Cabecera con botón superior derecho */}
++            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
++              <div>
++                <h2 style={{ margin: 0, color: 'var(--text)' }}>🍔 Gestión de Catálogo</h2>
++                <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text2)' }}>
++                  Administra los productos, precios y disponibilidad en el menú
++                </p>
++              </div>
++              <button 
++                type="button"
++                className="btn-primary" 
++                onClick={() => abrirModalNuevo()}
++                style={{
++                  backgroundColor: 'var(--brand, #16A34A)',
++                  color: '#fff',
++                  padding: '10px 18px',
++                  borderRadius: '8px',
++                  border: 'none',
++                  fontWeight: 'bold',
++                  cursor: 'pointer'
++                }}
+               >
+                 + Agregar Nuevo Producto
+-              </div>
+-              {productos.map(p => (
+-                <div key={p.id} style={{ padding: '16px', backgroundColor: 'white', border: '1px solid var(--border)', borderRadius: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', transition: 'transform 0.2s, box-shadow 0.2s', cursor: 'default' }} className="hover-lift">
+-                  <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+-                    {p.imagen ? (
+-                      <div style={{ width: '64px', height: '64px', borderRadius: '12px', overflow: 'hidden', flexShrink: 0, border: '1px solid var(--border)' }}>
+-                        <img src={p.imagen} alt={p.nombre} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
++              </button>
++            </div>
++
++            {/* Barra de Filtros por Categoría */}
++            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
++              {['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros'].map((cat) => {
++                const activa = catFiltro === cat;
++                return (
++                  <button
++                    key={cat}
++                    type="button"
++                    onClick={() => setCatFiltro(cat)}
++                    style={{
++                      padding: '8px 16px',
++                      borderRadius: '20px',
++                      border: activa ? '2px solid var(--brand, #16A34A)' : '1px solid var(--border)',
++                      backgroundColor: activa ? 'var(--brand, #16A34A)' : 'var(--card-bg, #fff)',
++                      color: activa ? '#fff' : 'var(--text)',
++                      fontWeight: '600',
++                      fontSize: '13px',
++                      cursor: 'pointer',
++                      transition: 'all 0.2s ease'
++                    }}
++                  >
++                    {cat === 'Hamburguesas' && '🍔 '}
++                    {cat === 'Perros' && '🌭 '}
++                    {cat === 'Burritos' && '🌯 '}
++                    {cat === 'Sandwich' && '🥪 '}
++                    {cat === 'Bebidas' && '🥤 '}
++                    {cat}
++                  </button>
++                );
++              })}
++            </div>
++
++            {/* Grid de Productos Filtrados */}
++            <div style={{
++              display: 'grid',
++              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
++              gap: '16px'
++            }}>
++              {productos
++                .filter((prod) => {
++                  if (catFiltro === 'Todos') return true;
++                  return obtenerCategoriaReal(prod).toLowerCase() === catFiltro.toLowerCase();
++                })
++                .map((prod) => {
++                  const disponible = prod.disponible !== 0 && prod.disponible !== false;
++                  return (
++                    <div 
++                      key={prod.id} 
++                      style={{
++                        backgroundColor: 'var(--card-bg, #fff)',
++                        borderRadius: '12px',
++                        padding: '16px',
++                        border: '1px solid var(--border)',
++                        display: 'flex',
++                        flexDirection: 'column',
++                        justifyContent: 'space-between',
++                        gap: '12px',
++                        opacity: disponible ? 1 : 0.6,
++                        boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
++                      }}
++                    >
++                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
++                        <div style={{
++                          fontSize: '26px',
++                          backgroundColor: 'var(--surf, #F5EBE1)',
++                          width: '46px',
++                          height: '46px',
++                          borderRadius: '8px',
++                          display: 'flex',
++                          alignItems: 'center',
++                          justifyContent: 'center'
++                        }}>
++                          {prod.emoji || prod.icono || '🍔'}
++                        </div>
++                        <div style={{ flex: 1 }}>
++                          <div style={{ fontWeight: 'bold', fontSize: '15px', color: 'var(--text)' }}>
++                            {prod.nombre}
++                          </div>
++                          <div style={{ fontSize: '12px', color: 'var(--text3)' }}>
++                            {obtenerCategoriaReal(prod)}
++                          </div>
++                          <div style={{ fontWeight: '700', color: '#16A34A', fontSize: '15px', marginTop: '2px' }}>
++                            ${Number(prod.precio || 0).toLocaleString()}
++                          </div>
++                        </div>
+                       </div>
+-                    ) : (
+-                      <div style={{ width: '64px', height: '64px', borderRadius: '12px', backgroundColor: 'var(--surf2)', display: 'flex', justifyContent: 'center', alignItems: 'center', flexShrink: 0, border: '1px solid var(--border)' }}>
+-                        <span style={{ fontSize: '32px' }}>{p.emoji}</span>
++
++                      {/* Acciones de la tarjeta */}
++                      <div style={{
++                        display: 'flex',
++                        justifyContent: 'space-between',
++                        alignItems: 'center',
++                        borderTop: '1px solid var(--border)',
++                        paddingTop: '10px'
++                      }}>
++                        <button
++                          type="button"
++                          onClick={async () => {
++                            try {
++                              const nuevoDisp = !disponible;
++                              await axios.post(`${serverUrl}/api/productos`, { id: prod.id, disp: nuevoDisp, cat: prod.categoria, emoji: prod.emoji, nombre: prod.nombre, precio: prod.precio });
++                              // Refetch o mutar local
++                            } catch (e) {
++                              console.error(e);
++                            }
++                          }}
++                          style={{
++                            backgroundColor: disponible ? '#DCFCE7' : '#FEE2E2',
++                            color: disponible ? '#16A34A' : '#DC2626',
++                            border: 'none',
++                            padding: '5px 12px',
++                            borderRadius: '6px',
++                            fontSize: '12px',
++                            fontWeight: '600',
++                            cursor: 'pointer'
++                          }}
++                        >
++                          {disponible ? '🟢 Activo' : '🔴 Agotado'}
++                        </button>
++
++                        <div style={{ display: 'flex', gap: '6px' }}>
++                          <button
++                            type="button"
++                            onClick={() => abrirModalEditar(prod)}
++                            style={{
++                              background: 'none',
++                              border: '1px solid var(--border)',
++                              borderRadius: '6px',
++                              padding: '6px 10px',
++                              cursor: 'pointer'
++                            }}
++                            title="Editar"
++                          >
++                            ✏️
++                          </button>
++                          <button
++                            type="button"
++                            onClick={async () => {
++                              if (window.confirm(`¿Eliminar ${prod.nombre}?`)) {
++                                try {
++                                  await axios.delete(`${serverUrl}/api/productos/${prod.id}`);
++                                } catch (e) {
++                                  console.error(e);
++                                }
++                              }
++                            }}
++                            style={{
++                              background: 'none',
++                              border: '1px solid var(--border)',
++                              borderRadius: '6px',
++                              padding: '6px 10px',
++                              cursor: 'pointer'
++                            }}
++                            title="Eliminar"
++                          >
++                            🗑️
++                          </button>
++                        </div>
+                       </div>
+-                    )}
+-                    <div>
+-                      <div style={{ fontWeight: 'bold', fontSize: '18px' }}>{p.nombre}</div>
+-                      <div style={{ color: 'var(--green)', fontWeight: '600', fontSize: '16px' }}>{formatCurrency(p.precio)}</div>
+                     </div>
+-                  </div>
+-                  <button onClick={() => abrirModalEditar(p)} style={{ backgroundColor: 'var(--orange-light)', color: 'white', border: 'none', padding: '10px 14px', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+-                    ✏️ Editar
+-                  </button>
+-                </div>
+-              ))}
++                  );
++                })}
+             </div>
+           </div>
+         )}
+@@ -936,6 +1163,145 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+           </div>
+         )}
+ 
++        {adminTab === 'insumos' && (
++          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
++            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++              <h2 style={{ margin: 0, color: 'var(--brand)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '28px' }}>
++                📦 Control de Insumos y Stock
++              </h2>
++              <button 
++                onClick={() => setModalInsumoOpen(true)}
++                style={{
++                  backgroundColor: 'var(--brand)',
++                  color: '#fff',
++                  padding: '10px 18px',
++                  borderRadius: '8px',
++                  border: 'none',
++                  fontWeight: 'bold',
++                  cursor: 'pointer'
++                }}
++              >
++                + Nuevo Insumo
++              </button>
++            </div>
++
++            <div style={{ backgroundColor: 'var(--card-bg, #fff)', borderRadius: '12px', padding: '20px', border: '1px solid var(--border)' }}>
++              <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', color: 'var(--text)' }}>Inventario Actual</h3>
++              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
++                <thead>
++                  <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text2)', fontSize: '13px' }}>
++                    <th style={{ padding: '10px' }}>Nombre</th>
++                    <th style={{ padding: '10px' }}>Stock Actual</th>
++                    <th style={{ padding: '10px' }}>Stock Mínimo</th>
++                    <th style={{ padding: '10px' }}>Precio Compra</th>
++                    <th style={{ padding: '10px' }}>Estado</th>
++                    <th style={{ padding: '10px', textAlign: 'right' }}>Acciones</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {insumos && insumos.length > 0 ? (
++                    insumos.map((ins) => {
++                      const bajoStock = Number(ins.cantidad_actual) <= Number(ins.stock_minimo);
++                      return (
++                        <tr key={ins.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '14px' }}>
++                          <td style={{ padding: '12px 10px', fontWeight: 'bold' }}>{ins.nombre}</td>
++                          <td style={{ padding: '12px 10px' }}>{ins.cantidad_actual} {ins.unidad}</td>
++                          <td style={{ padding: '12px 10px' }}>{ins.stock_minimo} {ins.unidad}</td>
++                          <td style={{ padding: '12px 10px' }}>${Number(ins.precio_compra || 0).toLocaleString()}</td>
++                          <td style={{ padding: '12px 10px' }}>
++                            {bajoStock ? (
++                              <span style={{ color: '#DC2626', fontWeight: 'bold' }}>⚠️ Bajo Stock</span>
++                            ) : (
++                              <span style={{ color: '#16A34A', fontWeight: 'bold' }}>OK</span>
++                            )}
++                          </td>
++                          <td style={{ padding: '12px 10px', textAlign: 'right' }}>
++                            <button
++                              onClick={() => { setInsumoSeleccionado(ins); setTipoMov('entrada'); setModalMovimiento(true); }}
++                              style={{ marginRight: '6px', padding: '6px 10px', borderRadius: '6px', border: 'none', backgroundColor: '#DCFCE7', color: '#16A34A', cursor: 'pointer', fontWeight: 'bold' }}
++                            >
++                              + Entrada
++                            </button>
++                            <button
++                              onClick={() => { setInsumoSeleccionado(ins); setTipoMov('ajuste'); setModalMovimiento(true); }}
++                              style={{ padding: '6px 10px', borderRadius: '6px', border: 'none', backgroundColor: 'var(--surf, #F3F4F6)', color: 'var(--text)', cursor: 'pointer' }}
++                            >
++                              Ajuste
++                            </button>
++                          </td>
++                        </tr>
++                      );
++                    })
++                  ) : (
++                    <tr>
++                      <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text3)' }}>
++                        No hay insumos registrados
++                      </td>
++                    </tr>
++                  )}
++                </tbody>
++              </table>
++            </div>
++
++            <div style={{ backgroundColor: 'var(--card-bg, #fff)', borderRadius: '12px', padding: '20px', border: '1px solid var(--border)' }}>
++              <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', color: 'var(--text)' }}>Últimos Movimientos (Kardex)</h3>
++              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
++                <thead>
++                  <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text2)', fontSize: '13px' }}>
++                    <th style={{ padding: '10px' }}>Fecha</th>
++                    <th style={{ padding: '10px' }}>Insumo</th>
++                    <th style={{ padding: '10px' }}>Tipo</th>
++                    <th style={{ padding: '10px' }}>Cantidad</th>
++                    <th style={{ padding: '10px' }}>Motivo</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {movimientos && movimientos.length > 0 ? (
++                    movimientos.map((m) => (
++                      <tr key={m.id} style={{ borderBottom: '1px solid var(--border)', fontSize: '14px' }}>
++                        <td style={{ padding: '10px' }}>{m.fecha ? new Date(m.fecha).toLocaleString() : '--'}</td>
++                        <td style={{ padding: '10px', fontWeight: 'bold' }}>{m.insumo_nombre || m.nombre || 'Insumo'}</td>
++                        <td style={{ padding: '10px' }}>
++                          <span style={{
++                            padding: '3px 8px',
++                            borderRadius: '4px',
++                            fontSize: '12px',
++                            fontWeight: 'bold',
++                            backgroundColor: m.tipo === 'entrada' ? '#DCFCE7' : '#FEF3C7',
++                            color: m.tipo === 'entrada' ? '#16A34A' : '#D97706'
++                          }}>
++                            {m.tipo ? m.tipo.toUpperCase() : 'MOVIMIENTO'}
++                          </span>
++                        </td>
++                        <td style={{ padding: '10px' }}>{m.cantidad}</td>
++                        <td style={{ padding: '10px', color: 'var(--text2)' }}>{m.motivo || 'Operación de stock'}</td>
++                      </tr>
++                    ))
++                  ) : (
++                    <tr>
++                      <td colSpan="5" style={{ textAlign: 'center', padding: '24px', color: 'var(--text3)' }}>
++                        No hay movimientos recientes
++                      </td>
++                    </tr>
++                  )}
++                </tbody>
++              </table>
++            </div>
++
++            {modalInsumoOpen && (
++              <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
++                <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '12px', width: '400px' }}>
++                  <h3 style={{ margin: '0 0 16px 0' }}>Nuevo Insumo</h3>
++                  {/* Aquí debería ir el formulario, por ahora lo dejamos con un botón de cerrar */}
++                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
++                    <button onClick={() => setModalInsumoOpen(false)} style={{ padding: '8px 16px' }}>Cerrar</button>
++                  </div>
++                </div>
++              </div>
++            )}
++          </div>
++        )}
++
+         {adminTab === 'historial' && (
+           <div className="animate-fade-in">
+             <h2 style={{ fontSize: '28px', color: 'var(--brand)', marginBottom: '24px' }}>Historial de Facturas</h2>
+@@ -1208,28 +1574,90 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+       {/* Modal de Producto */}
+       {modalVisible && (
+         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 }}>
+-          <div className="animate-fade-in" style={{ backgroundColor: 'white', padding: '32px', borderRadius: '24px', width: '400px', boxShadow: 'var(--shadow-lg)' }}>
+-            <h2 style={{ color: 'var(--brand)', marginBottom: '24px' }}>
++          {/* Contenedor principal de la tarjeta modal */}
++          <div className="animate-fade-in" style={{
++            backgroundColor: 'var(--card-bg, #fff)',
++            borderRadius: '16px',
++            width: '100%',
++            maxWidth: '520px',
++            maxHeight: '90vh',
++            overflowY: 'auto',
++            padding: '24px',
++            boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
++            display: 'flex',
++            flexDirection: 'column',
++            gap: '14px'
++          }}>
++            <h2 style={{ color: 'var(--brand)', margin: '0 0 10px 0' }}>
+               {productoEditando ? 'Editar Producto' : 'Nuevo Producto'}
+             </h2>
+             
+             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+-              <div>
+-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Categoría</label>
+-                <select 
+-                  value={formProd.cat} 
+-                  onChange={e => setFormProd({...formProd, cat: Number(e.target.value)})} 
+-                  style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '16px', backgroundColor: 'white' }} 
+-                >
+-                  <option value={1}>Hamburguesas</option>
+-                  <option value={2}>Perros Calientes</option>
+-                  <option value={3}>Burritos</option>
+-                  <option value={4}>Salchipapas</option>
+-                  <option value={5}>Mazorcadas</option>
+-                  <option value={6}>Jugos Naturales</option>
+-                  <option value={7}>Limonadas</option>
+-                  <option value={8}>Bebidas / Otros</option>
+-                </select>
++              <div style={{ marginBottom: '14px' }}>
++                <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px' }}>
++                  Categoría (Escribe una nueva o selecciona):
++                </label>
++                <input
++                  type="text"
++                  list="lista-categorias-existentes"
++                  value={formProd.categoria || ''}
++                  onChange={(e) => handleCambioCategoria(e.target.value)}
++                  placeholder="Ej: Hamburguesas, Salchipapas, Pizzas..."
++                  style={{
++                    width: '100%',
++                    padding: '8px 12px',
++                    borderRadius: '6px',
++                    border: '1px solid var(--border)',
++                    background: 'var(--bg)',
++                    color: 'var(--text)'
++                  }}
++                />
++                <datalist id="lista-categorias-existentes">
++                  {Array.from(new Set(productos.map((p) => p.categoria).filter(Boolean))).map((cat) => (
++                    <option key={cat} value={cat} />
++                  ))}
++                </datalist>
++              </div>
++
++              {/* Selector y vista previa de Emoji */}
++              <div style={{ marginBottom: '14px' }}>
++                <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px' }}>
++                  Ícono / Emoji:
++                </label>
++                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
++                  <input
++                    type="text"
++                    value={formProd.emoji || '🍽️'}
++                    onChange={(e) => setFormProd({ ...formProd, emoji: e.target.value })}
++                    style={{
++                      width: '50px',
++                      textAlign: 'center',
++                      fontSize: '20px',
++                      padding: '6px',
++                      borderRadius: '6px',
++                      border: '1px solid var(--border)'
++                    }}
++                  />
++                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
++                    {['🍔', '🌭', '🌯', '🌽', '🍟', '🥤', '🍺', '🍰', '🍕', '🍽️'].map((em) => (
++                      <button
++                        key={em}
++                        type="button"
++                        onClick={() => setFormProd({ ...formProd, emoji: em })}
++                        style={{
++                          background: 'var(--surf, #f3f4f6)',
++                          border: '1px solid var(--border)',
++                          borderRadius: '6px',
++                          padding: '4px 8px',
++                          cursor: 'pointer',
++                          fontSize: '15px'
++                        }}
++                      >
++                        {em}
++                      </button>
++                    ))}
++                  </div>
++                </div>
+               </div>
+               <div>
+                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Nombre del Producto</label>
+@@ -1259,12 +1687,6 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+               </div>
+               <div style={{ display: 'flex', gap: '16px' }}>
+                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+-                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Emoji</label>
+-                  <input 
+-                    value={formProd.emoji} 
+-                    onChange={e => setFormProd({...formProd, emoji: e.target.value})} 
+-                    style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '18px', marginBottom: '16px' }} 
+-                  />
+                   <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Foto del Producto</label>
+                   <input 
+                     type="file" 
+@@ -1321,7 +1743,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas }) {
+               </div>
+             </div>
+ 
+-            <div style={{ display: 'flex', gap: '12px', marginTop: '32px' }}>
++            <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+               <button 
+                 onClick={() => setModalVisible(false)}
+                 style={{ flex: 1, padding: '14px', borderRadius: '12px', border: '2px solid var(--border)', backgroundColor: 'transparent', fontWeight: 'bold', cursor: 'pointer' }}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
@@ -24,7 +24,7 @@ const CATEGORIAS = [
   { id: 9, nombre: "Bebidas Calientes", emoji: "☕", color: "var(--cat-grey)" },
 ];
 
-export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], pedidoEditando, setPedidoEditando }) {
+export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], pedidoEditando, setPedidoEditando, pedidos = [] }) {
   const [categoriaActiva, setCategoriaActiva] = useState(1);
   const [carrito, setCarrito] = useState([]);
   const [mesaSeleccionada, setMesaSeleccionada] = useState('');
@@ -38,6 +38,47 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
   const [configObservaciones, setConfigObservaciones] = useState('');
   const [configAdicionales, setConfigAdicionales] = useState([]);
   const [configCantidad, setConfigCantidad] = useState(1);
+
+  const handleSelectMesa = (m) => {
+    const mesaNumStr = String(m.num || m.id || m.numero || '');
+    const tieneComandaActiva = (pedidos || []).some(p => 
+      (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
+      !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+    );
+
+    const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
+
+    if (estaOcupada) {
+      if (pedidoEditando && (String(pedidoEditando.mesa) === mesaNumStr || String(pedidoEditando.mesa) === `Mesa ${mesaNumStr}`)) {
+        setMesaSeleccionada(mesaNumStr);
+        setParaLlevar(false);
+        setIsDropdownOpen(false);
+        return;
+      }
+
+      const pedidoActivo = (pedidos || []).find(p => 
+        (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
+        !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+      );
+
+      if (pedidoActivo && setPedidoEditando) {
+        const confirmar = window.confirm(
+          `⚠️ La Mesa ${mesaNumStr} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.\n\n¿Deseas cargar la comanda activa existente para añadir productos a esta mesa?`
+        );
+        if (confirmar) {
+          setPedidoEditando(pedidoActivo);
+          setIsDropdownOpen(false);
+        }
+      } else {
+        toast.error(`La Mesa ${mesaNumStr} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.`);
+      }
+      return;
+    }
+
+    setMesaSeleccionada(mesaNumStr);
+    setParaLlevar(false);
+    setIsDropdownOpen(false);
+  };
 
   useEffect(() => {
     if (pedidoEditando) {
@@ -74,6 +115,22 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value || 0);
   };
 
+  const esProductoBebida = (prod, catObj = null) => {
+    if (!prod) return false;
+    if (prod.permite_adicionales === false || prod.es_bebida === true) return true;
+    
+    const limpiar = (txt = '') => String(txt).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const nombreProd = limpiar(prod.nombre);
+    const nombreCat = limpiar(catObj?.nombre || prod.categoria_nombre || '');
+    
+    const terminosBebida = [
+      'bebida', 'jugo', 'cerveza', 'gaseosa', 'limonada', 'agua',
+      'soda', 'refresco', 'hit', 'postobon', 'coca', 'botella', 'lata'
+    ];
+    
+    return terminosBebida.some(t => nombreProd.includes(t) || nombreCat.includes(t));
+  };
+
   const iniciarAgregarProducto = (prod) => {
     setProdToConfig(prod);
     setConfigObservaciones('');
@@ -82,39 +139,89 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     setProdConfigModalVisible(true);
   };
 
+  const agregarProductoSeguro = (producto, adicionales = [], notas = '', cantSolicitada = 1) => {
+    const tieneAdics = Array.isArray(adicionales) && adicionales.length > 0;
+    const tieneNotas = Boolean(notas && notas.trim());
+    const cantidadFinal = tieneAdics || tieneNotas ? 1 : Math.max(1, Number(cantSolicitada) || 1);
+
+    setCarrito(prev => {
+      if (!tieneAdics && !tieneNotas) {
+        const idx = prev.findIndex(it => it.id === producto.id && (!it.adicionales || it.adicionales.length === 0) && !it.nota && !it.observaciones && !it.notas);
+        if (idx !== -1) {
+          const copia = [...prev];
+          const exist = copia[idx];
+          const nuevaCant = Number(exist.cantidad || 1) + cantidadFinal;
+          copia[idx] = {
+            ...exist,
+            cantidad: nuevaCant,
+            subtotal: (Number(exist.precio) || 0) * nuevaCant
+          };
+          return copia;
+        }
+      }
+
+      // 1. Calcular el total acumulado de todos los adicionales seleccionados
+      const totalAdicionales = (adicionales || []).reduce((sum, adic) => {
+        const cant = Number(adic.cantidad || 1);
+        const precio = Number(adic.precio || 0);
+        return sum + (precio * cant);
+      }, 0);
+
+      // 2. El precio unitario real del producto con sus extras incluidos
+      const precioBase = Number(producto.precio || producto.precio_unitario || 0) || 0;
+      const precioFinalUnitario = precioBase + totalAdicionales;
+
+      // 3. Estructurar el ítem que se añade al carrito/pedido
+      const nuevaLinea = {
+        ...producto,
+        uuid: `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: producto.id,
+        nombre: producto.nombre,
+        precio: precioFinalUnitario,       // Debe ser el precio completo con adicionales
+        precio_base: precioBase,           // Guardar el original por referencia
+        cantidad: cantidadFinal,
+        adicionales: (adicionales || []).map(a => ({
+          id: a.id,
+          nombre: a.nombre,
+          precio: Number(a.precio || 0) || 0,
+          cantidad: Number(a.cantidad || 1)
+        })),
+        observaciones: notas ? notas.trim() : '',
+        nota: notas ? notas.trim() : '',
+        notas: notas ? notas.trim() : '',
+        subtotal: precioFinalUnitario * cantidadFinal
+      };
+
+      return [...prev, nuevaLinea];
+    });
+  };
+
+  const handleSumarAdicional = (adic, e) => {
+    if (e) e.stopPropagation();
+    setConfigAdicionales(prev => {
+      const existe = prev.find(a => a.id === adic.id);
+      if (existe) {
+        return prev.map(a => a.id === adic.id ? { ...a, cantidad: (a.cantidad || 1) + 1 } : a);
+      }
+      return [...prev, { ...adic, cantidad: 1 }];
+    });
+  };
+
+  const handleRestarAdicional = (adic, e) => {
+    if (e) e.stopPropagation();
+    setConfigAdicionales(prev => {
+      const existe = prev.find(a => a.id === adic.id);
+      if (!existe) return prev;
+      if ((existe.cantidad || 1) <= 1) {
+        return prev.filter(a => a.id !== adic.id);
+      }
+      return prev.map(a => a.id === adic.id ? { ...a, cantidad: a.cantidad - 1 } : a);
+    });
+  };
+
   const confirmarAgregarProducto = () => {
     if (!prodToConfig) return;
-    
-    let nombreFinal = prodToConfig.nombre;
-    let precioFinal = prodToConfig.precio;
-    
-    if (configAdicionales.length > 0) {
-      const nombresAdic = configAdicionales.map(a => a.nombre).join(', ');
-      nombreFinal += ` (+ ${nombresAdic})`;
-      precioFinal += configAdicionales.reduce((sum, a) => sum + a.precio, 0);
-    }
-    
-    const uuid = Math.random().toString(36).substr(2, 9);
-    const nuevoItem = {
-      ...prodToConfig,
-      uuid: uuid,
-      nombre: nombreFinal,
-      precio: precioFinal,
-      cantidad: configCantidad,
-      estado: 'pendiente',
-      nota: configObservaciones.trim()
-    };
-    
-    setCarrito(prev => {
-      const exist = prev.find(i => i.id === prodToConfig.id && i.nombre === nombreFinal && i.nota === nuevoItem.nota);
-      if (exist) {
-        return prev.map(i => (i.id === prodToConfig.id && i.nombre === nombreFinal && i.nota === nuevoItem.nota) 
-          ? { ...i, cantidad: i.cantidad + configCantidad } 
-          : i);
-      }
-      return [...prev, nuevoItem];
-    });
-    
+    agregarProductoSeguro(prodToConfig, configAdicionales, configObservaciones, configCantidad);
     setProdConfigModalVisible(false);
     setProdToConfig(null);
   };
@@ -141,6 +248,17 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
   const enviarComanda = async () => {
     if (carrito.length === 0) return toast.error('El carrito está vacío');
     if (!paraLlevar && !mesaSeleccionada) return toast.error('Debes seleccionar una mesa o marcar como Para Llevar');
+
+    // Validación preventiva en frontend también antes de enviar
+    if (!paraLlevar && !pedidoEditando) {
+      const tieneComandaActiva = (pedidos || []).some(p => 
+        (String(p.mesa_id || p.mesa) === String(mesaSeleccionada) || String(p.mesa_id || p.mesa) === `Mesa ${mesaSeleccionada}`) &&
+        !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+      );
+      if (tieneComandaActiva) {
+        return toast.error(`La Mesa ${mesaSeleccionada} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.`);
+      }
+    }
 
     try {
       if (pedidoEditando) {
@@ -175,7 +293,8 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
       if (setPedidoEditando) setPedidoEditando(null);
     } catch (error) {
       console.error('Error enviando pedido:', error);
-      toast.error('Error al enviar la comanda al servidor. Revisa la conexión.');
+      const msg = error?.response?.data?.error || 'Error al enviar la comanda al servidor. Revisa la conexión.';
+      toast.error(msg);
     }
   };
 
@@ -206,27 +325,53 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
                 <div style={{
                   position: 'absolute', top: '100%', left: 0, marginTop: '4px',
                   backgroundColor: 'white', border: '1px solid var(--border)', borderRadius: '6px',
-                  boxShadow: 'var(--shadow)', zIndex: 50, minWidth: '100%', overflow: 'hidden'
+                  boxShadow: 'var(--shadow)', zIndex: 50, minWidth: '160px', maxHeight: '280px', overflowY: 'auto'
                 }}>
                   <div 
                     onClick={() => { setMesaSeleccionada(''); setParaLlevar(false); setIsDropdownOpen(false); }}
                     style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', color: 'black', fontWeight: 'bold' }}
-                    onMouseOver={e => e.target.style.backgroundColor = 'var(--surface)'}
-                    onMouseOut={e => e.target.style.backgroundColor = 'white'}
+                    onMouseOver={e => e.currentTarget.style.backgroundColor = 'var(--surface)'}
+                    onMouseOut={e => e.currentTarget.style.backgroundColor = 'white'}
                   >
-                    -
+                    - (Sin Mesa)
                   </div>
                   {mesas.map(m => {
-                    const isOcupada = m.estado !== 'libre';
+                    const mesaNumStr = String(m.num || m.id || m.numero || '');
+                    const tieneComandaActiva = (pedidos || []).some(p => 
+                      (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
+                      !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+                    );
+                    const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
+
                     return (
                       <div 
                         key={m.id}
-                        onClick={() => { setMesaSeleccionada(String(m.num)); setParaLlevar(false); setIsDropdownOpen(false); }}
-                        style={{ padding: '8px 12px', cursor: 'pointer', color: isOcupada ? 'var(--red)' : 'black', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' }}
-                        onMouseOver={e => e.target.style.backgroundColor = 'var(--surface)'}
-                        onMouseOut={e => e.target.style.backgroundColor = 'white'}
+                        onClick={() => handleSelectMesa(m)}
+                        title={estaOcupada ? `Mesa ${m.num} ya tiene comanda activa` : `Mesa ${m.num} Libre`}
+                        style={{ 
+                          padding: '8px 12px', 
+                          cursor: estaOcupada ? 'not-allowed' : 'pointer', 
+                          color: estaOcupada ? 'var(--red)' : 'black', 
+                          fontWeight: 'bold', 
+                          display: 'flex', 
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          backgroundColor: estaOcupada ? '#fef2f2' : 'white',
+                          borderBottom: '1px solid #f1f5f9'
+                        }}
+                        onMouseOver={e => e.currentTarget.style.backgroundColor = estaOcupada ? '#fee2e2' : 'var(--surface)'}
+                        onMouseOut={e => e.currentTarget.style.backgroundColor = estaOcupada ? '#fef2f2' : 'white'}
                       >
-                        <span>{m.num}</span>
+                        <span>Mesa {m.num}</span>
+                        <span style={{ 
+                          fontSize: '10px', 
+                          padding: '2px 6px', 
+                          borderRadius: '4px',
+                          backgroundColor: estaOcupada ? '#fecaca' : '#dcfce7',
+                          color: estaOcupada ? '#b91c1c' : '#15803d'
+                        }}>
+                          {estaOcupada ? 'Ocupada' : 'Libre'}
+                        </span>
                       </div>
                     );
                   })}
@@ -263,12 +408,21 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
 
         {/* Lista de Ítems */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px' }}>
-          {carrito.map(item => (
-            <div key={item.id} style={{ display: 'flex', alignItems: 'center', padding: '16px 0', borderBottom: '1px solid var(--border)' }}>
+          {carrito.map((item, idx) => (
+            <div key={item.uuid || item.id || idx} style={{ display: 'flex', alignItems: 'center', padding: '16px 0', borderBottom: '1px solid var(--border)' }}>
               
               <div style={{ flex: 1, paddingRight: '12px' }}>
                 <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '2px', color: 'var(--text)' }}>{item.nombre}</div>
-                {item.nota && <div style={{ fontSize: '12px', color: 'var(--text-light)', fontStyle: 'italic', marginBottom: '2px' }}>📝 {item.nota}</div>}
+                {(item.nota || item.observaciones || item.notas) && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-light)', fontStyle: 'italic', marginBottom: '2px' }}>
+                    📝 {item.nota || item.observaciones || item.notas}
+                  </div>
+                )}
+                {Array.isArray(item.adicionales) && item.adicionales.length > 0 && (
+                  <div style={{ fontSize: '12px', color: 'var(--orange)', marginBottom: '2px' }}>
+                    ➕ {item.adicionales.map(a => `${a.nombre}${(a.cantidad && a.cantidad > 1) ? ` x${a.cantidad}` : ''}`).join(', ')}
+                  </div>
+                )}
                 <div style={{ fontSize: '12px', color: 'var(--orange)' }}>{item.estado}</div>
               </div>
               
@@ -340,62 +494,157 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
               <span style={{ fontSize: '20px', fontWeight: 'bold', color: 'var(--orange)' }}>{formatCurrency(prodToConfig.precio)}</span>
             </div>
 
-            <h3 style={{ fontSize: '16px', color: 'var(--text-light)', marginBottom: '12px' }}>🍟 Adicionales Extra:</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '24px' }}>
-              {adicionales.map(adic => {
-                const isSelected = configAdicionales.some(a => a.id === adic.id);
-                return (
-                  <div
-                    key={adic.id}
-                    onClick={() => {
-                      if (isSelected) setConfigAdicionales(prev => prev.filter(a => a.id !== adic.id));
-                      else setConfigAdicionales(prev => [...prev, adic]);
-                    }}
-                    style={{
-                      display: 'flex', justifyContent: 'space-between', padding: '12px', 
-                      border: `2px solid ${isSelected ? 'var(--orange)' : 'var(--border)'}`, 
-                      borderRadius: '8px', cursor: 'pointer',
-                      backgroundColor: isSelected ? 'rgba(232,82,10,0.05)' : 'var(--surf2)'
-                    }}
-                  >
-                    <span style={{ fontWeight: 'bold', color: 'var(--text)' }}>{adic.nombre}</span>
-                    <span style={{ fontWeight: 'bold', color: 'var(--orange)' }}>+{formatCurrency(adic.precio)}</span>
-                  </div>
-                );
-              })}
-            </div>
+            {/* Solo mostrar adicionales si es comida */}
+            {!esProductoBebida(prodToConfig) && (
+              <>
+                <h3 style={{ fontSize: '16px', color: 'var(--text-light)', marginBottom: '12px' }}>🍟 Adicionales Extra:</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '24px' }}>
+                  {adicionales.map(adic => {
+                    const itemSel = configAdicionales.find(a => a.id === adic.id);
+                    const cantidad = itemSel ? (itemSel.cantidad || 1) : 0;
+                    const isSelected = cantidad > 0;
 
-            <h3 style={{ fontSize: '16px', color: 'var(--text-light)', marginBottom: '12px' }}>📝 Observaciones para cocina:</h3>
+                    return (
+                      <div
+                        key={adic.id}
+                        onClick={(e) => handleSumarAdicional(adic, e)}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '10px 14px',
+                          border: `2px solid ${isSelected ? 'var(--orange)' : 'var(--border)'}`,
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          backgroundColor: isSelected ? 'rgba(232,82,10,0.08)' : 'var(--surf2)',
+                          userSelect: 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ fontWeight: 'bold', color: 'var(--text)' }}>{adic.nombre}</span>
+                          <span style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--orange)' }}>
+                            +{formatCurrency(adic.precio)}
+                          </span>
+                        </div>
+
+                        {isSelected ? (
+                          <div 
+                            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={(e) => handleRestarAdicional(adic, e)}
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '6px',
+                                border: 'none',
+                                backgroundColor: '#dc2626',
+                                color: '#fff',
+                                fontWeight: 'bold',
+                                fontSize: '16px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                              }}
+                            >
+                              -
+                            </button>
+
+                            <span style={{ minWidth: '20px', textAlign: 'center', fontWeight: 'bold', fontSize: '15px', color: 'var(--text)' }}>
+                              {cantidad}
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={(e) => handleSumarAdicional(adic, e)}
+                              style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '6px',
+                                border: 'none',
+                                backgroundColor: '#16a34a',
+                                color: '#fff',
+                                fontWeight: 'bold',
+                                fontSize: '16px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                              }}
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '12px', color: '#64748b', fontWeight: '600' }}>Tocar para añadir</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <h3 style={{ fontSize: '16px', color: 'var(--text-light)', marginBottom: '12px' }}>
+              {esProductoBebida(prodToConfig) ? "📌 Notas para barra / servicio:" : "📝 Observaciones para cocina:"}
+            </h3>
             <textarea 
               value={configObservaciones}
               onChange={(e) => setConfigObservaciones(e.target.value)}
-              placeholder="Ej. Sin tomate, poca salsa..."
+              placeholder={esProductoBebida(prodToConfig) ? "Ej. Con hielo, en vaso, sin azúcar..." : "Ej. Sin tomate, poca salsa..."}
               style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', backgroundColor: 'var(--surf2)', color: 'var(--text)', minHeight: '80px', marginBottom: '24px', resize: 'vertical' }}
             />
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', backgroundColor: 'var(--surf3)', borderRadius: '8px', marginBottom: '24px' }}>
-              <span style={{ fontWeight: 'bold', fontSize: '16px' }}>Cantidad:</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                <button onClick={() => setConfigCantidad(c => Math.max(1, c - 1))} style={{ width: '40px', height: '40px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--surf2)', fontSize: '24px', fontWeight: 'bold', cursor: 'pointer' }}>-</button>
-                <span style={{ fontSize: '20px', fontWeight: 'bold' }}>{configCantidad}</span>
-                <button onClick={() => setConfigCantidad(c => c + 1)} style={{ width: '40px', height: '40px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--surf2)', fontSize: '24px', fontWeight: 'bold', cursor: 'pointer' }}>+</button>
-              </div>
-            </div>
+            {(() => {
+              const tieneModificadores = !esProductoBebida(prodToConfig) && ((configAdicionales && configAdicionales.length > 0) || Boolean(configObservaciones && configObservaciones.trim()));
+              return (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', backgroundColor: 'var(--surf3)', borderRadius: '8px', marginBottom: '24px' }}>
+                  <span style={{ fontWeight: 'bold', fontSize: '16px' }}>Cantidad:</span>
+                  {tieneModificadores ? (
+                    <span style={{ fontSize: '14px', color: '#FF9800', fontWeight: 'bold' }}>Personalización individual (1)</span>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <button onClick={() => setConfigCantidad(c => Math.max(1, c - 1))} style={{ width: '40px', height: '40px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--surf2)', fontSize: '24px', fontWeight: 'bold', cursor: 'pointer' }}>-</button>
+                      <span style={{ fontSize: '20px', fontWeight: 'bold' }}>{configCantidad}</span>
+                      <button onClick={() => setConfigCantidad(c => c + 1)} style={{ width: '40px', height: '40px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--surf2)', fontSize: '24px', fontWeight: 'bold', cursor: 'pointer' }}>+</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button 
-                onClick={() => { setProdConfigModalVisible(false); setProdToConfig(null); }}
-                style={{ flex: 1, padding: '16px', borderRadius: '8px', border: '2px solid var(--border)', backgroundColor: 'transparent', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' }}
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={confirmarAgregarProducto}
-                style={{ flex: 1, padding: '16px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--orange)', color: 'white', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' }}
-              >
-                Añadir ({formatCurrency((prodToConfig.precio + configAdicionales.reduce((s, a) => s + a.precio, 0)) * configCantidad)})
-              </button>
-            </div>
+            {(() => {
+              // Suma exacta de adicionales multiplicando cada precio por su cantidad
+              const totalAdicionales = (configAdicionales || []).reduce((acc, adic) => {
+                const cant = Number(adic.cantidad || 1);
+                const precio = Number(adic.precio || 0);
+                return acc + (precio * cant);
+              }, 0);
+
+              const precioUnitarioConAdicionales = Number(prodToConfig?.precio || 0) + totalAdicionales;
+              const totalFinalModal = precioUnitarioConAdicionales * (Number(configCantidad) || 1);
+
+              return (
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button 
+                    onClick={() => { setProdConfigModalVisible(false); setProdToConfig(null); }}
+                    style={{ flex: 1, padding: '16px', borderRadius: '8px', border: '2px solid var(--border)', backgroundColor: 'transparent', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' }}
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    onClick={confirmarAgregarProducto}
+                    style={{ flex: 1, padding: '16px', borderRadius: '8px', border: 'none', backgroundColor: 'var(--orange)', color: 'white', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer' }}
+                  >
+                    Añadir ({formatCurrency ? formatCurrency(totalFinalModal) : `$${totalFinalModal.toLocaleString('es-CO')}`})
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
