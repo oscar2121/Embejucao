@@ -29,13 +29,13 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
 };
 
 export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
+  const [adminTab, setAdminTab] = useState('catalogo');
   const [listaProductos, setListaProductos] = useState(productos || []);
 
   const [adminToken, setAdminToken] = useState(null);
   const [loginPin, setLoginPin] = useState('');
   const [loginUser, setLoginUser] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [adminTab, setAdminTab] = useState('dashboard');
 
   // Estados de Impresora
   const [printerType, setPrinterType] = useState(localStorage.getItem('printerType') || 'ip');
@@ -71,7 +71,10 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       const rawCats = Array.isArray(resCat.data) ? resCat.data : (resCat.data?.categorias || []);
       setCategoriasFull(rawCats);
       const catNames = rawCats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria)).filter(Boolean);
-      const prodsCats = prodsCargados.map(p => p.categoria || p.cat).filter(Boolean);
+      const prodsCats = prodsCargados.map(p => {
+        const c = p?.categoria ?? p?.cat;
+        return typeof c === 'string' ? c : (c?.nombre || c?.categoria || '');
+      }).filter(Boolean);
       const uniqueCats = ['Todos', ...new Set([...catNames, ...prodsCats, 'Otros'])];
       setCategoriasDinamicas(uniqueCats);
     } catch (e) {
@@ -80,7 +83,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   };
 
   useEffect(() => {
-    if (adminTab === 'productos') {
+    if (adminTab === 'productos' || adminTab === 'catalogo') {
       cargarCatalogo();
     }
   }, [adminTab, serverUrl]);
@@ -108,16 +111,33 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   }, [productos]);
 
   const obtenerCategoriaReal = (prod) => {
-    const cat = (prod?.categoria || prod?.cat || '').trim();
-    if (cat && cat.toLowerCase() !== 'general' && isNaN(Number(cat))) return cat;
+    if (!prod) return 'Otros';
 
-    const nombre = (prod?.nombre || '').toLowerCase();
+    // Extraer el valor potencial (sea string u objeto)
+    const rawCat = prod.categoria ?? prod.cat;
+
+    let textoCat = '';
+    if (typeof rawCat === 'string') {
+      textoCat = rawCat;
+    } else if (typeof rawCat === 'object' && rawCat !== null) {
+      textoCat = rawCat.nombre || rawCat.categoria || rawCat.label || '';
+    } else if (rawCat !== undefined && rawCat !== null) {
+      textoCat = String(rawCat);
+    }
+
+    const resultado = (textoCat || '').trim();
+    if (resultado.length > 0 && resultado.toLowerCase() !== 'general') {
+      return resultado;
+    }
+
+    const nombre = String(prod?.nombre || '').toLowerCase();
     if (nombre.includes('perro') || nombre.includes('chori') || nombre.includes('sencillo')) return 'Perros';
     if (nombre.includes('burro') || nombre.includes('burrito')) return 'Burritos';
     if (nombre.includes('hamburguesa') || nombre.includes('clásica') || nombre.includes('doble') || nombre.includes('especial') || nombre.includes('mexicana')) return 'Hamburguesas';
     if (nombre.includes('sandwich')) return 'Sandwich';
     if (nombre.includes('bebida') || nombre.includes('gaseosa') || nombre.includes('jugo') || nombre.includes('agua')) return 'Bebidas';
-    return 'Otros';
+
+    return resultado.length > 0 ? resultado : 'Otros';
   };
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
@@ -719,7 +739,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         <h2 style={{ fontSize: '24px', color: 'var(--brand)' }}>⚙️ Configuración</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <button onClick={() => setAdminTab('dashboard')} style={navBtnStyle(adminTab === 'dashboard')}>📊 Dashboard de Hoy</button>
-          <button onClick={() => setAdminTab('productos')} style={navBtnStyle(adminTab === 'productos')}>🍔 Catálogo</button>
+          <button onClick={() => setAdminTab('catalogo')} style={navBtnStyle(adminTab === 'catalogo' || adminTab === 'productos')}>🍔 Catálogo</button>
           <button onClick={() => setAdminTab('adicionales')} style={navBtnStyle(adminTab === 'adicionales')}>🍟 Adicionales</button>
           <button onClick={() => setAdminTab('historial')} style={navBtnStyle(adminTab === 'historial')}>📄 Historial de Facturas</button>
           <button onClick={() => setAdminTab('insumos')} style={navBtnStyle(adminTab === 'insumos')}>📦 Insumos y Kardex</button>
@@ -798,7 +818,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         {adminTab === 'dashboard' && <DashboardFinanciero serverUrl={serverUrl} socket={socket} adminToken={adminToken} />}
 
 
-        {adminTab === 'productos' && (
+        {(adminTab === 'productos' || adminTab === 'catalogo') && (
           <div className="animate-fade-in">
             {/* Cabecera con botón superior derecho */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
@@ -921,7 +941,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
               {listaProductos
                 .filter((prod) => {
                   if (catFiltro === 'Todos') return true;
-                  return obtenerCategoriaReal(prod).toLowerCase() === catFiltro.toLowerCase();
+                  const catProd = obtenerCategoriaReal(prod);
+                  return catProd.toLowerCase() === String(catFiltro || '').toLowerCase();
                 })
                 .map((prod) => {
                   const disponible = prod.disponible !== 0 && prod.disponible !== false;
