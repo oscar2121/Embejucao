@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 
 export function CocinaModuleV2({ pedidos, serverUrl }) {
@@ -27,10 +27,12 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
   };
 
   // Filtrar únicamente pedidos activos (no cobrados, cancelados, archivados ni completados) y ocultar muy antiguos
-  const pedidosCocina = localPedidos.filter(p =>
-    !['cobrado', 'cancelado', 'archivado', 'completado'].includes(String(p.estado || '').toLowerCase()) &&
-    obtenerMinutosTranscurridos(p.fecha) <= 1000
-  );
+  const pedidosCocina = useMemo(() => {
+    return localPedidos.filter(p =>
+      !['cobrado', 'cancelado', 'archivado', 'completado'].includes(String(p.estado || '').toLowerCase()) &&
+      obtenerMinutosTranscurridos(p.fecha) <= 1000
+    );
+  }, [localPedidos]);
 
   const [tiempoTranscurrido, setTiempoTranscurrido] = useState({});
 
