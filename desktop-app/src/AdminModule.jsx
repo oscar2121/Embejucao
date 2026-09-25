@@ -31,6 +31,31 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
 export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [listaProductos, setListaProductos] = useState(productos || []);
 
+  const [categoriasDinamicas, setCategoriasDinamicas] = useState(['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros']);
+
+  const cargarCatalogo = async () => {
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const [resProd, resCat] = await Promise.all([
+        axios.get(`${targetUrl}/api/productos`, { headers: { 'ngrok-skip-browser-warning': 'true' } }),
+        axios.get(`${targetUrl}/api/categorias`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+      ]);
+      if (resProd.data.productos) setListaProductos(resProd.data.productos);
+      if (resCat.data.categorias) {
+        const uniqueCats = ['Todos', ...new Set([...resCat.data.categorias, 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros'])];
+        setCategoriasDinamicas(uniqueCats);
+      }
+    } catch (e) {
+      console.error("Error cargando catalogo", e);
+    }
+  };
+
+  useEffect(() => {
+    if (adminTab === 'productos') {
+      cargarCatalogo();
+    }
+  }, [adminTab, serverUrl]);
+
   // Sincronizar si la prop externa cambia
   useEffect(() => {
     if (Array.isArray(productos)) {
@@ -569,7 +594,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       nombre: prod.nombre,
       precio: prod.precio,
       emoji: prod.emoji || '🍔',
-      cat: prod.cat || 1,
+      categoria: prod.cat || prod.categoria || 'Otros',
       desc: prod.desc || '',
       imagen: prod.imagen || ''
     });
@@ -595,18 +620,17 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         }
       }
 
-      const nuevoProd = {
+      const payload = {
         nombre: formProd.nombre,
         cat: formProd.categoria,
         emoji: formProd.emoji,
         precio: Number(cleanNum(formProd.precio)),
-        imagen: finalImageUrl
+        imagen: finalImageUrl,
+        usuario: 'Admin'
       };
 
       if (productoEditando) {
         // Actualizar
-        // Nota: asumiendo que server.js maneja UPDATE por id, pero el POST general maneja ambos si se pasa id. 
-        // Originalmente se usaba axios.put pero POST maneja ambos en server.js. Usaremos POST para consistencia.
         await axios.post(`${serverUrl}/api/productos`, { ...payload, id: productoEditando.id });
         toast.success('Producto actualizado exitosamente');
       } else {
@@ -615,8 +639,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         toast.success('Producto creado exitosamente');
       }
       setModalVisible(false);
-      // Nota: Si el backend emite un socket de actualización, useSocket lo actualizará automáticamente,
-      // si no, habría que forzar un refetch o agregarlo al estado local temporalmente.
+      cargarCatalogo();
     } catch (e) {
       console.error(e);
       toast.error("Error al guardar el producto en el servidor. Revisa la consola o la ruta del API.");
@@ -757,7 +780,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
             {/* Barra de Filtros por Categoría */}
             <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
-              {['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros'].map((cat) => {
+              {categoriasDinamicas.map((cat) => {
                 const activa = catFiltro === cat;
                 return (
                   <button
@@ -920,6 +943,10 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                               if (window.confirm(`¿Eliminar ${prod.nombre}?`)) {
                                 try {
                                   await axios.delete(`${serverUrl}/api/productos/${prod.id}`);
+                                  setListaProductos(prev => prev.filter(p => p.id !== prod.id));
+                                  if (socket && typeof socket.emit === 'function') {
+                                    socket.emit('productos_actualizados');
+                                  }
                                 } catch (e) {
                                   console.error(e);
                                 }

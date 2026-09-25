@@ -375,6 +375,29 @@ app.put('/api/productos/:id/disponibilidad', (req, res) => {
   });
 });
 
+app.delete('/api/productos/:id', (req, res) => {
+  const { id } = req.params;
+  const usuario = req.body?.usuario || 'Admin';
+  
+  db.get(`SELECT nombre FROM productos WHERE id = ?`, [id], (errGet, prod) => {
+    const prodName = prod ? prod.nombre : 'Producto #' + id;
+    db.run(`DELETE FROM productos WHERE id = ?`, [id], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      logAuditoria(usuario, 'producto_eliminado', `Producto eliminado: ${prodName}`);
+      if (typeof io !== 'undefined') io.emit('productos_actualizados');
+      res.json({ success: true, deleted: this.changes });
+    });
+  });
+});
+
+app.get('/api/categorias', (req, res) => {
+  db.all(`SELECT DISTINCT cat as categoria FROM productos WHERE cat IS NOT NULL AND cat != '' ORDER BY cat ASC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const categorias = rows.map(r => r.categoria);
+    res.json({ categorias });
+  });
+});
+
 // ─── GASTOS ───
 app.post('/api/gastos', authorize(['admin', 'caja']), (req, res) => {
   const { descripcion, categoria, valor, fecha, sesion_id } = req.body;
