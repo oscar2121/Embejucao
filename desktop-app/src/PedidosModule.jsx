@@ -43,7 +43,8 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     const mesaNumStr = String(m.num || m.id || m.numero || '');
     const tieneComandaActiva = (pedidos || []).some(p => 
       (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
-      !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+      !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
+      (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
     );
 
     const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
@@ -58,7 +59,8 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
 
       const pedidoActivo = (pedidos || []).find(p => 
         (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
-        !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+        !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
+        (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
       );
 
       if (pedidoActivo && setPedidoEditando) {
@@ -253,7 +255,8 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     if (!paraLlevar && !pedidoEditando) {
       const tieneComandaActiva = (pedidos || []).some(p => 
         (String(p.mesa_id || p.mesa) === String(mesaSeleccionada) || String(p.mesa_id || p.mesa) === `Mesa ${mesaSeleccionada}`) &&
-        !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+        !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
+        (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
       );
       if (tieneComandaActiva) {
         return toast.error(`La Mesa ${mesaSeleccionada} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.`);
@@ -339,7 +342,8 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
                     const mesaNumStr = String(m.num || m.id || m.numero || '');
                     const tieneComandaActiva = (pedidos || []).some(p => 
                       (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
-                      !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase())
+                      !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
+                      (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
                     );
                     const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
 

@@ -255,6 +255,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
   const [pedidoACobrar, setPedidoACobrar] = useState(null);
   const [isCreditoMode, setIsCreditoMode] = useState(false);
   const [isMixtoMode, setIsMixtoMode] = useState(false);
+  const [mostrarCalculadoraEfectivo, setMostrarCalculadoraEfectivo] = useState(false);
   const [efectivoRecibido, setEfectivoRecibido] = useState('');
   const [deudorName, setDeudorName] = useState('');
   const [listaDeudores, setListaDeudores] = useState([]);
@@ -286,6 +287,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
   };
 
   const totalCuenta = Number(pedidoACobrar ? calcularTotal(pedidoACobrar) : (selectedPedido ? calcularTotal(selectedPedido) : (mesaSeleccionada?.total || 0)));
+  const totalPagar = totalCuenta;
   // Obtener el valor numérico real sin puntos:
   const efectivoNumerico = Number(String(efectivoRecibido || '0').replace(/\D/g, ''));
 
@@ -293,7 +295,8 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
   const restanteTransferencia = Math.max(0, totalCuenta - efectivoNumerico);
 
   // Devuelta / Cambio si paga más en efectivo:
-  const cambioDevuelta = Math.max(0, efectivoNumerico - totalCuenta);
+  const devuelta = efectivoNumerico > totalPagar ? efectivoNumerico - totalPagar : 0;
+  const cambioDevuelta = devuelta;
 
   // Estados para modal de abono a fiados/créditos
   const [abonoModalVisible, setAbonoModalVisible] = useState(false);
@@ -325,6 +328,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
     setPedidoACobrar(pedido);
     setIsCreditoMode(false);
     setIsMixtoMode(false);
+    setMostrarCalculadoraEfectivo(false);
     setEfectivoRecibido('');
     setModalPagoVisible(true);
   };
@@ -424,6 +428,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
       setModalPagoVisible(false);
       setIsCreditoMode(false);
       setIsMixtoMode(false);
+      setMostrarCalculadoraEfectivo(false);
       setEfectivoRecibido('');
       setDeudorName('');
       setPedidoACobrar(null);
@@ -1145,45 +1150,130 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
               Mesa {pedidoACobrar?.mesa} - Total: {pedidoACobrar ? formatCurrency(calcularTotal(pedidoACobrar)) : '$0'}
             </p>
             
-            {!isCreditoMode && !isMixtoMode ? (
+            {!isCreditoMode && !isMixtoMode && !mostrarCalculadoraEfectivo ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <button 
-                onClick={() => confirmarCobro('Efectivo')}
-                style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
-              >
-                Efectivo
-              </button>
-              <button 
-                onClick={() => confirmarCobro('Transferencia')}
-                style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
-              >
-                Transferencia
-              </button>
-              <button 
-                onClick={() => setIsCreditoMode(true)}
-                style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
-              >
-                Crédito
-              </button>
-              <button 
-                onClick={() => {
-                  setIsMixtoMode(true);
-                  setEfectivoRecibido('');
-                }}
-                style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
-              >
-                Cobro Mixto
-              </button>
+                  onClick={() => {
+                    setMostrarCalculadoraEfectivo(true);
+                    setEfectivoRecibido('');
+                  }}
+                  style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  💵 Efectivo
+                </button>
+                <button 
+                  onClick={() => confirmarCobro('Transferencia')}
+                  style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  📲 Transferencia
+                </button>
+                <button 
+                  onClick={() => setIsCreditoMode(true)}
+                  style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  👤 Crédito
+                </button>
+                <button 
+                  onClick={() => {
+                    setIsMixtoMode(true);
+                    setEfectivoRecibido('');
+                  }}
+                  style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  💵 + 📲 Cobro Mixto
+                </button>
                 
                 <button 
                   onClick={() => {
                     setModalPagoVisible(false);
                     setPedidoACobrar(null);
+                    setMostrarCalculadoraEfectivo(false);
                   }}
                   style={{ padding: '16px', backgroundColor: 'transparent', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer', marginTop: '8px' }}
                 >
                   Cancelar
                 </button>
+              </div>
+            ) : mostrarCalculadoraEfectivo ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <h3 style={{ fontSize: '18px', fontWeight: 'bold', margin: '0', color: 'var(--brand)' }}>Calculadora de Efectivo</h3>
+                <p style={{ margin: '0', color: 'var(--text-light)', fontSize: '14px' }}>¿Con cuánto paga el cliente?</p>
+                
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Ej: 100000"
+                  value={efectivoRecibido}
+                  onChange={(e) => {
+                    const soloNumeros = e.target.value.replace(/\D/g, '');
+                    setEfectivoRecibido(soloNumeros ? Number(soloNumeros).toLocaleString('es-CO') : '');
+                  }}
+                  autoFocus
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    fontSize: '18px',
+                    fontWeight: 'bold',
+                    margin: '10px 0',
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    boxSizing: 'border-box',
+                    outline: 'none'
+                  }}
+                />
+
+                {/* Mostrar la devuelta dinámicamente */}
+                <div style={{
+                  padding: '12px',
+                  margin: '4px 0',
+                  backgroundColor: devuelta > 0 ? '#dcfce7' : '#f1f5f9',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}>
+                  <span style={{ fontWeight: 'bold', color: devuelta > 0 ? '#166534' : '#64748b' }}>Devuelta:</span>
+                  <strong style={{ fontSize: '20px', color: devuelta > 0 ? '#16a34a' : '#94a3b8' }}>
+                    $ {devuelta.toLocaleString('es-CO')}
+                  </strong>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <button
+                    onClick={() => {
+                      setMostrarCalculadoraEfectivo(false);
+                      setEfectivoRecibido('');
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      backgroundColor: '#e2e8f0',
+                      color: '#475569',
+                      borderRadius: '6px',
+                      fontWeight: 'bold',
+                      border: 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Atrás
+                  </button>
+                  <button
+                    disabled={efectivoNumerico > 0 && efectivoNumerico < totalPagar}
+                    onClick={() => confirmarCobro('Efectivo')}
+                    style={{
+                      flex: 2,
+                      padding: '12px',
+                      backgroundColor: (efectivoNumerico > 0 && efectivoNumerico < totalPagar) ? '#94a3b8' : '#16a34a',
+                      color: '#fff',
+                      borderRadius: '6px',
+                      fontWeight: 'bold',
+                      border: 'none',
+                      cursor: (efectivoNumerico > 0 && efectivoNumerico < totalPagar) ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    Confirmar Pago
+                  </button>
+                </div>
               </div>
             ) : isCreditoMode ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
