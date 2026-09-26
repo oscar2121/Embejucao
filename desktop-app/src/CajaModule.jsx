@@ -656,7 +656,22 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
             try {
               const res = await axios.get(`${serverUrl}/api/caja/resumen-cierre/${sesionActiva.id}`, { headers: { 'ngrok-skip-browser-warning': 'true' } });
               if (res.data && res.data.success) {
-                setCierreReporte(res.data);
+                let repData = res.data;
+                if (!repData.productividad) {
+                  try {
+                    const prodRes = await axios.get(`${serverUrl}/api/reportes/productividad?sesion_id=${sesionActiva.id}`, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+                    if (Array.isArray(prodRes.data)) {
+                      const prodMap = { comida: 0, jugos_naturales: 0, cervezas: 0, gaseosas_embotellados: 0, bebidas_calientes: 0 };
+                      prodRes.data.forEach(r => {
+                        const g = (r.grupo || 'comida').toLowerCase();
+                        if (prodMap[g] !== undefined) prodMap[g] += Number(r.total_dinero || 0);
+                        else prodMap.comida += Number(r.total_dinero || 0);
+                      });
+                      repData = { ...repData, productividad: prodMap };
+                    }
+                  } catch (eProd) {}
+                }
+                setCierreReporte(repData);
                 setCierreReal('');
                 setCierreModalVisible(true);
               }
@@ -1397,7 +1412,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
         }}>
           <div style={{
             backgroundColor: 'white', padding: '32px', borderRadius: '16px',
-            width: '450px', boxShadow: 'var(--shadow-lg)'
+            width: '460px', maxHeight: '90vh', overflowY: 'auto', boxShadow: 'var(--shadow-lg)'
           }}>
             <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '16px', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
               🔒 Cierre de Caja
@@ -1423,6 +1438,66 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
               <div style={{ display: 'flex', justifyContent: 'space-between', backgroundColor: 'rgba(232,82,10,0.05)', padding: '12px', borderRadius: '8px' }}>
                 <span style={{ fontWeight: 'bold' }}>💰 Saldo Esperado en Caja:</span>
                 <span style={{ fontWeight: 'bold', color: 'var(--orange)', fontSize: '18px' }}>{formatCurrency(cierreReporte.saldo_final_esperado)}</span>
+              </div>
+            </div>
+
+            {/* Balance Detallado por Macro-Grupos de Productividad */}
+            <div style={{
+              backgroundColor: 'var(--surf2, #f8fafc)',
+              borderRadius: '12px',
+              padding: '14px',
+              border: '1px solid var(--border)',
+              marginBottom: '20px'
+            }}>
+              <div style={{
+                fontSize: '12px',
+                fontWeight: 'bold',
+                color: 'var(--text-light)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+                marginBottom: '10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <span>📊</span> Balance de Recaudo por Productividad
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>🍔 Total Comida:</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text)' }}>
+                    {formatCurrency(cierreReporte.productividad?.comida || 0)}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>🥤 Total Jugos Naturales:</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text)' }}>
+                    {formatCurrency(cierreReporte.productividad?.jugos_naturales || 0)}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>🍺 Total Cervezas:</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text)' }}>
+                    {formatCurrency(cierreReporte.productividad?.cervezas || 0)}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>🍾 Total Gaseosas y Embotellados:</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text)' }}>
+                    {formatCurrency(cierreReporte.productividad?.gaseosas_embotellados || 0)}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text)' }}>☕ Total Bebidas Calientes:</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text)' }}>
+                    {formatCurrency(cierreReporte.productividad?.bebidas_calientes || 0)}
+                  </span>
+                </div>
               </div>
             </div>
 

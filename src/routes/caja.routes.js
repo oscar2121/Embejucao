@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { db } = require('../database/db');
+const { db, dbAll, dbGet } = require('../database/db');
 const { logAuditoria, obtenerBalanceTurnoActivo } = require('../utils/helpers');
 const { getIO, emitirSincronizacionCompleta } = require('../utils/socket');
 
@@ -10,6 +10,68 @@ const { getIO, emitirSincronizacionCompleta } = require('../utils/socket');
 router.get('/caja/sesion-activa', async (req, res) => {
   const sesionActiva = await obtenerBalanceTurnoActivo();
   res.json({ sesion: sesionActiva });
+});
+
+// GET - Reportes de Productividad por Sesión o Fecha (5 Macro-Grupos)
+router.get('/reportes/productividad', async (req, res) => {
+  const { fecha, sesion_id } = req.query;
+  try {
+    let whereClause = "ped.estado = 'cobrado'";
+    const params = [];
+
+    if (sesion_id) {
+      whereClause += " AND ped.caja_sesion_id = ?";
+      params.push(sesion_id);
+    } else if (fecha) {
+      whereClause += " AND DATE(ped.fecha) = DATE(?)";
+      params.push(fecha);
+    }
+
+    const query = `
+      SELECT 
+        COALESCE(p.grupo_reporte, 'comida') AS grupo,
+        SUM(dp.cantidad) AS unidades_vendidas,
+        SUM(dp.precio_unitario * dp.cantidad) AS total_dinero
+      FROM detalles_pedidos dp
+      JOIN productos p ON p.id = dp.producto_id
+      JOIN pedidos ped ON ped.id = dp.pedido_id
+      WHERE ${whereClause}
+      GROUP BY grupo;
+    `;
+    let data = await dbAll(query, params);
+
+    // Respaldo de compatibilidad: Si detalles_pedidos aún no tiene registros para esta sesión o fecha, consultar ventas_detalle
+    if (!data || data.length === 0) {
+      let whereVentas = "1=1";
+      const paramsVentas = [];
+      if (sesion_id) {
+        whereVentas += " AND v.sesion_id = ?";
+        paramsVentas.push(sesion_id);
+      } else if (fecha) {
+        whereVentas += " AND DATE(v.fecha) = DATE(?)";
+        paramsVentas.push(fecha);
+      }
+      const queryVentas = `
+        SELECT 
+          COALESCE(p.grupo_reporte, 'comida') AS grupo,
+          SUM(vd.cantidad) AS unidades_vendidas,
+          SUM(vd.precio_unitario * vd.cantidad) AS total_dinero
+        FROM ventas_detalle vd
+        JOIN productos p ON p.id = vd.producto_id
+        JOIN ventas v ON v.id = vd.venta_id
+        WHERE ${whereVentas}
+        GROUP BY grupo;
+      `;
+      const fallbackData = await dbAll(queryVentas, paramsVentas);
+      if (fallbackData && fallbackData.length > 0) {
+        data = fallbackData;
+      }
+    }
+
+    res.json(data || []);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // POST - Abrir Caja
@@ -52,34 +114,82 @@ router.post('/caja/abrir', (req, res) => {
 });
 
 // GET - Resumen de Cierre de Caja
-router.get('/caja/resumen-cierre/:sesion_id', (req, res) => {
+router.get('/caja/resumen-cierre/:sesion_id', async (req, res) => {
   const sesion_id = req.params.sesion_id;
-  db.get(`SELECT * FROM caja_sesiones WHERE id = ?`, [sesion_id], (err, sesion) => {
-    if (err || !sesion) return res.status(404).json({ error: 'Sesión no encontrada' });
+  try {
+    const sesion = await dbGet(`SELECT * FROM caja_sesiones WHERE id = ?`, [sesion_id]);
+    if (!sesion) return res.status(404).json({ error: 'Sesión no encontrada' });
 
-    db.get(`SELECT SUM(total) as total FROM ventas WHERE sesion_id = ? AND metodo_pago = 'Efectivo'`, [sesion_id], (err1, rEfectivo) => {
-      const efectivo = rEfectivo ? rEfectivo.total || 0 : 0;
-      
-      db.get(`SELECT SUM(total) as total FROM ventas WHERE sesion_id = ? AND metodo_pago = 'Transferencia'`, [sesion_id], (err2, rTransf) => {
-        const transferencia = rTransf ? rTransf.total || 0 : 0;
-        
-        db.get(`SELECT SUM(valor) as total FROM gastos WHERE sesion_id = ?`, [sesion_id], (err3, rGastos) => {
-          const gastos = rGastos ? rGastos.total || 0 : 0;
-          
-          const esperado = sesion.base_inicial + efectivo - gastos;
-          
-          res.json({
-            success: true,
-            base_inicial: sesion.base_inicial,
-            ingresos_efectivo: efectivo,
-            ingresos_transferencia: transferencia,
-            gastos: gastos,
-            saldo_final_esperado: esperado
-          });
-        });
-      });
+    const rEfectivo = await dbGet(`SELECT SUM(total) as total FROM ventas WHERE sesion_id = ? AND metodo_pago = 'Efectivo'`, [sesion_id]);
+    const efectivo = rEfectivo ? rEfectivo.total || 0 : 0;
+
+    const rTransf = await dbGet(`SELECT SUM(total) as total FROM ventas WHERE sesion_id = ? AND metodo_pago = 'Transferencia'`, [sesion_id]);
+    const transferencia = rTransf ? rTransf.total || 0 : 0;
+
+    const rGastos = await dbGet(`SELECT SUM(valor) as total FROM gastos WHERE sesion_id = ?`, [sesion_id]);
+    const gastos = rGastos ? rGastos.total || 0 : 0;
+
+    const esperado = sesion.base_inicial + efectivo - gastos;
+
+    // Obtener desglose de productividad para la sesión
+    const queryProd = `
+      SELECT 
+        COALESCE(p.grupo_reporte, 'comida') AS grupo,
+        SUM(dp.cantidad) AS unidades_vendidas,
+        SUM(dp.precio_unitario * dp.cantidad) AS total_dinero
+      FROM detalles_pedidos dp
+      JOIN productos p ON p.id = dp.producto_id
+      JOIN pedidos ped ON ped.id = dp.pedido_id
+      WHERE ped.estado = 'cobrado' AND ped.caja_sesion_id = ?
+      GROUP BY grupo;
+    `;
+    let productividadRows = await dbAll(queryProd, [sesion_id]);
+
+    if (!productividadRows || productividadRows.length === 0) {
+      const fallbackQuery = `
+        SELECT 
+          COALESCE(p.grupo_reporte, 'comida') AS grupo,
+          SUM(vd.cantidad) AS unidades_vendidas,
+          SUM(vd.precio_unitario * vd.cantidad) AS total_dinero
+        FROM ventas_detalle vd
+        JOIN productos p ON p.id = vd.producto_id
+        JOIN ventas v ON v.id = vd.venta_id
+        WHERE v.sesion_id = ?
+        GROUP BY grupo;
+      `;
+      productividadRows = await dbAll(fallbackQuery, [sesion_id]);
+    }
+
+    const mapaProductividad = {
+      comida: 0,
+      jugos_naturales: 0,
+      cervezas: 0,
+      gaseosas_embotellados: 0,
+      bebidas_calientes: 0
+    };
+
+    (productividadRows || []).forEach(r => {
+      const g = (r.grupo || 'comida').toLowerCase();
+      if (mapaProductividad[g] !== undefined) {
+        mapaProductividad[g] += Number(r.total_dinero || 0);
+      } else {
+        mapaProductividad.comida += Number(r.total_dinero || 0);
+      }
     });
-  });
+
+    res.json({
+      success: true,
+      base_inicial: sesion.base_inicial,
+      ingresos_efectivo: efectivo,
+      ingresos_transferencia: transferencia,
+      gastos: gastos,
+      saldo_final_esperado: esperado,
+      productividad: mapaProductividad,
+      productividad_detalle: productividadRows || []
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // POST - Cerrar Caja
@@ -395,11 +505,27 @@ router.post('/ventas', (req, res) => {
             });
           });
           db.run(
-            `UPDATE pedidos SET estado = 'cobrado', pagado = 1 WHERE (mesa = ? OR mesa = ? OR mesa_id = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
-            [mesaNum, `Mesa ${mesaNum}`, mesaNum],
+            `UPDATE pedidos SET estado = 'cobrado', pagado = 1, caja_sesion_id = ? WHERE (mesa = ? OR mesa = ? OR mesa_id = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
+            [sesion_id || null, mesaNum, `Mesa ${mesaNum}`, mesaNum],
             () => {
               if (io) io.emit('pedidos_actualizados');
               emitirSincronizacionCompleta();
+
+              // Asegurar vinculación en detalles_pedidos
+              db.all(
+                `SELECT id FROM pedidos WHERE (mesa = ? OR mesa = ? OR mesa_id = ?) AND estado = 'cobrado' ORDER BY id DESC LIMIT 1`,
+                [mesaNum, `Mesa ${mesaNum}`, mesaNum],
+                (errP, pRows) => {
+                  if (!errP && pRows && pRows.length > 0 && Array.isArray(detalles) && detalles.length > 0) {
+                    const targetPedId = pRows[0].id;
+                    const stmtDP = db.prepare(`INSERT INTO detalles_pedidos (pedido_id, producto_id, cantidad, precio_unitario, subtotal, nombre) VALUES (?, ?, ?, ?, ?, ?)`);
+                    detalles.forEach(d => {
+                      stmtDP.run(targetPedId, d.producto_id || d.id, d.cantidad || 1, d.precio_unitario || 0, d.subtotal || 0, d.nombre_producto || d.nombre || '');
+                    });
+                    stmtDP.finalize();
+                  }
+                }
+              );
             }
           );
         }

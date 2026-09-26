@@ -28,6 +28,16 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
   return '🍽️';
 };
 
+const sugerirGrupoReporte = (categoriaTexto, nombreTexto = '') => {
+  const c = String(categoriaTexto || '').toLowerCase().trim();
+  const n = String(nombreTexto || '').toLowerCase().trim();
+  if (c.includes('cerveza') || n.includes('cerveza') || n.includes('corona') || n.includes('club colombia') || n.includes('aguila') || n.includes('poker')) return 'cervezas';
+  if (c === 'gaseosas' || c === 'bebidas' || n.includes('gaseosa') || n.includes('coca cola') || n.includes('postobon') || n.includes('agua') || n.includes('hit') || n.includes('red bull')) return 'gaseosas_embotellados';
+  if (c.includes('jugo') || n.includes('jugo') || n.includes('limonada')) return 'jugos_naturales';
+  if (n.includes('cafe') || n.includes('tinto') || n.includes('aromatica') || n.includes('chocolate') || n.includes('cappuccino')) return 'bebidas_calientes';
+  return 'comida';
+};
+
 export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [adminTab, setAdminTab] = useState('catalogo');
   const [listaProductos, setListaProductos] = useState(productos || []);
@@ -43,14 +53,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [systemPrinters, setSystemPrinters] = useState([]);
   const [selectedSystemPrinter, setSelectedSystemPrinter] = useState(localStorage.getItem('selectedSystemPrinter') || '');
   
-  // Estados para el Modal de Productos
+  // Estados para el Modal de Productos / Categorías Unificado
   const [modalVisible, setModalVisible] = useState(false);
+  const [modalSubTab, setModalSubTab] = useState('producto'); // 'producto' | 'categorias'
   const [productoEditando, setProductoEditando] = useState(null); // null = Crear Nuevo, Object = Editar
-  const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '' });
+  const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '', disp: true, grupo_reporte: 'comida' });
   const [catFiltro, setCatFiltro] = useState('Todos');
 
   const [categoriasDinamicas, setCategoriasDinamicas] = useState(['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros']);
-  const [modalCategoriasOpen, setModalCategoriasOpen] = useState(false);
   const [categoriasFull, setCategoriasFull] = useState([]);
   const [nuevaCatNombre, setNuevaCatNombre] = useState('');
   const [catEditando, setCatEditando] = useState(null);
@@ -112,32 +122,10 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const obtenerCategoriaReal = (prod) => {
     if (!prod) return 'Otros';
-
-    // Extraer el valor potencial (sea string u objeto)
-    const rawCat = prod.categoria ?? prod.cat;
-
-    let textoCat = '';
-    if (typeof rawCat === 'string') {
-      textoCat = rawCat;
-    } else if (typeof rawCat === 'object' && rawCat !== null) {
-      textoCat = rawCat.nombre || rawCat.categoria || rawCat.label || '';
-    } else if (rawCat !== undefined && rawCat !== null) {
-      textoCat = String(rawCat);
-    }
-
-    const resultado = (textoCat || '').trim();
-    if (resultado.length > 0 && resultado.toLowerCase() !== 'general') {
-      return resultado;
-    }
-
-    const nombre = String(prod?.nombre || '').toLowerCase();
-    if (nombre.includes('perro') || nombre.includes('chori') || nombre.includes('sencillo')) return 'Perros';
-    if (nombre.includes('burro') || nombre.includes('burrito')) return 'Burritos';
-    if (nombre.includes('hamburguesa') || nombre.includes('clásica') || nombre.includes('doble') || nombre.includes('especial') || nombre.includes('mexicana')) return 'Hamburguesas';
-    if (nombre.includes('sandwich')) return 'Sandwich';
-    if (nombre.includes('bebida') || nombre.includes('gaseosa') || nombre.includes('jugo') || nombre.includes('agua')) return 'Bebidas';
-
-    return resultado.length > 0 ? resultado : 'Otros';
+    const raw = prod.categoria ?? prod.cat;
+    if (typeof raw === 'string') return raw.trim() || 'Otros';
+    if (typeof raw === 'object' && raw !== null) return (raw.nombre || raw.categoria || 'Otros').trim();
+    return raw ? String(raw).trim() : 'Otros';
   };
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
@@ -145,10 +133,12 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const handleCambioCategoria = (valor) => {
     const emojiDetectado = sugerirEmojiPorCategoria(valor);
+    const grupoSugerido = sugerirGrupoReporte(valor, formProd.nombre);
     setFormProd((prev) => ({
       ...prev,
       categoria: valor,
-      emoji: emojiDetectado
+      emoji: emojiDetectado,
+      grupo_reporte: prev.grupo_reporte && prev.grupo_reporte !== 'comida' ? prev.grupo_reporte : grupoSugerido
     }));
   };
 
@@ -636,11 +626,22 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const abrirModalNuevo = () => {
     setProductoEditando(null);
     const initialCat = listaCategorias[0] || 'Otros';
-    setFormProd({ nombre: '', precio: '', emoji: '🍔', cat: initialCat, categoria: initialCat, desc: '', imagen: '' });
+    setFormProd({ 
+      nombre: '', 
+      precio: '', 
+      emoji: '🍔', 
+      cat: initialCat, 
+      categoria: initialCat, 
+      desc: '', 
+      imagen: '', 
+      disp: true,
+      grupo_reporte: sugerirGrupoReporte(initialCat)
+    });
     setModoNuevaCat(false);
     setCategoriaInput(initialCat);
     setImageFile(null);
     setImagePreviewUrl(null);
+    setModalSubTab('producto');
     setModalVisible(true);
   };
 
@@ -654,7 +655,9 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       categoria: prodCat,
       cat: prodCat,
       desc: prod.desc || prod.descripcion || '',
-      imagen: prod.imagen || ''
+      imagen: prod.imagen || '',
+      disp: prod.disponible !== 0 && prod.disponible !== false && prod.disp !== false,
+      grupo_reporte: prod.grupo_reporte || sugerirGrupoReporte(prodCat, prod.nombre)
     });
     setCategoriaInput(prodCat);
     if (listaCategorias.includes(prodCat)) {
@@ -664,6 +667,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
     setImageFile(null);
     setImagePreviewUrl(prod.imagen || null);
+    setModalSubTab('producto');
     setModalVisible(true);
   };
 
@@ -694,18 +698,36 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         emoji: formProd.emoji,
         precio: Number(cleanNum(formProd.precio)),
         imagen: finalImageUrl,
+        disp: formProd.disp !== false ? 1 : 0,
+        disponible: formProd.disp !== false ? 1 : 0,
+        grupo_reporte: formProd.grupo_reporte || 'comida',
         usuario: 'Admin'
       };
 
       if (productoEditando) {
         // Actualizar
         await axios.post(`${serverUrl}/api/productos`, { ...payload, id: productoEditando.id });
+        try {
+          await axios.put(`${serverUrl}/api/productos/${productoEditando.id}`, {
+            nombre: formProd.nombre,
+            precio: Number(cleanNum(formProd.precio)),
+            categoria: catFinal,
+            cat: catFinal,
+            activo: formProd.disp !== false ? 1 : 0,
+            grupo_reporte: formProd.grupo_reporte || 'comida'
+          });
+        } catch (ePut) {}
         toast.success('Producto actualizado exitosamente');
       } else {
         // Crear
         await axios.post(`${serverUrl}/api/productos`, payload);
         toast.success('Producto creado exitosamente');
       }
+
+      if (socket && typeof socket.emit === 'function') {
+        socket.emit('catalogo_actualizado');
+      }
+
       setModalVisible(false);
       cargarCatalogo();
     } catch (e) {
@@ -831,21 +853,6 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
               <div style={{ display: 'flex', gap: '10px' }}>
                 <button
                   type="button"
-                  onClick={() => setModalCategoriasOpen(true)}
-                  style={{
-                    backgroundColor: 'var(--surf3)',
-                    color: 'var(--text)',
-                    padding: '10px 18px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border)',
-                    fontWeight: 'bold',
-                    cursor: 'pointer'
-                  }}
-                >
-                  ⚙️ Administrar Categorías
-                </button>
-                <button
-                  type="button"
                   className="btn-primary"
                   onClick={() => abrirModalNuevo()}
                   style={{
@@ -855,10 +862,13 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                     borderRadius: '8px',
                     border: 'none',
                     fontWeight: 'bold',
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
                   }}
                 >
-                  + Agregar Nuevo Producto
+                  + Agregar Producto / Categorías
                 </button>
               </div>
             </div>
@@ -1726,293 +1736,425 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         )}
       </div>
 
-      {/* Modal de Categorías */}
-      {modalCategoriasOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 105 }}>
-          <div className="animate-fade-in" style={{ backgroundColor: 'var(--card-bg, #fff)', borderRadius: '16px', width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto', padding: '24px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h2 style={{ color: 'var(--brand)', margin: '0' }}>⚙️ Administrar Categorías</h2>
-            
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <input type="text" placeholder="+ Añadir nueva categoría..." value={nuevaCatNombre} onChange={e => setNuevaCatNombre(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid var(--border)' }} />
-              <button onClick={async () => {
-                if (!nuevaCatNombre.trim()) return;
-                try {
-                  await axios.post(`${serverUrl || 'http://localhost:3001'}/api/categorias`, { nombre: nuevaCatNombre });
-                  setNuevaCatNombre('');
-                  cargarCatalogo();
-                } catch (e) { console.error(e); }
-              }} style={{ padding: '10px 16px', backgroundColor: 'var(--brand)', color: 'white', borderRadius: '8px', border: 'none', fontWeight: 'bold', cursor: 'pointer' }}>Añadir</button>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-              {categoriasFull.map(c => (
-                <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', border: '1px solid var(--border)', borderRadius: '8px' }}>
-                  {catEditando === c.id ? (
-                    <input type="text" value={catEditNombre} onChange={e => setCatEditNombre(e.target.value)} style={{ flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid var(--brand)', marginRight: '8px' }} />
-                  ) : (
-                    <span style={{ flex: 1, fontWeight: 'bold' }}>{c.nombre}</span>
-                  )}
-                  
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    {catEditando === c.id ? (
-                      <button onClick={async () => {
-                        try {
-                          await axios.put(`${serverUrl || 'http://localhost:3001'}/api/categorias/${c.id}`, { nombre: catEditNombre, nombreAntiguo: c.nombre });
-                          setCatEditando(null);
-                          cargarCatalogo();
-                        } catch (e) { console.error(e); }
-                      }} style={{ background: '#DCFCE7', color: '#16A34A', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>✔️</button>
-                    ) : (
-                      <button onClick={() => { setCatEditando(c.id); setCatEditNombre(c.nombre); }} style={{ background: 'none', border: '1px solid var(--border)', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>✏️</button>
-                    )}
-                    
-                    <button onClick={async () => {
-                      if (window.confirm(`¿Eliminar la categoría "${c.nombre}"? Sus productos pasarán a "Otros".`)) {
-                        try {
-                          await axios.delete(`${serverUrl || 'http://localhost:3001'}/api/categorias/${c.id}?nombre=${encodeURIComponent(c.nombre)}`);
-                          cargarCatalogo();
-                        } catch (e) { console.error(e); }
-                      }
-                    }} style={{ background: '#FEE2E2', color: '#DC2626', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}>🗑️</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <button onClick={() => setModalCategoriasOpen(false)} style={{ marginTop: '16px', padding: '12px', backgroundColor: 'var(--surf3)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>Cerrar</button>
-          </div>
-        </div>
-      )}
-
-      {/* Modal de Producto */}
+      {/* Modal Unificado de Producto y Categorías */}
       {modalVisible && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 }}>
-          {/* Contenedor principal de la tarjeta modal */}
           <div className="animate-fade-in" style={{
             backgroundColor: 'var(--card-bg, #fff)',
             borderRadius: '16px',
             width: '100%',
-            maxWidth: '520px',
+            maxWidth: '540px',
             maxHeight: '90vh',
             overflowY: 'auto',
             padding: '24px',
             boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
             display: 'flex',
             flexDirection: 'column',
-            gap: '14px'
+            gap: '16px'
           }}>
-            <h2 style={{ color: 'var(--brand)', margin: '0 0 10px 0' }}>
-              {productoEditando ? 'Editar Producto' : 'Nuevo Producto'}
-            </h2>
+            {/* Sub-Pestañas Superiores en el Modal */}
+            <div style={{ display: 'flex', borderBottom: '2px solid var(--border, #e2e8f0)', paddingBottom: '8px', gap: '12px' }}>
+              <button
+                type="button"
+                onClick={() => setModalSubTab('producto')}
+                style={{
+                  padding: '8px 16px',
+                  border: 'none',
+                  borderRadius: '8px',
+                  backgroundColor: modalSubTab === 'producto' ? 'var(--brand, #16A34A)' : 'transparent',
+                  color: modalSubTab === 'producto' ? '#fff' : 'var(--text2)',
+                  fontWeight: 'bold',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                {productoEditando ? '✏️ Editar Producto' : '🍔 Nuevo Producto'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalSubTab('categorias')}
+                style={{
+                  padding: '8px 16px',
+                  border: 'none',
+                  borderRadius: '8px',
+                  backgroundColor: modalSubTab === 'categorias' ? 'var(--brand, #16A34A)' : 'transparent',
+                  color: modalSubTab === 'categorias' ? '#fff' : 'var(--text2)',
+                  fontWeight: 'bold',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                🏷️ Gestionar Categorías
+              </button>
+            </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div style={{ marginBottom: '14px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px' }}>
-                  Categoría:
-                </label>
-                {!modoNuevaCat ? (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <select
-                      value={categoriaInput}
-                      onChange={(e) => {
-                        setCategoriaInput(e.target.value);
-                        handleCambioCategoria(e.target.value);
-                      }}
-                      style={{
-                        flex: 1,
-                        padding: '10px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--border)',
-                        background: 'var(--bg)',
-                        color: 'var(--text)',
-                        fontSize: '14px'
-                      }}
-                    >
-                      {listaCategorias.map(c => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => { setModoNuevaCat(true); setCategoriaInput(''); }}
-                      style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
-                    >
-                      + Nueva
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <input
-                      type="text"
-                      placeholder="Nombre de la nueva categoría..."
-                      value={categoriaInput}
-                      onChange={(e) => {
-                        setCategoriaInput(e.target.value);
-                        handleCambioCategoria(e.target.value);
-                      }}
-                      autoFocus
-                      style={{
-                        flex: 1,
-                        padding: '10px',
-                        borderRadius: '6px',
-                        border: '1px solid #16a34a',
-                        background: 'var(--bg)',
-                        color: 'var(--text)',
-                        fontSize: '14px'
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setModoNuevaCat(false);
-                        setCategoriaInput(listaCategorias[0] || 'Otros');
-                      }}
-                      style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Selector y vista previa de Emoji */}
-              <div style={{ marginBottom: '14px' }}>
-                <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px' }}>
-                  Ícono / Emoji:
-                </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input
-                    type="text"
-                    value={formProd.emoji || '🍽️'}
-                    onChange={(e) => setFormProd({ ...formProd, emoji: e.target.value })}
-                    style={{
-                      width: '50px',
-                      textAlign: 'center',
-                      fontSize: '20px',
-                      padding: '6px',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border)'
-                    }}
-                  />
-                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                    {['🍔', '🌭', '🌯', '🌽', '🍟', '🥤', '🍺', '🍰', '🍕', '🍽️'].map((em) => (
-                      <button
-                        key={em}
-                        type="button"
-                        onClick={() => setFormProd({ ...formProd, emoji: em })}
+            {/* Pestaña 1: Nuevo / Editar Producto */}
+            {modalSubTab === 'producto' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* Categoría Híbrida */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px', fontWeight: 'bold' }}>
+                    Categoría:
+                  </label>
+                  {!modoNuevaCat ? (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <select
+                        value={categoriaInput}
+                        onChange={(e) => {
+                          setCategoriaInput(e.target.value);
+                          handleCambioCategoria(e.target.value);
+                        }}
                         style={{
-                          background: 'var(--surf, #f3f4f6)',
-                          border: '1px solid var(--border)',
+                          flex: 1,
+                          padding: '10px',
                           borderRadius: '6px',
-                          padding: '4px 8px',
-                          cursor: 'pointer',
-                          fontSize: '15px'
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg)',
+                          color: 'var(--text)',
+                          fontSize: '14px'
                         }}
                       >
-                        {em}
+                        {listaCategorias.map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => { setModoNuevaCat(true); setCategoriaInput(''); }}
+                        style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
+                      >
+                        ➕ Nueva
                       </button>
-                    ))}
-                  </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        type="text"
+                        placeholder="Nombre de la nueva categoría..."
+                        value={categoriaInput}
+                        onChange={(e) => {
+                          setCategoriaInput(e.target.value);
+                          handleCambioCategoria(e.target.value);
+                        }}
+                        autoFocus
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          borderRadius: '6px',
+                          border: '1px solid #16a34a',
+                          background: 'var(--bg)',
+                          color: 'var(--text)',
+                          fontSize: '14px'
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setModoNuevaCat(false);
+                          setCategoriaInput(listaCategorias[0] || 'Otros');
+                        }}
+                        style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Nombre del Producto</label>
-                <input
-                  value={formProd.nombre}
-                  onChange={e => setFormProd({ ...formProd, nombre: e.target.value })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '16px' }}
-                />
-              </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Precio (COP)</label>
-                <input
-                  type="text" inputMode="numeric"
-                  value={formProd.precio}
-                  onChange={e => setFormProd({ ...formProd, precio: formatNumberInput(e.target.value) })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '16px' }}
-                />
-              </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Descripción (Ingredientes)</label>
-                <textarea
-                  value={formProd.desc}
-                  onChange={e => setFormProd({ ...formProd, desc: e.target.value })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '14px', minHeight: '60px', resize: 'vertical' }}
-                  placeholder="Ej. Pan artesanal, 125g carne res..."
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '16px' }}>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Foto del Producto</label>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    ref={fileInputRef}
-                    onChange={e => setImageFile(e.target.files[0])}
-                    style={{ display: 'none' }}
-                  />
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
+
+                {/* Estado del Producto (Activo/Inactivo) */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
+                    Estado del Producto:
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setFormProd(prev => ({ ...prev, disp: !prev.disp }))}
                     style={{
-                      flex: 1,
-                      border: '2px dashed var(--orange)',
-                      borderRadius: '12px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      backgroundColor: 'rgba(232, 82, 10, 0.05)',
-                      padding: '16px',
-                      textAlign: 'center',
-                      gap: '8px',
-                      minHeight: '100px'
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      backgroundColor: formProd.disp !== false ? '#DCFCE7' : '#FEE2E2',
+                      color: formProd.disp !== false ? '#16A34A' : '#DC2626',
+                      fontWeight: 'bold',
+                      fontSize: '13px',
+                      cursor: 'pointer'
                     }}
                   >
-                    <span style={{ fontSize: '24px' }}>📸</span>
-                    <span style={{ fontSize: '14px', color: 'var(--orange)', fontWeight: 'bold' }}>
-                      {imageFile ? 'Cambiar Foto' : 'Subir Foto'}
-                    </span>
+                    {formProd.disp !== false ? '🟢 Activo' : '🔴 Inactivo / Agotado'}
+                  </button>
+                </div>
+
+                {/* Selector y vista previa de Emoji */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px', fontWeight: 'bold' }}>
+                    Ícono / Emoji:
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="text"
+                      value={formProd.emoji || '🍽️'}
+                      onChange={(e) => setFormProd({ ...formProd, emoji: e.target.value })}
+                      style={{
+                        width: '50px',
+                        textAlign: 'center',
+                        fontSize: '20px',
+                        padding: '6px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)'
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                      {['🍔', '🌭', '🌯', '🌽', '🍟', '🥤', '🍺', '🍰', '🍕', '🍽️'].map((em) => (
+                        <button
+                          key={em}
+                          type="button"
+                          onClick={() => setFormProd({ ...formProd, emoji: em })}
+                          style={{
+                            background: 'var(--surf, #f3f4f6)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '6px',
+                            padding: '4px 8px',
+                            cursor: 'pointer',
+                            fontSize: '15px'
+                          }}
+                        >
+                          {em}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Vista Previa</label>
-                  <div style={{
-                    width: '100%',
-                    aspectRatio: '1',
-                    borderRadius: '12px',
-                    border: '1px solid var(--border)',
-                    backgroundColor: 'var(--surf2)',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    overflow: 'hidden',
-                    position: 'relative'
-                  }}>
-                    {imagePreviewUrl ? (
-                      <img src={imagePreviewUrl} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                    ) : (
-                      <span style={{ fontSize: '48px', opacity: 0.5 }}>{formProd.emoji}</span>
-                    )}
+
+                {/* Nombre y Precio */}
+                <div>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', color: 'var(--text2)', fontSize: '13px' }}>Nombre del Producto</label>
+                  <input
+                    value={formProd.nombre}
+                    onChange={e => setFormProd({ ...formProd, nombre: e.target.value })}
+                    placeholder="Ej. Hamburguesa Doble Carne"
+                    style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '14px' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', color: 'var(--text2)', fontSize: '13px' }}>Precio (COP)</label>
+                  <input
+                    type="text" inputMode="numeric"
+                    value={formProd.precio}
+                    onChange={e => setFormProd({ ...formProd, precio: formatNumberInput(e.target.value) })}
+                    placeholder="Ej. 18.000"
+                    style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '14px' }}
+                  />
+                </div>
+
+                {/* Grupo de Productividad (Reporte) */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
+                    Grupo de Productividad (Reporte):
+                  </label>
+                  <select
+                    value={formProd.grupo_reporte || 'comida'}
+                    onChange={e => setFormProd({ ...formProd, grupo_reporte: e.target.value })}
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border)',
+                      backgroundColor: 'var(--bg, #ffffff)',
+                      color: 'var(--text, #0f172a)',
+                      fontSize: '14px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="comida">🍔 Comida preparada (Hamburguesas, Perros, Burritos, etc.)</option>
+                    <option value="jugos_naturales">🥤 Jugos naturales y limonadas</option>
+                    <option value="cervezas">🍺 Cerveza nacional e importada</option>
+                    <option value="gaseosas_embotellados">🍾 Gaseosas, aguas y embotellados</option>
+                    <option value="bebidas_calientes">☕ Bebidas calientes (cafés, tés, aromáticas)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', color: 'var(--text2)', fontSize: '13px' }}>Descripción (Ingredientes)</label>
+                  <textarea
+                    value={formProd.desc}
+                    onChange={e => setFormProd({ ...formProd, desc: e.target.value })}
+                    style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '13px', minHeight: '60px', resize: 'vertical' }}
+                    placeholder="Ej. Pan artesanal, 125g carne res..."
+                  />
+                </div>
+
+                {/* Foto del Producto */}
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', color: 'var(--text2)', fontSize: '13px' }}>Foto del Producto</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      ref={fileInputRef}
+                      onChange={e => setImageFile(e.target.files[0])}
+                      style={{ display: 'none' }}
+                    />
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{
+                        flex: 1,
+                        border: '2px dashed var(--orange)',
+                        borderRadius: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        cursor: 'pointer',
+                        backgroundColor: 'rgba(232, 82, 10, 0.05)',
+                        padding: '12px',
+                        textAlign: 'center',
+                        gap: '4px',
+                        minHeight: '80px'
+                      }}
+                    >
+                      <span style={{ fontSize: '20px' }}>📸</span>
+                      <span style={{ fontSize: '13px', color: 'var(--orange)', fontWeight: 'bold' }}>
+                        {imageFile ? 'Cambiar Foto' : 'Subir Foto'}
+                      </span>
+                    </div>
                   </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', color: 'var(--text2)', fontSize: '13px' }}>Vista Previa</label>
+                    <div style={{
+                      width: '100%',
+                      aspectRatio: '1',
+                      borderRadius: '12px',
+                      border: '1px solid var(--border)',
+                      backgroundColor: 'var(--surf2)',
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      overflow: 'hidden'
+                    }}>
+                      {imagePreviewUrl ? (
+                        <img src={imagePreviewUrl} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      ) : (
+                        <span style={{ fontSize: '40px', opacity: 0.5 }}>{formProd.emoji}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setModalVisible(false)}
+                    style={{ flex: 1, padding: '12px', borderRadius: '10px', border: '2px solid var(--border)', backgroundColor: 'transparent', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={guardarProducto}
+                    style={{ flex: 1, padding: '12px', borderRadius: '10px', border: 'none', backgroundColor: 'var(--brand, #16A34A)', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    Guardar Producto
+                  </button>
                 </div>
               </div>
-            </div>
+            )}
 
-            <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-              <button
-                onClick={() => setModalVisible(false)}
-                style={{ flex: 1, padding: '14px', borderRadius: '12px', border: '2px solid var(--border)', backgroundColor: 'transparent', fontWeight: 'bold', cursor: 'pointer' }}
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={guardarProducto}
-                style={{ flex: 1, padding: '14px', borderRadius: '12px', border: 'none', backgroundColor: 'var(--orange)', color: 'white', fontWeight: 'bold', cursor: 'pointer' }}
-              >
-                Guardar
-              </button>
-            </div>
+            {/* Pestaña 2: Gestionar Categorías */}
+            {modalSubTab === 'categorias' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* Formulario rápido arriba */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="Nombre de la nueva categoría..."
+                    value={nuevaCatNombre}
+                    onChange={e => setNuevaCatNombre(e.target.value)}
+                    style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '14px' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!nuevaCatNombre.trim()) return;
+                      try {
+                        const targetUrl = serverUrl || 'http://localhost:3001';
+                        await axios.post(`${targetUrl}/api/categorias`, { nombre: nuevaCatNombre.trim() });
+                        setNuevaCatNombre('');
+                        await cargarCatalogo();
+                        if (socket && typeof socket.emit === 'function') {
+                          socket.emit('catalogo_actualizado');
+                        }
+                        toast.success("Categoría creada");
+                      } catch (e) {
+                        console.error(e);
+                        toast.error("Error al crear categoría");
+                      }
+                    }}
+                    style={{ padding: '10px 16px', backgroundColor: 'var(--brand, #16A34A)', color: 'white', borderRadius: '8px', border: 'none', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px' }}
+                  >
+                    Crear Categoría
+                  </button>
+                </div>
+
+                {/* Lista vertical de las categorías existentes */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', marginTop: '6px' }}>
+                  {categoriasFull.length === 0 ? (
+                    <div style={{ padding: '12px', color: 'var(--text3)', textAlign: 'center' }}>
+                      No hay categorías registradas
+                    </div>
+                  ) : (
+                    categoriasFull.map(c => {
+                      const nombreCat = typeof c === 'string' ? c : (c.nombre || c.categoria || '');
+                      const esFijo = ['todos', 'otros'].includes(String(nombreCat).toLowerCase().trim());
+
+                      return (
+                        <div key={c.id || nombreCat} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', border: '1px solid var(--border)', borderRadius: '8px', backgroundColor: 'var(--surface, #f9fafb)' }}>
+                          <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text)' }}>{nombreCat}</span>
+
+                          {!esFijo && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (window.confirm(`¿Eliminar la categoría "${nombreCat}"? Sus productos pasarán automáticamente a "Otros".`)) {
+                                  try {
+                                    const targetUrl = serverUrl || 'http://localhost:3001';
+                                    await axios.delete(`${targetUrl}/api/categorias/${encodeURIComponent(nombreCat)}`);
+                                    setCatFiltro('Todos');
+                                    await cargarCatalogo();
+                                    if (socket && typeof socket.emit === 'function') {
+                                      socket.emit('catalogo_actualizado');
+                                    }
+                                    toast.success(`Categoría "${nombreCat}" eliminada`);
+                                  } catch (e) {
+                                    console.error(e);
+                                    toast.error("Error al eliminar la categoría");
+                                  }
+                                }
+                              }}
+                              style={{ background: '#FEE2E2', color: '#DC2626', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+                              title="Eliminar categoría"
+                            >
+                              🗑️ Eliminar
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setModalVisible(false)}
+                  style={{ marginTop: '10px', padding: '12px', backgroundColor: 'var(--surf3)', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+                >
+                  Cerrar Modal
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

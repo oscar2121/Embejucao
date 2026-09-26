@@ -319,22 +319,24 @@ app.get('/api/productos', (req, res) => {
         categoria: r.categoria || r.cat || 'Otros',
         cat: r.cat || r.categoria || 'Otros',
         disp: !!r.disp,
-        disponible: !!r.disp
+        disponible: !!r.disp,
+        grupo_reporte: r.grupo_reporte || 'comida'
       }))
     });
   });
 });
 
 app.post('/api/productos', (req, res) => {
-  const { id, cat, categoria, nombre, precio, desc, descripcion, emoji, disp, disponible, usuario, imagen } = req.body;
+  const { id, cat, categoria, nombre, precio, desc, descripcion, emoji, disp, disponible, usuario, imagen, grupo_reporte } = req.body;
   const dispVal = disp !== false && disponible !== false ? 1 : 0;
   const categoriaFinal = (categoria || cat || '').toString().trim() || 'Otros';
   const descFinal = desc || descripcion || '';
+  const grupoFinal = grupo_reporte || 'comida';
 
   if (id) {
     db.run(
-      `UPDATE productos SET cat=?, categoria=?, nombre=?, precio=?, desc=?, descripcion=?, emoji=?, disp=?, imagen=? WHERE id=?`,
-      [categoriaFinal, categoriaFinal, nombre, precio, descFinal, descFinal, emoji, dispVal, imagen, id],
+      `UPDATE productos SET cat=?, categoria=?, nombre=?, precio=?, desc=?, descripcion=?, emoji=?, disp=?, imagen=?, grupo_reporte=? WHERE id=?`,
+      [categoriaFinal, categoriaFinal, nombre, precio, descFinal, descFinal, emoji, dispVal, imagen, grupoFinal, id],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'producto_editado', `Producto modificado: ${nombre} ($${precio})`);
@@ -352,8 +354,8 @@ app.post('/api/productos', (req, res) => {
     );
   } else {
     db.run(
-      `INSERT INTO productos (cat, categoria, nombre, precio, desc, descripcion, emoji, disp, imagen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [categoriaFinal, categoriaFinal, nombre, precio, descFinal, descFinal, emoji, dispVal, imagen],
+      `INSERT INTO productos (cat, categoria, nombre, precio, desc, descripcion, emoji, disp, imagen, grupo_reporte) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [categoriaFinal, categoriaFinal, nombre, precio, descFinal, descFinal, emoji, dispVal, imagen, grupoFinal],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
         logAuditoria(usuario, 'producto_creado', `Nuevo producto agregado al catálogo: ${nombre} ($${precio})`);
@@ -373,13 +375,20 @@ app.post('/api/productos', (req, res) => {
 });
 
 app.put('/api/productos/:id', (req, res) => {
-  const { nombre, precio, cat, categoria, activo } = req.body;
+  const { nombre, precio, cat, categoria, activo, grupo_reporte } = req.body;
   const usuario = req.body.usuario || 'Admin';
   const catVal = categoria || cat;
   
   db.run(
-    `UPDATE productos SET nombre = COALESCE(?, nombre), precio = COALESCE(?, precio), cat = COALESCE(?, cat), categoria = COALESCE(?, categoria), disp = COALESCE(?, disp) WHERE id = ?`,
-    [nombre, precio, catVal, catVal, activo !== undefined ? activo : 1, req.params.id],
+    `UPDATE productos SET 
+      nombre = COALESCE(?, nombre), 
+      precio = COALESCE(?, precio), 
+      cat = COALESCE(?, cat), 
+      categoria = COALESCE(?, categoria), 
+      disp = COALESCE(?, disp),
+      grupo_reporte = COALESCE(?, grupo_reporte)
+     WHERE id = ?`,
+    [nombre, precio, catVal, catVal, activo !== undefined ? activo : 1, grupo_reporte || null, req.params.id],
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
       logAuditoria(usuario, 'producto_actualizado', `Producto modificado: ${nombre || req.params.id} ($${precio || 'Sin cambio'})`);

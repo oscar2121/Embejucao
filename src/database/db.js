@@ -327,6 +327,97 @@ db.serialize(() => {
   db.run(`ALTER TABLE pedidos ADD COLUMN mesero_id TEXT`, () => {});
   db.run(`ALTER TABLE pedidos ADD COLUMN abono_parcial REAL DEFAULT 0`, () => {});
   db.run(`ALTER TABLE productos ADD COLUMN imagen TEXT`, () => {});
+  db.run(`ALTER TABLE productos ADD COLUMN grupo_reporte TEXT DEFAULT 'comida'`, () => {});
+  db.run(`ALTER TABLE pedidos ADD COLUMN caja_sesion_id INTEGER`, () => {});
+
+  // Tabla detalles_pedidos para reportes de productividad
+  db.run(`
+    CREATE TABLE IF NOT EXISTS detalles_pedidos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pedido_id INTEGER,
+      producto_id INTEGER,
+      cantidad INTEGER DEFAULT 1,
+      precio_unitario REAL DEFAULT 0,
+      subtotal REAL DEFAULT 0,
+      nombre TEXT
+    )
+  `, () => {
+    // Backfill inicial de detalles_pedidos si está vacía
+    db.get(`SELECT COUNT(*) as count FROM detalles_pedidos`, (errC, rowC) => {
+      if (!errC && rowC && rowC.count === 0) {
+        db.all(`SELECT id, items FROM pedidos WHERE items IS NOT NULL AND TRIM(items) != ''`, [], (errP, pedidosList) => {
+          if (!errP && pedidosList && pedidosList.length > 0) {
+            db.all(`SELECT id, nombre FROM productos`, [], (errPr, prods) => {
+              const prodMap = new Map();
+              (prods || []).forEach(p => prodMap.set(p.nombre.toLowerCase().trim(), p.id));
+
+              const stmt = db.prepare(`INSERT INTO detalles_pedidos (pedido_id, producto_id, cantidad, precio_unitario, subtotal, nombre) VALUES (?, ?, ?, ?, ?, ?)`);
+              pedidosList.forEach(ped => {
+                try {
+                  let items = typeof ped.items === 'string' ? JSON.parse(ped.items) : ped.items;
+                  if (!Array.isArray(items)) return;
+                  const flatItems = [];
+                  items.forEach(it => {
+                    if (it && Array.isArray(it.items)) {
+                      it.items.forEach(sub => flatItems.push(sub));
+                    } else if (it) {
+                      flatItems.push(it);
+                    }
+                  });
+
+                  flatItems.forEach(it => {
+                    let prodId = it.producto_id || it.id;
+                    const itNom = (it.nombre || '').toLowerCase().trim();
+                    if (!prodId || isNaN(prodId)) {
+                      for (const [nom, pid] of prodMap.entries()) {
+                        if (itNom.startsWith(nom) || nom.startsWith(itNom)) {
+                          prodId = pid;
+                          break;
+                        }
+                      }
+                    }
+                    if (prodId) {
+                      const cant = Number(it.cantidad || 1);
+                      const precio = Number(it.precio || it.precio_unitario || 0);
+                      const subtotal = Number(it.subtotal || (cant * precio));
+                      stmt.run(ped.id, prodId, cant, precio, subtotal, it.nombre || '');
+                    }
+                  });
+                } catch (e) {}
+              });
+              stmt.finalize();
+            });
+          }
+        });
+      }
+    });
+  });
+
+  // Clasificación automática de base en 5 macro-grupos de productividad
+  db.run(`
+    UPDATE productos SET grupo_reporte = 'cervezas' 
+    WHERE LOWER(categoria) LIKE '%cerveza%' OR LOWER(nombre) LIKE '%cerveza%' OR LOWER(nombre) LIKE '%corona%' OR LOWER(nombre) LIKE '%club colombia%' OR LOWER(nombre) LIKE '%aguila%' OR LOWER(nombre) LIKE '%poker%'
+  `, () => {
+    db.run(`
+      UPDATE productos SET grupo_reporte = 'gaseosas_embotellados' 
+      WHERE LOWER(categoria) IN ('gaseosas', 'bebidas') OR LOWER(nombre) LIKE '%gaseosa%' OR LOWER(nombre) LIKE '%coca cola%' OR LOWER(nombre) LIKE '%postobon%' OR LOWER(nombre) LIKE '%agua%' OR LOWER(nombre) LIKE '%hit%' OR LOWER(nombre) LIKE '%red bull%'
+    `, () => {
+      db.run(`
+        UPDATE productos SET grupo_reporte = 'jugos_naturales' 
+        WHERE LOWER(categoria) LIKE '%jugo%' OR LOWER(nombre) LIKE '%jugo%' OR LOWER(nombre) LIKE '%limonada%'
+      `, () => {
+        db.run(`
+          UPDATE productos SET grupo_reporte = 'bebidas_calientes' 
+          WHERE LOWER(nombre) LIKE '%cafe%' OR LOWER(nombre) LIKE '%tinto%' OR LOWER(nombre) LIKE '%aromatica%' OR LOWER(nombre) LIKE '%chocolate%' OR LOWER(nombre) LIKE '%cappuccino%'
+        `, () => {
+          db.run(`
+            UPDATE productos SET grupo_reporte = 'comida' 
+            WHERE grupo_reporte IS NULL OR grupo_reporte NOT IN ('cervezas', 'gaseosas_embotellados', 'jugos_naturales', 'bebidas_calientes')
+          `);
+        });
+      });
+    });
+  });
 
   console.log('✅ Estructuras de tablas inicializadas de forma segura');
 

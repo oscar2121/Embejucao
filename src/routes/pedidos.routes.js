@@ -61,6 +61,45 @@ const recibirPedidoHandler = async (req, res) => {
       [uuid, mesa, tipo, itemsData, total, notas, fecha]
     );
 
+    // Sincronizar detalles_pedidos
+    try {
+      db.get('SELECT id FROM pedidos WHERE uuid = ?', [uuid], (errId, rowId) => {
+        if (!errId && rowId && rowId.id) {
+          const pedId = rowId.id;
+          const parsedItems = JSON.parse(itemsData || '[]');
+          if (Array.isArray(parsedItems) && parsedItems.length > 0) {
+            db.all('SELECT id, nombre FROM productos', [], (errPr, prods) => {
+              const prodMap = new Map();
+              (prods || []).forEach(p => prodMap.set(p.nombre.toLowerCase().trim(), p.id));
+              
+              db.run('DELETE FROM detalles_pedidos WHERE pedido_id = ?', [pedId], () => {
+                const stmtDP = db.prepare('INSERT INTO detalles_pedidos (pedido_id, producto_id, cantidad, precio_unitario, subtotal, nombre) VALUES (?, ?, ?, ?, ?, ?)');
+                parsedItems.forEach(it => {
+                  let pId = it.producto_id || it.id;
+                  const itNom = (it.nombre || '').toLowerCase().trim();
+                  if (!pId || isNaN(pId)) {
+                    for (const [nom, idMatch] of prodMap.entries()) {
+                      if (itNom.startsWith(nom) || nom.startsWith(itNom)) {
+                        pId = idMatch;
+                        break;
+                      }
+                    }
+                  }
+                  if (pId) {
+                    const cant = Number(it.cantidad || 1);
+                    const precio = Number(it.precio || it.precio_unitario || 0);
+                    const subtotal = Number(it.subtotal || (cant * precio));
+                    stmtDP.run(pedId, pId, cant, precio, subtotal, it.nombre || '');
+                  }
+                });
+                stmtDP.finalize();
+              });
+            });
+          }
+        }
+      });
+    } catch (eDet) {}
+
     // Notificar a Socket.io para que cocina y caja lo vean en tiempo real
     if (io) {
       const pedidoNormalizado = {
