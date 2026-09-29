@@ -4,12 +4,159 @@ const { db, dbAll, dbGet } = require('../database/db');
 const { logAuditoria, obtenerBalanceTurnoActivo } = require('../utils/helpers');
 const { getIO, emitirSincronizacionCompleta } = require('../utils/socket');
 
-// ─── SESIONES DE CAJA ───
+// GET - Estado Actual de Caja (Efectivo cobrado vs Pendiente en Mesas)
+router.get('/caja/estado-actual', async (req, res) => {
+  try {
+    const cobrados = await dbGet("SELECT SUM(total) as total FROM pedidos WHERE LOWER(estado) = 'cobrado' AND date(datetime(fecha), 'localtime') = date('now', 'localtime')");
+    const abiertos = await dbGet("SELECT SUM(total) as total FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') AND (pagado = 0 OR pagado IS NULL)");
+    const efectivoEnCaja = cobrados?.total || 0;
+    const pendienteEnMesas = abiertos?.total || 0;
+
+    res.json({
+      success: true,
+      efectivo_en_caja: efectivoEnCaja,
+      pendiente_en_mesas: pendienteEnMesas,
+      total_proyectado: efectivoEnCaja + pendienteEnMesas
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/pedidos/mesa/:mesa - Buscar el pedido activo de una mesa específica
+router.get('/pedidos/mesa/:mesa', async (req, res) => {
+  try {
+    const mesaNum = req.params.mesa;
+    // Buscar el pedido activo usando columna 'mesa' y estado 'activo'
+    const pedido = await dbGet(
+      "SELECT * FROM pedidos WHERE mesa = ? AND estado = 'activo' ORDER BY id DESC LIMIT 1",
+      [mesaNum]
+    );
+
+    if (!pedido) {
+      return res.status(404).json({ ok: false, mensaje: "No hay pedido activo" });
+    }
+
+    // Obtener detalles
+    const items = await dbAll(
+      "SELECT * FROM detalles_pedidos WHERE pedido_id = ?",
+      [pedido.id]
+    );
+
+    // Cálculo determinista del total (no depende de campos corruptos)
+    const totalCalculado = items.reduce((acc, curr) => {
+      const cant = Number(curr.cantidad) || 0;
+      const precio = Number(curr.precio_unitario || curr.precio) || 0;
+      return acc + (cant * precio);
+    }, 0);
+
+    // Contrato de salida garantizado
+    return res.json({
+      ok: true,
+      pedido: {
+        id: pedido.id,
+        mesa: pedido.mesa,
+        estado: pedido.estado,
+        total: totalCalculado,
+        items: items
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 
 // GET - Sesión Activa
 router.get('/caja/sesion-activa', async (req, res) => {
   const sesionActiva = await obtenerBalanceTurnoActivo();
   res.json({ sesion: sesionActiva });
+});
+
+// GET - Productividad en Vivo del Turno Activo (5 Macro-Grupos)
+router.get('/caja/productividad-en-vivo', async (req, res) => {
+  try {
+    const sesionActiva = await obtenerBalanceTurnoActivo();
+    let whereClause = "ped.estado = 'cobrado'";
+    const params = [];
+
+    if (sesionActiva && sesionActiva.id) {
+      whereClause += " AND ped.caja_sesion_id = ?";
+      params.push(sesionActiva.id);
+    } else {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date('now', 'localtime')";
+    }
+
+    const query = `
+      SELECT 
+        COALESCE(p.grupo_reporte, 'comida') AS grupo,
+        SUM(COALESCE(dp.cantidad, 1)) AS unidades_vendidas,
+        SUM(COALESCE(dp.precio_unitario * dp.cantidad, ped.total, 0)) AS total_dinero
+      FROM pedidos ped
+      LEFT JOIN detalles_pedidos dp ON dp.pedido_id = ped.id
+      LEFT JOIN productos p ON p.id = dp.producto_id
+      WHERE ${whereClause}
+      GROUP BY grupo;
+    `;
+    let data = await dbAll(query, params);
+
+    // Fallback de compatibilidad con ventas_detalle
+    if (!data || data.length === 0) {
+      let whereVentas = "1=1";
+      const paramsVentas = [];
+      if (sesionActiva && sesionActiva.id) {
+        whereVentas += " AND v.sesion_id = ?";
+        paramsVentas.push(sesionActiva.id);
+      } else {
+        whereVentas += " AND date(datetime(v.fecha), 'localtime') = date('now', 'localtime')";
+      }
+      const queryVentas = `
+        SELECT 
+          COALESCE(p.grupo_reporte, 'comida') AS grupo,
+          SUM(vd.cantidad) AS unidades_vendidas,
+          SUM(vd.precio_unitario * vd.cantidad) AS total_dinero
+        FROM ventas v
+        LEFT JOIN ventas_detalle vd ON vd.venta_id = v.id
+        LEFT JOIN productos p ON p.id = vd.producto_id
+        WHERE ${whereVentas}
+        GROUP BY grupo;
+      `;
+      const fallbackData = await dbAll(queryVentas, paramsVentas);
+      if (fallbackData && fallbackData.length > 0) {
+        data = fallbackData;
+      }
+    }
+
+    const mapa = {
+      comida: 0,
+      jugos_naturales: 0,
+      cervezas: 0,
+      gaseosas_embotellados: 0,
+      bebidas_calientes: 0,
+      total_turno: 0
+    };
+
+    (data || []).forEach(r => {
+      const g = (r.grupo || 'comida').toLowerCase();
+      const val = Number(r.total_dinero || 0);
+      if (mapa.hasOwnProperty(g)) {
+        mapa[g] += val;
+      } else {
+        mapa.comida += val;
+      }
+      mapa.total_turno += val;
+    });
+
+    res.json({
+      success: true,
+      sesion_activa: sesionActiva || null,
+      productividad: mapa,
+      detalles: data || []
+    });
+  } catch (error) {
+    console.error("Error al obtener productividad en vivo:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // GET - Reportes de Productividad por Sesión o Fecha (5 Macro-Grupos)
@@ -23,18 +170,18 @@ router.get('/reportes/productividad', async (req, res) => {
       whereClause += " AND ped.caja_sesion_id = ?";
       params.push(sesion_id);
     } else if (fecha) {
-      whereClause += " AND DATE(ped.fecha) = DATE(?)";
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date(?)";
       params.push(fecha);
     }
 
     const query = `
       SELECT 
         COALESCE(p.grupo_reporte, 'comida') AS grupo,
-        SUM(dp.cantidad) AS unidades_vendidas,
-        SUM(dp.precio_unitario * dp.cantidad) AS total_dinero
-      FROM detalles_pedidos dp
-      JOIN productos p ON p.id = dp.producto_id
-      JOIN pedidos ped ON ped.id = dp.pedido_id
+        SUM(COALESCE(dp.cantidad, 1)) AS unidades_vendidas,
+        SUM(COALESCE(dp.precio_unitario * dp.cantidad, ped.total, 0)) AS total_dinero
+      FROM pedidos ped
+      LEFT JOIN detalles_pedidos dp ON dp.pedido_id = ped.id
+      LEFT JOIN productos p ON p.id = dp.producto_id
       WHERE ${whereClause}
       GROUP BY grupo;
     `;
@@ -48,7 +195,7 @@ router.get('/reportes/productividad', async (req, res) => {
         whereVentas += " AND v.sesion_id = ?";
         paramsVentas.push(sesion_id);
       } else if (fecha) {
-        whereVentas += " AND DATE(v.fecha) = DATE(?)";
+        whereVentas += " AND date(datetime(v.fecha), 'localtime') = date(?)";
         paramsVentas.push(fecha);
       }
       const queryVentas = `
@@ -56,9 +203,9 @@ router.get('/reportes/productividad', async (req, res) => {
           COALESCE(p.grupo_reporte, 'comida') AS grupo,
           SUM(vd.cantidad) AS unidades_vendidas,
           SUM(vd.precio_unitario * vd.cantidad) AS total_dinero
-        FROM ventas_detalle vd
-        JOIN productos p ON p.id = vd.producto_id
-        JOIN ventas v ON v.id = vd.venta_id
+        FROM ventas v
+        LEFT JOIN ventas_detalle vd ON vd.venta_id = v.id
+        LEFT JOIN productos p ON p.id = vd.producto_id
         WHERE ${whereVentas}
         GROUP BY grupo;
       `;
@@ -70,6 +217,116 @@ router.get('/reportes/productividad', async (req, res) => {
 
     res.json(data || []);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET - Historial de Productividad Agrupado por Rango de Fechas
+router.get('/reportes/productividad/historial', async (req, res) => {
+  const { fecha_inicio, fecha_fin, rango } = req.query;
+  try {
+    let whereClause = "ped.estado = 'cobrado'";
+    const params = [];
+
+    if (fecha_inicio && fecha_fin) {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') BETWEEN date(?) AND date(?)";
+      params.push(fecha_inicio, fecha_fin);
+    } else if (fecha_inicio) {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date(?)";
+      params.push(fecha_inicio);
+    } else if (rango === 'todo') {
+      // Sin filtro de fecha para traer todo el historial
+    } else if (rango === 'mes' || rango === 'este_mes') {
+      whereClause += " AND strftime('%Y-%m', datetime(ped.fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+    } else if (rango === 'semana' || rango === 'esta_semana') {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') >= date('now', '-6 days', 'localtime')";
+    } else if (rango === 'hoy') {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date('now', 'localtime')";
+    } else if (rango === 'ayer') {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date('now', '-1 day', 'localtime')";
+    } else {
+      whereClause += " AND strftime('%Y-%m', datetime(ped.fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+    }
+
+    const query = `
+      SELECT 
+        date(datetime(ped.fecha), 'localtime') AS fecha,
+        COALESCE(p.grupo_reporte, 'comida') AS grupo,
+        SUM(COALESCE(dp.cantidad, 1)) AS unidades_vendidas,
+        SUM(COALESCE(dp.precio_unitario * dp.cantidad, ped.total, 0)) AS total_dinero
+      FROM pedidos ped
+      LEFT JOIN detalles_pedidos dp ON dp.pedido_id = ped.id
+      LEFT JOIN productos p ON p.id = dp.producto_id
+      WHERE ${whereClause}
+      GROUP BY date(datetime(ped.fecha), 'localtime'), grupo
+      ORDER BY date(datetime(ped.fecha), 'localtime') DESC;
+    `;
+
+    let filas = await dbAll(query, params);
+
+    // Fallback de compatibilidad con ventas_detalle
+    if (!filas || filas.length === 0) {
+      let whereVentas = "1=1";
+      const paramsVentas = [];
+      if (rango === 'mes') {
+        whereVentas += " AND strftime('%Y-%m', datetime(v.fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+      } else if (fecha_inicio && fecha_fin) {
+        whereVentas += " AND date(datetime(v.fecha), 'localtime') BETWEEN date(?) AND date(?)";
+        paramsVentas.push(fecha_inicio, fecha_fin);
+      } else if (fecha_inicio) {
+        whereVentas += " AND date(datetime(v.fecha), 'localtime') = date(?)";
+        paramsVentas.push(fecha_inicio);
+      } else {
+        whereVentas += " AND strftime('%Y-%m', datetime(v.fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+      }
+      const queryVentas = `
+        SELECT 
+          date(datetime(v.fecha), 'localtime') AS fecha,
+          COALESCE(p.grupo_reporte, 'comida') AS grupo,
+          SUM(COALESCE(vd.cantidad, 1)) AS unidades_vendidas,
+          SUM(COALESCE(vd.precio_unitario * vd.cantidad, v.total, 0)) AS total_dinero
+        FROM ventas v
+        LEFT JOIN ventas_detalle vd ON vd.venta_id = v.id
+        LEFT JOIN productos p ON p.id = vd.producto_id
+        WHERE ${whereVentas}
+        GROUP BY date(datetime(v.fecha), 'localtime'), grupo
+        ORDER BY date(datetime(v.fecha), 'localtime') DESC;
+      `;
+      const fallbackFilas = await dbAll(queryVentas, paramsVentas);
+      if (fallbackFilas && fallbackFilas.length > 0) {
+        filas = fallbackFilas;
+      }
+    }
+
+    // Reorganizar en formato de tabla cronológica agrupada por día
+    const agrupadoPorDia = {};
+
+    (filas || []).forEach(f => {
+      if (!f.fecha) return;
+      if (!agrupadoPorDia[f.fecha]) {
+        agrupadoPorDia[f.fecha] = {
+          fecha: f.fecha,
+          comida: 0,
+          jugos_naturales: 0,
+          cervezas: 0,
+          gaseosas_embotellados: 0,
+          bebidas_calientes: 0,
+          total_dia: 0
+        };
+      }
+      const monto = Number(f.total_dinero) || 0;
+      const g = (f.grupo || 'comida').toLowerCase();
+      if (agrupadoPorDia[f.fecha].hasOwnProperty(g)) {
+        agrupadoPorDia[f.fecha][g] += monto;
+      } else {
+        agrupadoPorDia[f.fecha].comida += monto;
+      }
+      agrupadoPorDia[f.fecha].total_dia += monto;
+    });
+
+    res.json(Object.values(agrupadoPorDia));
+  } catch (error) {
+    console.error("Error historial productividad:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -288,85 +545,222 @@ router.get('/pedidos/fiado', (req, res) => {
   );
 });
 
-// POST - Registrar abono a créditos/fiados con sistema FIFO
-router.post('/fiados/abono', (req, res) => {
-  const io = req.io || getIO();
-  const { deudor, monto, metodo_pago, sesion_id } = req.body;
+// GET - Historial de Abonos
+router.get('/fiados/abonos', (req, res) => {
+  const deudor = req.query.deudor || req.query.cliente_id;
+  let sql = `SELECT * FROM abonos_credito ORDER BY id DESC LIMIT 100`;
+  let params = [];
+  if (deudor) {
+    sql = `SELECT * FROM abonos_credito WHERE LOWER(cliente_id) = LOWER(?) OR LOWER(deudor) = LOWER(?) ORDER BY id DESC LIMIT 100`;
+    params = [deudor, deudor];
+  }
+  db.all(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, abonos: rows || [] });
+  });
+});
+
+router.get('/creditos/abonos', (req, res) => {
+  const deudor = req.query.deudor || req.query.cliente_id;
+  let sql = `SELECT * FROM abonos_credito ORDER BY id DESC LIMIT 100`;
+  let params = [];
+  if (deudor) {
+    sql = `SELECT * FROM abonos_credito WHERE LOWER(cliente_id) = LOWER(?) OR LOWER(deudor) = LOWER(?) ORDER BY id DESC LIMIT 100`;
+    params = [deudor, deudor];
+  }
+  db.all(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, abonos: rows || [] });
+  });
+});
+
+// POST - Endpoint de Abonos / Créditos (actualización de saldo + socket sync)
+router.post('/creditos/abono', async (req, res) => {
+  const io = req.io || (typeof getIO === 'function' ? getIO() : null);
+  const { cliente_id, deudor, monto, metodo_pago, sesion_id } = req.body;
+  const targetCliente = String(cliente_id || deudor || '').trim();
   const montoAbono = Number(monto);
 
-  if (!deudor || !montoAbono || montoAbono <= 0) {
-    return res.status(400).json({ error: 'Deudor y monto válido son requeridos.' });
+  if (!targetCliente || isNaN(montoAbono) || montoAbono <= 0) {
+    return res.status(400).json({ error: 'Cliente y monto válido son requeridos.' });
   }
 
-  // Obtener todos los pedidos fiados del deudor ordenados del más antiguo al más reciente (FIFO)
-  const sqlGet = `SELECT * FROM pedidos WHERE TRIM(LOWER(deudor)) = TRIM(LOWER(?)) AND estado = 'fiado' ORDER BY id ASC`;
-  
-  db.all(sqlGet, [deudor], (err, ordenes) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!ordenes || ordenes.length === 0) {
-      return res.status(404).json({ error: 'No se encontraron deudas pendientes para este deudor.' });
-    }
+  const fechaHoy = new Date().toISOString();
 
-    let restante = montoAbono;
+  try {
+    db.run(`CREATE TABLE IF NOT EXISTS abonos_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente_id TEXT, deudor TEXT, monto REAL, metodo_pago TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    db.run(`CREATE TABLE IF NOT EXISTS clientes_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE, saldo_pendiente REAL DEFAULT 0, ultimo_abono REAL DEFAULT 0, fecha_ultimo_abono TEXT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS abonos_fiados (id INTEGER PRIMARY KEY AUTOINCREMENT, deudor TEXT, monto REAL, metodo_pago TEXT, pedido_id INTEGER, sesion_id INTEGER, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    db.run(`ALTER TABLE pedidos ADD COLUMN abono_parcial REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE pedidos ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE pedidos ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
+    db.run(`ALTER TABLE pedidos ADD COLUMN metodo_pago_abono TEXT`, () => {});
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
 
-    db.serialize(() => {
-      db.run('BEGIN TRANSACTION');
+    db.run(
+      `INSERT INTO abonos_credito (cliente_id, deudor, monto, metodo_pago, fecha) VALUES (?, ?, ?, ?, datetime('now', 'localtime'))`,
+      [targetCliente, targetCliente, montoAbono, metodo_pago || 'Efectivo']
+    );
+    db.run(
+      `UPDATE clientes_credito SET saldo_pendiente = MAX(0, saldo_pendiente - ?), ultimo_abono = ?, fecha_ultimo_abono = ? WHERE LOWER(nombre) = LOWER(?)`,
+      [montoAbono, montoAbono, fechaHoy, targetCliente.toLowerCase()]
+    );
 
-      for (const ord of ordenes) {
-        if (restante <= 0) break;
+    db.all(
+      `SELECT * FROM pedidos WHERE (TRIM(LOWER(deudor)) = TRIM(LOWER(?)) OR id = ?) AND LOWER(estado) IN ('fiado', 'credito') ORDER BY id ASC`,
+      [targetCliente, targetCliente],
+      (err, ordenes) => {
+        if (!err && Array.isArray(ordenes) && ordenes.length > 0) {
+          let restante = montoAbono;
+          for (const ord of ordenes) {
+            if (restante <= 0) break;
+            let totalOrd = Number(ord.total || 0);
+            if (totalOrd <= 0 && ord.items) {
+              try {
+                const items = typeof ord.items === 'string' ? JSON.parse(ord.items) : (ord.items || []);
+                totalOrd = items.reduce((sum, item) => sum + (Number(item.precio || 0) * Number(item.cantidad || 1)), 0);
+              } catch (e) {}
+            }
+            const abonoPrev = Number(ord.abono_parcial || 0);
+            const saldoOrd = Math.max(0, totalOrd - abonoPrev);
+            if (saldoOrd <= 0) continue;
 
-        let totalPedido = 0;
-        try {
-          const items = typeof ord.items === 'string' ? JSON.parse(ord.items) : (ord.items || []);
-          totalPedido = items.reduce((sum, item) => {
-            const adicTotal = (item.adicionales || []).reduce((aSum, a) => aSum + (Number(a.precio || 0) * (a.cantidad || 1)), 0);
-            return sum + ((Number(item.precio || 0) + adicTotal) * Number(item.cantidad || 1));
-          }, 0);
-        } catch (e) {
-          totalPedido = Number(ord.total || 0);
+            if (restante >= saldoOrd) {
+              restante -= saldoOrd;
+              db.run(`UPDATE pedidos SET estado = 'cobrado', pagado = 1, abono_parcial = ?, ultimo_abono = ?, fecha_ultimo_abono = ?, metodo_pago_abono = ? WHERE id = ?`, [totalOrd, saldoOrd, fechaHoy, metodo_pago || 'Efectivo', ord.id]);
+              db.run(`INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`, [targetCliente, saldoOrd, metodo_pago || 'Efectivo', ord.id, sesion_id || null]);
+            } else {
+              const nuevoAbono = abonoPrev + restante;
+              db.run(`UPDATE pedidos SET abono_parcial = ?, ultimo_abono = ?, fecha_ultimo_abono = ?, metodo_pago_abono = ? WHERE id = ?`, [nuevoAbono, restante, fechaHoy, metodo_pago || 'Efectivo', ord.id]);
+              db.run(`INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`, [targetCliente, restante, metodo_pago || 'Efectivo', ord.id, sesion_id || null]);
+              restante = 0;
+            }
+          }
         }
 
-        const abonoPrevio = Number(ord.abono_parcial || 0);
-        const saldoPendiente = Math.max(0, totalPedido - abonoPrevio);
-
-        if (saldoPendiente <= 0) continue;
-
-        if (restante >= saldoPendiente) {
-          // El abono liquida completamente esta orden antigua -> pasa a 'cobrado'
-          restante -= saldoPendiente;
-          db.run(
-            `UPDATE pedidos SET estado = 'cobrado', pagado = 1, abono_parcial = ? WHERE id = ?`,
-            [totalPedido, ord.id]
-          );
-          // Registrar en abonos_fiados
-          db.run(
-            `INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`,
-            [deudor, saldoPendiente, metodo_pago || 'Efectivo', ord.id, sesion_id || null]
-          );
-        } else {
-          // El abono cubre solo una parte de esta orden
-          const nuevoAbono = abonoPrevio + restante;
-          db.run(
-            `UPDATE pedidos SET abono_parcial = ? WHERE id = ?`,
-            [nuevoAbono, ord.id]
-          );
-          db.run(
-            `INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`,
-            [deudor, restante, metodo_pago || 'Efectivo', ord.id, sesion_id || null]
-          );
-          restante = 0;
-        }
-      }
-
-      db.run('COMMIT', (commitErr) => {
-        if (commitErr) return res.status(500).json({ error: commitErr.message });
         if (io) {
+          io.emit('credito_actualizado');
+          io.emit('caja_actualizada');
           io.emit('pedidos_actualizados');
           io.emit('actualizar_pedidos');
           io.emit('dashboard:actualizado');
           io.emit('caja:estado');
         }
-        return res.json({ success: true, deudor, montoAbonado: montoAbono, remanenteNoAplicado: restante });
+
+        return res.json({ success: true, deudor: targetCliente, montoAbonado: montoAbono, mensaje: "Abono registrado con éxito" });
+      }
+    );
+  } catch (err) {
+    console.error("Error al registrar abono a crédito:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST - Registrar abono a créditos/fiados con sistema FIFO
+router.post('/fiados/abono', (req, res) => {
+  const io = req.io || (typeof getIO === 'function' ? getIO() : null);
+  const { deudor, cliente_id, monto, metodo_pago, sesion_id } = req.body;
+  const targetDeudor = String(deudor || cliente_id || '').trim();
+  const montoAbono = Number(monto);
+
+  if (!targetDeudor || isNaN(montoAbono) || montoAbono <= 0) {
+    return res.status(400).json({ error: 'Deudor y monto válido son requeridos.' });
+  }
+
+  const fechaHoy = new Date().toISOString();
+
+  db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS abonos_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente_id TEXT, deudor TEXT, monto REAL, metodo_pago TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    db.run(`CREATE TABLE IF NOT EXISTS clientes_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE, saldo_pendiente REAL DEFAULT 0, ultimo_abono REAL DEFAULT 0, fecha_ultimo_abono TEXT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS abonos_fiados (id INTEGER PRIMARY KEY AUTOINCREMENT, deudor TEXT, monto REAL, metodo_pago TEXT, pedido_id INTEGER, sesion_id INTEGER, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    db.run(`ALTER TABLE pedidos ADD COLUMN abono_parcial REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE pedidos ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE pedidos ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
+    db.run(`ALTER TABLE pedidos ADD COLUMN metodo_pago_abono TEXT`, () => {});
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
+
+    db.run(
+      `INSERT INTO abonos_credito (cliente_id, deudor, monto, metodo_pago, fecha) VALUES (?, ?, ?, ?, datetime('now', 'localtime'))`,
+      [targetDeudor, targetDeudor, montoAbono, metodo_pago || 'Efectivo'],
+      (err) => {
+        if (err) console.error("Aviso al registrar abono_credito:", err.message);
+      }
+    );
+
+    db.run(
+      `UPDATE clientes_credito SET saldo_pendiente = MAX(0, saldo_pendiente - ?), ultimo_abono = ?, fecha_ultimo_abono = ? WHERE LOWER(nombre) = LOWER(?)`,
+      [montoAbono, montoAbono, fechaHoy, targetDeudor.toLowerCase()],
+      (err) => {
+        if (err) console.error("Aviso al actualizar clientes_credito:", err.message);
+      }
+    );
+
+    const sqlGet = `SELECT * FROM pedidos WHERE (TRIM(LOWER(deudor)) = TRIM(LOWER(?)) OR id = ?) AND LOWER(estado) IN ('fiado', 'credito') ORDER BY id ASC`;
+    
+    db.all(sqlGet, [targetDeudor, targetDeudor], (err, ordenes) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      let restante = montoAbono;
+      db.run('BEGIN TRANSACTION');
+
+      if (Array.isArray(ordenes) && ordenes.length > 0) {
+        for (const ord of ordenes) {
+          if (restante <= 0) break;
+
+          let totalPedido = Number(ord.total || 0);
+          if (totalPedido <= 0 && ord.items) {
+            try {
+              const items = typeof ord.items === 'string' ? JSON.parse(ord.items) : (ord.items || []);
+              totalPedido = items.reduce((sum, item) => {
+                const adicTotal = (item.adicionales || []).reduce((aSum, a) => aSum + (Number(a.precio || 0) * (a.cantidad || 1)), 0);
+                return sum + ((Number(item.precio || 0) + adicTotal) * Number(item.cantidad || 1));
+              }, 0);
+            } catch (e) {}
+          }
+
+          const abonoPrevio = Number(ord.abono_parcial || 0);
+          const saldoPendiente = Math.max(0, totalPedido - abonoPrevio);
+
+          if (saldoPendiente <= 0) continue;
+
+          if (restante >= saldoPendiente) {
+            restante -= saldoPendiente;
+            db.run(
+              `UPDATE pedidos SET estado = 'cobrado', pagado = 1, abono_parcial = ?, ultimo_abono = ?, fecha_ultimo_abono = ?, metodo_pago_abono = ? WHERE id = ?`,
+              [totalPedido, saldoPendiente, fechaHoy, metodo_pago || 'Efectivo', ord.id]
+            );
+            db.run(
+              `INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`,
+              [targetDeudor, saldoPendiente, metodo_pago || 'Efectivo', ord.id, sesion_id || null]
+            );
+          } else {
+            const nuevoAbono = abonoPrevio + restante;
+            db.run(
+              `UPDATE pedidos SET abono_parcial = ?, ultimo_abono = ?, fecha_ultimo_abono = ?, metodo_pago_abono = ? WHERE id = ?`,
+              [nuevoAbono, restante, fechaHoy, metodo_pago || 'Efectivo', ord.id]
+            );
+            db.run(
+              `INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`,
+              [targetDeudor, restante, metodo_pago || 'Efectivo', ord.id, sesion_id || null]
+            );
+            restante = 0;
+          }
+        }
+      }
+
+      db.run('COMMIT', (commitErr) => {
+        if (commitErr) console.error("Commit abono aviso:", commitErr.message);
+        if (io) {
+          io.emit('credito_actualizado');
+          io.emit('caja_actualizada');
+          io.emit('pedidos_actualizados');
+          io.emit('actualizar_pedidos');
+          io.emit('dashboard:actualizado');
+          io.emit('caja:estado');
+        }
+        return res.json({ success: true, deudor: targetDeudor, montoAbonado: montoAbono, remanenteNoAplicado: restante, mensaje: 'Abono registrado correctamente' });
       });
     });
   });
@@ -444,7 +838,7 @@ router.put('/pedidos/:uuid/fiado', (req, res) => {
 // POST - Registrar Venta Permanente con Detalle
 router.post('/ventas', (req, res) => {
   const io = req.io || getIO();
-  const { fecha, tipo_origen, mesa, total, metodo_pago, sesion_id, detalles, usuario, deudor, fecha_fiado, monto_efectivo, monto_transferencia } = req.body;
+  const { fecha, tipo_origen, mesa, total, metodo_pago, sesion_id, detalles, usuario, deudor, fecha_fiado, monto_efectivo, monto_transferencia, pedido_id } = req.body;
   const ahora = fecha || new Date().toISOString();
 
   const execInsert = (monto, metodo, det) => {
@@ -496,6 +890,17 @@ router.post('/ventas', (req, res) => {
 
   db.serialize(() => {
     const liberarMesaYCerrarPedidos = () => {
+      if (pedido_id) {
+        db.run(
+          `UPDATE pedidos SET estado = 'cobrado', pagado = 1, caja_sesion_id = ? WHERE id = ? OR uuid = ?`,
+          [sesion_id || null, pedido_id, pedido_id],
+          () => {
+            if (io) io.emit('pedidos_actualizados');
+            emitirSincronizacionCompleta();
+          }
+        );
+      }
+
       if (tipo_origen === 'Mesa' || (mesa && !String(mesa).toLowerCase().includes('deuda'))) {
         const mesaNum = String(mesa).replace(/\D/g, '');
         if (mesaNum) {
@@ -505,16 +910,17 @@ router.post('/ventas', (req, res) => {
             });
           });
           db.run(
-            `UPDATE pedidos SET estado = 'cobrado', pagado = 1, caja_sesion_id = ? WHERE (mesa = ? OR mesa = ? OR mesa_id = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
-            [sesion_id || null, mesaNum, `Mesa ${mesaNum}`, mesaNum],
+            `UPDATE pedidos SET estado = 'cobrado', pagado = 1, caja_sesion_id = ? WHERE (mesa = ? OR mesa = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
+            [sesion_id || null, mesaNum, `Mesa ${mesaNum}`],
+
             () => {
               if (io) io.emit('pedidos_actualizados');
               emitirSincronizacionCompleta();
 
               // Asegurar vinculación en detalles_pedidos
               db.all(
-                `SELECT id FROM pedidos WHERE (mesa = ? OR mesa = ? OR mesa_id = ?) AND estado = 'cobrado' ORDER BY id DESC LIMIT 1`,
-                [mesaNum, `Mesa ${mesaNum}`, mesaNum],
+                `SELECT id FROM pedidos WHERE (mesa = ? OR mesa = ?) AND estado = 'cobrado' ORDER BY id DESC LIMIT 1`,
+                [mesaNum, `Mesa ${mesaNum}`],
                 (errP, pRows) => {
                   if (!errP && pRows && pRows.length > 0 && Array.isArray(detalles) && detalles.length > 0) {
                     const targetPedId = pRows[0].id;

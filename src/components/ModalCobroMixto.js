@@ -33,10 +33,13 @@ export default function ModalCobroMixto({
   if (!pedidoSel) return null;
 
   // Cálculos dinámicos seguros en render
+  const totalNum = Number(totalCuenta || pedidoSel?.total || 0);
   const efectivoNum = Number(efectivoMixto) || 0;
-  const totalNum = Number(totalCuenta) || 0;
   const restanteTransferencia = Math.max(0, totalNum - efectivoNum);
-  const devueltaMixto = Math.max(0, efectivoNum - totalNum);
+  const errorEfectivoMixto = (metodoPago === 'mixto' && efectivoNum > totalNum) 
+    ? 'El efectivo no puede ser mayor al total' 
+    : '';
+  const botonConfirmarDeshabilitado = metodoPago === 'mixto' && (efectivoNum <= 0 || efectivoNum > totalNum);
 
   // Cálculo de devuelta para efectivo normal
   const recibidoNum = Number(efectivoEntregado) || 0;
@@ -148,27 +151,24 @@ export default function ModalCobroMixto({
               <View style={{ marginTop: 14, paddingBottom: 10 }}>
                 <Text style={{ fontSize: 13, fontWeight: '700', color: C.text2, marginBottom: 8 }}>Efectivo a recibir:</Text>
                 <TextInput
-                  style={[s.formInput, { fontSize: 18, fontWeight: 'bold' }]}
+                  style={[s.formInput, { fontSize: 18, fontWeight: 'bold' }, Boolean(errorEfectivoMixto) && { borderColor: C.red, borderWidth: 2 }]}
                   placeholder="Ej. 20000"
                   placeholderTextColor={C.text3}
                   keyboardType="numeric"
                   value={efectivoMixto ? Number(efectivoMixto).toLocaleString('es-CO') : ''}
                   onChangeText={handleCambioEfectivo}
                 />
+                {Boolean(errorEfectivoMixto) && (
+                  <Text style={{ color: C.red, fontSize: 13, fontWeight: '700', marginTop: 6 }}>
+                    ⚠️ {errorEfectivoMixto}
+                  </Text>
+                )}
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, padding: 12, backgroundColor: C.surf3, borderRadius: 8 }}>
                   <Text style={{ fontSize: 14, color: C.text, fontWeight: '600' }}>Restante por Transferencia:</Text>
                   <Text style={{ fontSize: 16, color: C.brand, fontWeight: '800' }}>
                     ${restanteTransferencia.toLocaleString('es-CO')}
                   </Text>
                 </View>
-                {devueltaMixto > 0 && (
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, padding: 12, backgroundColor: '#DCFCE7', borderRadius: 8 }}>
-                    <Text style={{ fontSize: 14, color: '#166534', fontWeight: '600' }}>Devuelta en Efectivo:</Text>
-                    <Text style={{ fontSize: 16, color: '#166534', fontWeight: '800' }}>
-                      ${devueltaMixto.toLocaleString('es-CO')}
-                    </Text>
-                  </View>
-                )}
               </View>
             )}
 
@@ -240,8 +240,12 @@ export default function ModalCobroMixto({
                 <Text style={{ color: C.text, fontWeight: '700' }}>Cancelar</Text>
               </TouchableOpacity>
               <TouchableOpacity
+                disabled={botonConfirmarDeshabilitado}
                 onPress={onConfirmar}
-                style={{ flex: 1, padding: 12, borderRadius: 8, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center' }}
+                style={[
+                  { flex: 1, padding: 12, borderRadius: 8, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center' },
+                  botonConfirmarDeshabilitado && { backgroundColor: '#94a3b8', opacity: 0.6 }
+                ]}
               >
                 <Text style={{ color: 'white', fontWeight: '700' }}>Confirmar</Text>
               </TouchableOpacity>

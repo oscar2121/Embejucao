@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet, TextInput, SafeAreaView,
   StatusBar, Alert, Animated, FlatList, Modal, Switch, BackHandler, Linking,
-  Vibration, AppState, Image, Dimensions, Keyboard
+  Vibration, AppState, Image, Dimensions, Keyboard, ActivityIndicator
 } from 'react-native';
 import { PieChart, LineChart, BarChart } from 'react-native-chart-kit';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -250,6 +250,7 @@ const CATEGORIAS = [
   { id: 7, nombre: " Limonadas" },
   { id: 8, nombre: " Bebidas / Cervezas" },
   { id: 9, nombre: "☕ Bebidas Calientes" },
+  { id: 10, nombre: "🍟 Adicionales" },
 ];
 
 const PRODUCTOS_INICIAL = [
@@ -333,12 +334,22 @@ const mapFiados = (fiadosList) => {
         ...f,
         uuids: [f.uuid],
         ordenes_historial: [...history],
-        items: [...history]
+        items: [...history],
+        abono_parcial: Number(f.abono_parcial || 0),
+        ultimo_abono: Number(f.ultimo_abono || 0),
+        fecha_ultimo_abono: f.fecha_ultimo_abono || '',
+        metodo_pago_abono: f.metodo_pago_abono || ''
       };
     } else {
       if (f.uuid) grouped[key].uuids.push(f.uuid);
       grouped[key].ordenes_historial.push(...history);
       grouped[key].items.push(...history);
+      grouped[key].abono_parcial = (Number(grouped[key].abono_parcial) || 0) + Number(f.abono_parcial || 0);
+      if (f.ultimo_abono && Number(f.ultimo_abono) > 0) {
+        grouped[key].ultimo_abono = Number(f.ultimo_abono);
+        grouped[key].fecha_ultimo_abono = f.fecha_ultimo_abono;
+        grouped[key].metodo_pago_abono = f.metodo_pago_abono;
+      }
     }
   });
 
@@ -460,6 +471,7 @@ export default function App() {
   const [baseMesas, setBaseMesas] = useState([]);
   const [mesas, setMesas] = useState([]);
   const [productos, setProductos] = useState(PRODUCTOS_INICIAL);
+  const [categorias, setCategorias] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [fiados, setFiados] = useState([]);
   const [clientesGlobales, setClientesGlobales] = useState([]);
@@ -471,7 +483,11 @@ export default function App() {
   const [dashboardRango, setDashboardRango] = useState('hoy');
   const [dashboardData, setDashboardData] = useState({ ventas: 0, gastos: 0, balance: 0, gastosPorCategoria: [], ultimosGastos: [] });
   const [modalGastoVisible, setModalGastoVisible] = useState(false);
+  const [grupoGasto, setGrupoGasto] = useState('comida');
+  const [montoGasto, setMontoGasto] = useState('');
+  const [metodoGasto, setMetodoGasto] = useState('efectivo');
   const [formGasto, setFormGasto] = useState({ descripcion: '', categoria: 'Proveedores', valor: '' });
+  const [limpiandoFantasmasMovil, setLimpiandoFantasmasMovil] = useState(false);
 
   // Estados y refs para Socket.io y alertas sonoras nativas
   const [customSoundUri, setCustomSoundUri] = useState(null);
@@ -615,6 +631,7 @@ export default function App() {
 
   // Estados para modal de abono a créditos / fiados
   const [abonoModalVisible, setAbonoModalVisible] = useState(false);
+  const [abonoSeleccionado, setAbonoSeleccionado] = useState(null);
   const [montoAbono, setMontoAbono] = useState('');
   const [metodoAbono, setMetodoAbono] = useState('Efectivo');
   const [cargandoAbono, setCargandoAbono] = useState(false);
@@ -763,7 +780,18 @@ export default function App() {
 
     // Recibir actualización de mesas
     socketRef.current.on('mesas_actualizadas', (nuevasMesas) => {
-      setBaseMesas(nuevasMesas);
+      if (Array.isArray(nuevasMesas) && nuevasMesas.length > 0) {
+        setBaseMesas(nuevasMesas);
+      }
+      sincronizar();
+    });
+
+    socketRef.current.on('credito_actualizado', () => {
+      sincronizar();
+    });
+
+    socketRef.current.on('caja_actualizada', () => {
+      sincronizar();
     });
 
     // SINCRONIZACIÓN GLOBAL DE COMANDAS (emitido por broadcastComandasActivas en server.js)
@@ -798,7 +826,10 @@ export default function App() {
     socketRef.current.on('sync_datos', (data) => {
       if (!data) return;
       if (data.pedidos) setPedidos(data.pedidos);
-      if (data.categorias) setCategorias(data.categorias);
+      if (data.categorias) {
+        const names = data.categorias.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria || '')).filter(Boolean);
+        setCategorias(Array.from(new Set(names)));
+      }
       if (data.productos) setProductos(data.productos);
       if (data.adicionales) setAdicionales(data.adicionales);
       if (data.mesas) setMesas(data.mesas);
@@ -806,10 +837,12 @@ export default function App() {
     });
 
     socketRef.current.on('catalogo_actualizado', () => {
+      if (typeof cargarCategorias === 'function') cargarCategorias();
       if (socketRef.current) socketRef.current.emit('solicitar_sincronizacion');
     });
 
     socketRef.current.on('productos_actualizados', () => {
+      if (typeof cargarCategorias === 'function') cargarCategorias();
       if (socketRef.current) socketRef.current.emit('solicitar_sincronizacion');
     });
 
@@ -882,18 +915,42 @@ export default function App() {
     if (!baseMesas || baseMesas.length === 0) return;
     setMesas(prev => {
       return baseMesas.map(m => {
+        const mesaNumStr = String(m.num || m.id || '');
+        const mDigits = mesaNumStr.replace(/\D/g, '');
+
         const pedidosActivosDeMesa = (pedidos || []).filter(p => {
-          const estadoValido = !['cobrado', 'cancelado', 'archivado'].includes(String(p.estado || '').toLowerCase());
-          const mesaMatch = String(p.mesa || '').trim().toLowerCase() === String(m.num || m.id).trim().toLowerCase()
-            || String(p.mesa || '').trim().toLowerCase() === `mesa ${String(m.num || m.id).trim().toLowerCase()}`
-            || Number(p.mesa) === Number(m.num || m.id);
+          const pMesaRaw = String(p.mesa_id || p.mesa || '').trim();
+          const pMesaStr = pMesaRaw.toLowerCase();
+          const pDigits = pMesaRaw.replace(/\D/g, '');
+
+          const isParaLlevar = p.isParaLlevar === true ||
+                               p.para_llevar === 1 ||
+                               String(p.tipo || p.tipo_origen || '').toLowerCase().includes('llevar') ||
+                               pMesaStr.includes('llevar') || pMesaStr.includes('para');
+
+          if (isParaLlevar) return false;
+
+          const estadoValido = !['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(String(p.estado || '').toLowerCase()) &&
+                               (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false);
+
+          const mesaMatch = (mDigits && pDigits && mDigits === pDigits) ||
+                            pMesaStr === mesaNumStr.toLowerCase() ||
+                            pMesaStr === `mesa ${mesaNumStr}`.toLowerCase() ||
+                            Number(p.mesa) === Number(m.num || m.id);
+
           return estadoValido && mesaMatch;
         });
-        const pedidoActivo = pedidosActivosDeMesa[0];
-        if (!pedidoActivo) return { ...m, estado: 'libre' };
 
-        const estadoActual = pedidoActivo.estado;
-        return { ...m, estado: (estadoActual === 'cuenta') ? 'cuenta' : 'ocupada' };
+        const pedidoActivo = pedidosActivosDeMesa[0];
+        const mEstadoDB = String(m.estado || '').toLowerCase().trim();
+        const estaOcupadaEnDB = mEstadoDB === 'ocupada' || mEstadoDB === 'cuenta';
+
+        if (!pedidoActivo && !estaOcupadaEnDB) {
+          return { ...m, estado: 'libre' };
+        }
+
+        const estadoActual = pedidoActivo ? String(pedidoActivo.estado || '').toLowerCase() : mEstadoDB;
+        return { ...m, estado: (estadoActual === 'cuenta' || mEstadoDB === 'cuenta') ? 'cuenta' : 'ocupada' };
       });
     });
   }, [pedidos, baseMesas]);
@@ -1077,6 +1134,31 @@ export default function App() {
     );
   };
 
+  const cargarCategorias = async () => {
+    try {
+      let cleanIP = serverIP ? serverIP.trim() : '';
+      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+      let baseCol = `http://${cleanIP}:3001/api`;
+      if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+        baseCol = `${cleanIP}/api`;
+      }
+      const res = await axios.get(`${baseCol}/categorias`, { timeout: 10000 });
+      const data = res.data;
+      const cats = Array.isArray(data) ? data : (data?.categorias || []);
+      const names = cats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria || '')).filter(Boolean);
+      const uniqueNames = Array.from(new Set(names));
+      setCategorias(uniqueNames);
+      return uniqueNames;
+    } catch (e) {
+      // Fallback seguro: extraer categorías únicas de los productos si la ruta falla
+      if (Array.isArray(productos) && productos.length > 0) {
+        const unicas = [...new Set(productos.map(p => typeof (p.categoria || p.cat) === 'object' ? (p.categoria?.nombre || p.cat?.nombre) : (p.categoria || p.cat || 'Otros')))].filter(Boolean);
+        setCategorias(unicas);
+        return unicas;
+      }
+    }
+  };
+
   // Sincronizar pedidos del día, catálogo y sesión de caja
   const sincronizar = async () => {
     if (!ipConfigured) return;
@@ -1122,6 +1204,21 @@ export default function App() {
       const prodRes = await axios.get(`${baseCol}/productos`, { timeout: 10000 });
       if (prodRes.data && prodRes.data.productos) {
         setProductos(prodRes.data.productos);
+      }
+
+      // 2b. Sincronizar categorías
+      try {
+        const catRes = await axios.get(`${baseCol}/categorias`, { timeout: 10000 });
+        if (catRes.data) {
+          const cats = Array.isArray(catRes.data) ? catRes.data : (catRes.data.categorias || []);
+          const names = cats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria || '')).filter(Boolean);
+          setCategorias(Array.from(new Set(names)));
+        }
+      } catch (errCat) {
+        if (prodRes.data && Array.isArray(prodRes.data.productos)) {
+          const unicas = [...new Set(prodRes.data.productos.map(p => typeof (p.categoria || p.cat) === 'object' ? (p.categoria?.nombre || p.cat?.nombre) : (p.categoria || p.cat || 'Otros')))].filter(Boolean);
+          setCategorias(unicas);
+        }
       }
 
       // 2.5 Sincronizar mesas
@@ -1229,7 +1326,7 @@ export default function App() {
   };
 
   const handleRealizarAbonoMovil = async () => {
-    const valor = Number(montoAbono.replace(/\D/g, ''));
+    const valor = Number(String(montoAbono || '').replace(/\D/g, ''));
     if (!valor || valor <= 0) {
       Alert.alert('Valor inválido', 'Ingresa un monto válido para el abono.');
       return;
@@ -1311,9 +1408,9 @@ export default function App() {
           setPendingRecoveryUser(JSON.parse(savedLoggedUser));
         }
 
-        // Cargar IP guardada o usar túnel fijo
+        // Cargar IP guardada o buscar en red local
         const savedIP = await AsyncStorage.getItem('serverIP');
-        const ipToUse = "https://brisket-pregnant-squiggly.ngrok-free.dev";
+        const ipToUse = savedIP || "https://brisket-pregnant-squiggly.ngrok-free.dev";
         if (ipToUse) {
           setServerIP(ipToUse);
           updateGlobalApiUrl(ipToUse);
@@ -1545,8 +1642,30 @@ export default function App() {
         if (tieneComandaActiva) {
           showToast(`❌ La Mesa ${mesaNum} ya tiene una comanda activa`);
           Alert.alert(
-            "Mesa Ocupada",
-            `La Mesa ${mesaNum} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado. Debe agregar ítems a la orden existente o liberarla.`
+            "Mesa Ocupada / Fantasma",
+            `La Mesa ${mesaNum} figura como ocupada en el sistema. ¿Deseas liberarla forzosamente para tomar un pedido nuevo?`,
+            [
+              { text: "Cancelar", style: "cancel" },
+              {
+                text: "🔓 Liberar Mesa",
+                style: "destructive",
+                onPress: async () => {
+                  try {
+                    let cleanIP = serverIP.trim();
+                    if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+                    let baseCol = `http://${cleanIP}:3001/api`;
+                    if (cleanIP.startsWith('http://') || cleanIP.startsWith('https://')) {
+                      baseCol = `${cleanIP}/api`;
+                    }
+                    await axios.post(`${baseCol}/mesas/${mesaNum}/liberar-forzoso`);
+                    showToast(`✅ Mesa ${mesaNum} liberada correctamente`);
+                    sincronizar();
+                  } catch (e) {
+                    showToast(`⚠️ Error al liberar mesa ${mesaNum}`);
+                  }
+                }
+              }
+            ]
           );
           return;
         }
@@ -2215,10 +2334,11 @@ export default function App() {
           <TomarPedidoScreen
             mesas={mesas}
             productos={productos}
-            categorias={categorias}
+            categorias={categorias || []}
             pedidos={pedidos}
             socket={socketRef.current}
             cargarProductos={() => {
+              if (typeof cargarCategorias === 'function') cargarCategorias();
               if (socketRef.current) socketRef.current.emit('solicitar_sincronizacion');
             }}
             onEnviar={enviarPedido}
@@ -2357,6 +2477,7 @@ export default function App() {
             formGasto={formGasto}
             setFormGasto={setFormGasto}
             handleRegistrarGasto={handleRegistrarGasto}
+            socket={socketRef.current}
           />
         )}
       </View>
@@ -2706,8 +2827,482 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   modalAdminPedidosVisible, setModalAdminPedidosVisible,
   modalPedidosActivosVisible, setModalPedidosActivosVisible,
   printerType, setPrinterType, blePrinters, setBlePrinters, printerIP, setPrinterIP, savedPrinter, setSavedPrinter,
-  dashboardData, dashboardRango, setDashboardRango, modalGastoVisible, setModalGastoVisible, formGasto, setFormGasto, handleRegistrarGasto
+  dashboardData, dashboardRango, setDashboardRango, modalGastoVisible: propModalGastoVisible, setModalGastoVisible: propSetModalGastoVisible, formGasto, setFormGasto, handleRegistrarGasto,
+  socket
 }) {
+
+  // --- ESTADOS REGISTRO DE GASTO MÓVIL Y PRODUCTIVIDAD ---
+  const [modalGastoVisibleLocal, setModalGastoVisibleLocal] = useState(false);
+  const modalGastoVisible = Boolean(propModalGastoVisible || modalGastoVisibleLocal);
+  const setModalGastoVisible = (val) => {
+    setModalGastoVisibleLocal(Boolean(val));
+    if (typeof propSetModalGastoVisible === 'function') propSetModalGastoVisible(Boolean(val));
+  };
+  const [grupoGasto, setGrupoGasto] = useState('comida');
+  const [descGasto, setDescGasto] = useState('');
+  const [montoGasto, setMontoGasto] = useState('');
+  const [metodoGasto, setMetodoGasto] = useState('efectivo');
+  const [guardandoGasto, setGuardandoGasto] = useState(false);
+
+  const [gastosPorGrupo, setGastosPorGrupo] = useState({
+    comida: 0,
+    jugos_naturales: 0,
+    cervezas: 0,
+    gaseosas_embotellados: 0,
+    bebidas_calientes: 0,
+    gastos_generales: 0,
+    total_gastado: 0
+  });
+  const [ventasPorGrupo, setVentasPorGrupo] = useState({
+    comida: 0,
+    jugos_naturales: 0,
+    cervezas: 0,
+    gaseosas_embotellados: 0,
+    bebidas_calientes: 0,
+    total_turno: 0
+  });
+  const [cargandoProductividad, setCargandoProductividad] = useState(false);
+
+  const MACRO_GRUPOS = [
+    { id: 'comida', label: 'Comida', emoji: '🍔', color: '#f59e0b' },
+    { id: 'jugos_naturales', label: 'Jugos Naturales', emoji: '🥤', color: '#10b981' },
+    { id: 'cervezas', label: 'Cervezas', emoji: '🍺', color: '#eab308' },
+    { id: 'gaseosas_embotellados', label: 'Embotellados', emoji: '🍾', color: '#06b6d4' },
+    { id: 'bebidas_calientes', label: 'Bebidas Calientes', emoji: '☕', color: '#8b5cf6' },
+    { id: 'gastos_generales', label: 'Gastos Generales', emoji: '🏢', color: '#64748b' }
+  ];
+
+  const obtenerNombreGrupo = (id) => {
+    const g = MACRO_GRUPOS.find(item => item.id === id);
+    return g ? `${g.emoji} ${g.label}` : (id || 'General');
+  };
+
+  const getApiUrl = () => {
+    let cleanIP = (serverIP || '').trim();
+    if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+    if (!cleanIP) return 'http://localhost:3001';
+    return cleanIP.startsWith('http://') || cleanIP.startsWith('https://')
+      ? cleanIP
+      : `http://${cleanIP}:3001`;
+  };
+
+  const cargarResumenProductividad = async () => {
+    if (!serverIP) return;
+    try {
+      setCargandoProductividad(true);
+      const API_URL = getApiUrl();
+
+      // 1. Consultar ventas por grupo (productividad en vivo)
+      try {
+        const resVentas = await fetch(`${API_URL}/api/caja/productividad-en-vivo`, {
+          headers: { 'ngrok-skip-browser-warning': 'true', 'Bypass-Tunnel-Reminder': 'true' }
+        });
+        if (resVentas.ok) {
+          const dataVentas = await resVentas.json();
+          const prod = dataVentas?.productividad || dataVentas || {};
+          setVentasPorGrupo({
+            comida: Number(prod?.comida) || 0,
+            jugos_naturales: Number(prod?.jugos_naturales) || 0,
+            cervezas: Number(prod?.cervezas) || 0,
+            gaseosas_embotellados: Number(prod?.gaseosas_embotellados) || 0,
+            bebidas_calientes: Number(prod?.bebidas_calientes) || 0,
+            total_turno: Number(prod?.total_turno ?? prod?.total ?? dataVentas?.total_turno) || 0
+          });
+        }
+      } catch (eVentas) {
+        console.error("Error al consultar ventas por grupo:", eVentas.message);
+      }
+
+      // 2. Consultar gastos por macro-grupo
+      try {
+        const resGastos = await fetch(`${API_URL}/api/gastos/resumen-por-grupo`, {
+          headers: { 'ngrok-skip-browser-warning': 'true', 'Bypass-Tunnel-Reminder': 'true' }
+        });
+        if (resGastos.ok) {
+          const dataGastos = await resGastos.json();
+          const map = {
+            comida: 0,
+            jugos_naturales: 0,
+            cervezas: 0,
+            gaseosas_embotellados: 0,
+            bebidas_calientes: 0,
+            gastos_generales: 0,
+            total_gastado: 0
+          };
+          let total = 0;
+          if (Array.isArray(dataGastos)) {
+            dataGastos.forEach(item => {
+              const key = String(item?.grupo_afectado || '').toLowerCase().trim();
+              const monto = Number(item?.total_gastado) || 0;
+              total += monto;
+              if (key && map.hasOwnProperty(key)) {
+                map[key] = monto;
+              } else {
+                map.gastos_generales = (map.gastos_generales || 0) + monto;
+              }
+            });
+          }
+          map.total_gastado = total;
+          setGastosPorGrupo(map);
+        }
+      } catch (eGastos) {
+        console.error("Error al consultar gastos por grupo:", eGastos.message);
+      }
+    } catch (err) {
+      console.error("Error en cargarResumenProductividad:", err);
+    } finally {
+      setCargandoProductividad(false);
+    }
+  };
+
+  const handleGuardarGastoMovil = async () => {
+    const desc = (descGasto || '').trim();
+    if (!desc) {
+      Alert.alert('Campo requerido', 'Por favor ingresa la descripción del gasto o insumo.');
+      return;
+    }
+
+    const montoLimpio = Number(String(montoGasto || '').replace(/\D/g, ''));
+    if (!montoLimpio || montoLimpio <= 0) {
+      Alert.alert('Monto inválido', 'Por favor ingresa un monto válido mayor a 0.');
+      return;
+    }
+
+    try {
+      setGuardandoGasto(true);
+      const API_URL = getApiUrl();
+      const payload = {
+        descripcion: desc,
+        monto: montoLimpio,
+        valor: montoLimpio,
+        metodo_pago: metodoGasto || 'efectivo',
+        grupo_afectado: grupoGasto || 'comida',
+        categoria: 'Insumos',
+        sesion_id: sesionActiva?.id || null,
+        caja_sesion_id: sesionActiva?.id || null
+      };
+
+      const res = await fetch(`${API_URL}/api/gastos`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+          'Bypass-Tunnel-Reminder': 'true'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Error al registrar el gasto');
+      }
+
+      if (socket) {
+        socket.emit('gastos_actualizados');
+        socket.emit('caja_actualizada');
+      }
+
+      Alert.alert('✅ Gasto Registrado', `Se registró exitosamente el gasto de $${montoLimpio.toLocaleString('es-CO')} descontado de ${obtenerNombreGrupo(grupoGasto)}.`);
+      if (typeof showToast === 'function') {
+        showToast('💸 Gasto guardado con éxito');
+      }
+
+      setDescGasto('');
+      setMontoGasto('');
+      setGrupoGasto('comida');
+      setMetodoGasto('efectivo');
+      setModalGastoVisible(false);
+
+      cargarResumenProductividad();
+      if (typeof cargarFinanzas === 'function') cargarFinanzas();
+      if (typeof sincronizar === 'function') sincronizar();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'No se pudo registrar el gasto');
+    } finally {
+      setGuardandoGasto(false);
+    }
+  };
+
+  const handleLimpiarFantasmasMovil = async () => {
+    try {
+      setLimpiandoFantasmasMovil(true);
+      const API_URL = getApiUrl();
+      const res = await axios.post(`${API_URL}/sistema/limpiar-fantasmas`, {}, { timeout: 15000 });
+      if (res.data?.success) {
+        if (typeof showToast === 'function') showToast(`✅ ${res.data.message || 'Fantasmas eliminados y mesas sincronizadas'}`);
+        else Alert.alert('Éxito', res.data.message || 'Limpieza ejecutada');
+        if (typeof sincronizar === 'function') sincronizar();
+        if (typeof cargarResumenProductividad === 'function') cargarResumenProductividad();
+      }
+    } catch (err) {
+      console.error('Error al limpiar fantasmas móvil:', err);
+      Alert.alert('Error', 'No se pudo conectar al servidor para limpiar fantasmas');
+    } finally {
+      setLimpiandoFantasmasMovil(false);
+    }
+  };
+
+  const renderBotonRegistrarGasto = () => (
+    <TouchableOpacity
+      onPress={() => {
+        setDescGasto('');
+        setMontoGasto('');
+        setGrupoGasto('comida');
+        setMetodoGasto('efectivo');
+        setModalGastoVisible(true);
+      }}
+      style={{
+        backgroundColor: C.orange,
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderRadius: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        marginVertical: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 3
+      }}
+    >
+      <Ionicons name="add-circle" size={20} color="#fff" />
+      <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14, letterSpacing: 0.3 }}>
+        💸 Registrar Gasto / Insumo
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderBotonLimpiarFantasmas = () => (
+    <TouchableOpacity
+      onPress={handleLimpiarFantasmasMovil}
+      disabled={limpiandoFantasmasMovil}
+      style={{
+        backgroundColor: '#fef2f2',
+        borderWidth: 1.5,
+        borderColor: '#f87171',
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderRadius: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        marginVertical: 6,
+        elevation: 2
+      }}
+    >
+      <Ionicons name="trash-bin" size={18} color="#dc2626" />
+      <Text style={{ color: '#dc2626', fontWeight: '800', fontSize: 13 }}>
+        {limpiandoFantasmasMovil ? '⏳ Limpiando...' : '🧹 Limpiar Pedidos Fantasmas / Destrabar Mesas'}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderTarjetasSaldosNetos = () => {
+    const totalVendido = Number(ventasPorGrupo?.total_turno) || 0;
+    const totalGastado = Number(gastosPorGrupo?.total_gastado) || 0;
+    const totalDisponible = totalVendido - totalGastado;
+    const isTotalDeficit = totalDisponible < 0;
+
+    return (
+      <View style={{ marginVertical: 10 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingHorizontal: 2 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: C.cream }}>
+              💼 Productividad & Saldos Netos
+            </Text>
+            {cargandoProductividad && (
+              <ActivityIndicator size="small" color={C.orange} />
+            )}
+          </View>
+          <TouchableOpacity
+            onPress={cargarResumenProductividad}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2, paddingHorizontal: 6 }}
+          >
+            <Ionicons name="refresh" size={14} color={C.cream2} />
+            <Text style={{ fontSize: 11, color: C.cream2, fontWeight: '600' }}>Actualizar</Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingRight: 10 }}>
+          {/* Tarjeta Resumen Total Consolidado */}
+          <View
+            style={{
+              width: 195,
+              backgroundColor: isTotalDeficit ? 'rgba(239, 68, 68, 0.08)' : C.surf2,
+              borderRadius: 14,
+              borderWidth: 1.5,
+              borderColor: isTotalDeficit ? '#ef4444' : C.border,
+              padding: 12,
+              justifyContent: 'space-between'
+            }}
+          >
+            <View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: C.text }}>
+                  📈 Total Turno
+                </Text>
+                {isTotalDeficit ? (
+                  <View style={{ backgroundColor: '#ef4444', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                    <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>⚠️ DÉFICIT</Text>
+                  </View>
+                ) : (
+                  <View style={{ backgroundColor: '#10b981', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                    <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>DISPONIBLE</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={{ gap: 2, marginVertical: 4 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 11, color: C.text2 }}>Vendido:</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: C.green }}>
+                    +${totalVendido.toLocaleString('es-CO')}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 11, color: C.text2 }}>Gastado:</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: C.red }}>
+                    -${totalGastado.toLocaleString('es-CO')}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={{ borderTopWidth: 1, borderTopColor: C.border, paddingTop: 6, marginTop: 4 }}>
+              <Text style={{ fontSize: 10, color: C.text3, textTransform: 'uppercase', fontWeight: '700' }}>
+                Saldo Neto Total:
+              </Text>
+              <Text style={{ fontSize: 15, fontWeight: '900', color: isTotalDeficit ? '#ef4444' : C.green }}>
+                ${totalDisponible.toLocaleString('es-CO')}
+              </Text>
+            </View>
+          </View>
+
+          {/* Tarjetas por Macro-grupo con Prorrateo de Gastos Generales */}
+          {(() => {
+            const productGrupos = MACRO_GRUPOS.filter(g => g.id !== 'gastos_generales');
+            const totalVendidoCategorias = productGrupos.reduce((sum, g) => sum + (Number(ventasPorGrupo?.[g.id]) || 0), 0);
+            const totalGastosGenerales = Number(gastosPorGrupo?.gastos_generales) || 0;
+
+            return MACRO_GRUPOS.map(grupo => {
+              if (grupo.id === 'gastos_generales') {
+                const totalGenerales = Number(gastosPorGrupo?.gastos_generales) || 0;
+                return (
+                  <View
+                    key={grupo.id}
+                    style={{
+                      width: 175,
+                      backgroundColor: C.surf2,
+                      borderRadius: 14,
+                      borderWidth: 1.5,
+                      borderColor: C.border,
+                      padding: 12,
+                      justifyContent: 'space-between'
+                    }}
+                  >
+                    <View>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '800', color: C.text }}>
+                          {grupo.emoji} {grupo.label}
+                        </Text>
+                      </View>
+                      <View style={{ gap: 2, marginVertical: 4 }}>
+                        <Text style={{ fontSize: 10, color: C.text2 }}>Descontados proporcionalmente de cada categoría.</Text>
+                      </View>
+                    </View>
+                    <View style={{ borderTopWidth: 1, borderTopColor: C.border, paddingTop: 6, marginTop: 4 }}>
+                      <Text style={{ fontSize: 9, color: C.text3, textTransform: 'uppercase', fontWeight: '700' }}>
+                        Total Generales:
+                      </Text>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: C.red }}>
+                        -${totalGenerales.toLocaleString('es-CO')}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }
+
+              const vendido = Number(ventasPorGrupo?.[grupo.id]) || 0;
+              const egresoDirecto = Number(gastosPorGrupo?.[grupo.id]) || 0;
+
+              let proporcion = totalVendidoCategorias > 0
+                ? (vendido / totalVendidoCategorias)
+                : (1 / productGrupos.length);
+              const gastoGeneralProrrateado = totalGastosGenerales > 0 ? Math.round(totalGastosGenerales * proporcion) : 0;
+
+              const totalGastosCat = egresoDirecto + gastoGeneralProrrateado;
+              const disponible = vendido - totalGastosCat;
+              const isDeficit = disponible < 0;
+
+              return (
+                <View
+                  key={grupo.id}
+                  style={{
+                    width: 185,
+                    backgroundColor: isDeficit ? 'rgba(239, 68, 68, 0.08)' : C.surf2,
+                    borderRadius: 14,
+                    borderWidth: 1.5,
+                    borderColor: isDeficit ? '#ef4444' : C.border,
+                    padding: 12,
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: C.text }}>
+                        {grupo.emoji} {grupo.label}
+                      </Text>
+                      {isDeficit && (
+                        <View style={{ backgroundColor: '#ef4444', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 }}>
+                          <Text style={{ color: '#fff', fontSize: 8, fontWeight: '800' }}>DÉFICIT</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={{ gap: 2, marginVertical: 4 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                        <Text style={{ fontSize: 11, color: C.text2 }}>Vendido:</Text>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: C.green }}>
+                          +${vendido.toLocaleString('es-CO')}
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                        <Text style={{ fontSize: 11, color: C.text2 }}>Insumos:</Text>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: C.red }}>
+                          -${egresoDirecto.toLocaleString('es-CO')}
+                        </Text>
+                      </View>
+                      {totalGastosGenerales > 0 && (
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                          <Text style={{ fontSize: 10, color: C.text3 }}>G. Gen. (prorrateo):</Text>
+                          <Text style={{ fontSize: 10, fontWeight: '600', color: '#dc2626' }}>
+                            -${gastoGeneralProrrateado.toLocaleString('es-CO')}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+
+                  <View style={{ borderTopWidth: 1, borderTopColor: C.border, paddingTop: 6, marginTop: 4 }}>
+                    <Text style={{ fontSize: 9, color: C.text3, textTransform: 'uppercase', fontWeight: '700' }}>
+                      Disponible Neto:
+                    </Text>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: isDeficit ? '#ef4444' : C.green }}>
+                      ${disponible.toLocaleString('es-CO')}
+                    </Text>
+                  </View>
+                </View>
+              );
+            });
+          })()}
+        </ScrollView>
+      </View>
+    );
+  };
 
   // --- ESTADOS MENÚ ---
   const [mostrarVentasRecientes, setMostrarVentasRecientes] = useState(false);
@@ -2718,6 +3313,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [newProdDesc, setNewProdDesc] = useState('');
   const [newProdDisp, setNewProdDisp] = useState(true);
   const [newProdImage, setNewProdImage] = useState(null);
+  const [newProdEmoji, setNewProdEmoji] = useState('🍔');
+  const [emojiManualApp, setEmojiManualApp] = useState(false);
 
   // Estados dinámicos para categorías
   const [categorias, setCategorias] = useState(['Hamburguesas', 'Perros', 'Bebidas']);
@@ -2790,6 +3387,85 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
   const [ventaDetalleSelected, setVentaDetalleSelected] = useState(null);
   const [ventaDetallesItems, setVentaDetallesItems] = useState([]);
 
+  // --- ESTADOS CRÉDITO Y ABONOS (MÓVIL) ---
+  const [mesaActivaSelected, setMesaActivaSelected] = useState(null);
+  const [abonoModalVisible, setAbonoModalVisible] = useState(false);
+  const [abonoSeleccionado, setAbonoSeleccionado] = useState(null);
+  const [montoAbono, setMontoAbono] = useState('');
+  const [metodoAbono, setMetodoAbono] = useState('Efectivo');
+  const [cargandoAbono, setCargandoAbono] = useState(false);
+  const [deudorAbonoSelected, setDeudorAbonoSelected] = useState(null);
+
+  const handleRealizarAbonoMovil = async () => {
+    const valor = Number(String(montoAbono || '').replace(/\D/g, ''));
+    if (!valor || valor <= 0) {
+      Alert.alert('Valor inválido', 'Ingresa un monto válido para el abono.');
+      return;
+    }
+    const deudor = deudorAbonoSelected || abonoSeleccionado?.deudor || 'Cliente';
+    if (!deudor) {
+      Alert.alert('Error', 'No se identificó el cliente deudor.');
+      return;
+    }
+
+    try {
+      setCargandoAbono(true);
+      let cleanIP = (serverIP || '').trim();
+      if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
+      const API_BASE_URL = cleanIP.startsWith('http://') || cleanIP.startsWith('https://')
+        ? cleanIP
+        : `http://${cleanIP}:3001`;
+
+      const response = await fetch(`${API_BASE_URL}/api/fiados/abono`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+          'Bypass-Tunnel-Reminder': 'true'
+        },
+        body: JSON.stringify({
+          deudor: deudor,
+          monto: valor,
+          metodo_pago: metodoAbono,
+          sesion_id: sesionActiva?.id || null
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Error al procesar abono');
+
+      Alert.alert('Abono Exitoso', `Se abonaron $${valor.toLocaleString('es-CO')} a la cuenta de ${deudor}.`);
+      setAbonoModalVisible(false);
+      setMontoAbono('');
+      setDeudorAbonoSelected(null);
+      if (typeof sincronizar === 'function') sincronizar();
+    } catch (err) {
+      Alert.alert('Error', err.message || 'No se pudo registrar el abono');
+    } finally {
+      setCargandoAbono(false);
+    }
+  };
+
+  const sugerirEmojiPorNombre = (nombre) => {
+    if (!nombre) return '🍔';
+    const n = String(nombre).toLowerCase().trim();
+    if (n.includes('pizza')) return '🍕';
+    if (n.includes('cafe') || n.includes('café') || n.includes('tinto') || n.includes('capuchino') || n.includes('cappuccino') || n.includes('aromatica') || n.includes('aromática') || n.includes('chocolate')) return '☕';
+    if (n.includes('cerveza') || n.includes('poker') || n.includes('aguila') || n.includes('águila') || n.includes('corona') || n.includes('club') || n.includes('heineken') || n.includes('stella')) return '🍺';
+    if (n.includes('jugo') || n.includes('limonada') || n.includes('mango') || n.includes('fresa') || n.includes('mora') || n.includes('maracuya') || n.includes('maracuyá') || n.includes('lulo') || n.includes('naranja') || n.includes('guanabana') || n.includes('guanábana')) return '🥤';
+    if (n.includes('perro') || n.includes('hot dog') || n.includes('salchipapa') || n.includes('choriperro')) return '🌭';
+    if (n.includes('burrito') || n.includes('taco') || n.includes('quesadilla') || n.includes('wrap') || n.includes('fajita')) return '🌯';
+    if (n.includes('postre') || n.includes('cake') || n.includes('pastel') || n.includes('torta') || n.includes('helado') || n.includes('brownie')) return '🍰';
+    if (n.includes('agua') || n.includes('gaseosa') || n.includes('coca') || n.includes('postobon') || n.includes('postobón') || n.includes('soda') || n.includes('red bull') || n.includes('hit') || n.includes('quatro') || n.includes('colombiana')) return '🍾';
+    if (n.includes('hamburguesa') || n.includes('burger') || n.includes('carne') || n.includes('clasica') || n.includes('clásica') || n.includes('especial') || n.includes('doble')) return '🍔';
+    if (n.includes('papa') || n.includes('frita') || n.includes('fritas') || n.includes('chips')) return '🍟';
+    if (n.includes('alita') || n.includes('alitas') || n.includes('pollo') || n.includes('nugget') || n.includes('crispy')) return '🍗';
+    if (n.includes('sandwich') || n.includes('sándwich') || n.includes('sub')) return '🥪';
+    if (n.includes('mazorcada') || n.includes('maiz') || n.includes('maíz') || n.includes('choclo')) return '🌽';
+    if (n.includes('vino') || n.includes('copa')) return '🍷';
+    if (n.includes('coctel') || n.includes('cóctel') || n.includes('mojito') || n.includes('margarita')) return '🍸';
+    return '🍽️';
+  };
+
   const emojiPorCategoria = {
     1: "🍔",
     2: "🌭",
@@ -2815,6 +3491,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     if (!serverIP) return;
 
     const cargarTodo = () => {
+      cargarResumenProductividad();
       if (adminTab === 'principal') {
         cargarFinanzas();
         cargarInventario();
@@ -2841,6 +3518,34 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     return () => clearInterval(timer);
   }, [adminTab, serverIP]);
 
+  // Escuchar eventos Socket.io de gastos y caja para tiempo real
+  useEffect(() => {
+    if (!socket) return;
+    const onActualizar = () => {
+      cargarResumenProductividad();
+      if (typeof cargarFinanzas === 'function') cargarFinanzas();
+    };
+
+    socket.on('gastos_actualizados', onActualizar);
+    socket.on('caja_actualizada', onActualizar);
+    socket.on('caja:estado', onActualizar);
+    socket.on('dashboard:actualizado', onActualizar);
+
+    return () => {
+      socket.off('gastos_actualizados', onActualizar);
+      socket.off('caja_actualizada', onActualizar);
+      socket.off('caja:estado', onActualizar);
+      socket.off('dashboard:actualizado', onActualizar);
+    };
+  }, [socket]);
+
+  const extractCategoryName = (c) => {
+    if (!c) return '';
+    if (typeof c === 'string') return c.trim();
+    if (typeof c === 'object') return (c.nombre || c.categoria || c.name || '').trim();
+    return String(c).trim();
+  };
+
   // Sincronizar categorías locales de forma dinámica desde los productos cargados
   useEffect(() => {
     if (productos && productos.length > 0) {
@@ -2852,24 +3557,32 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         5: 'Mazorcada',
         6: 'Jugos Naturales',
         7: 'Limonadas',
-        8: 'Bebidas'
+        8: 'Bebidas',
+        9: 'Bebidas Calientes',
+        10: 'Adicionales'
       };
       const uniqueCats = Array.from(new Set(productos.map(p => {
-        const num = Number(p.cat);
+        const catVal = p.categoria || p.cat;
+        if (typeof catVal === 'object' && catVal !== null) {
+          return (catVal.nombre || catVal.categoria || '').trim();
+        }
+        const num = Number(catVal);
         if (!isNaN(num) && cleanNameMap[num]) {
           return cleanNameMap[num];
         }
-        return String(p.cat).trim();
+        return String(catVal || '').trim();
       }).filter(Boolean)));
 
       setCategorias(prev => {
-        const merged = Array.from(new Set([...prev, ...uniqueCats]));
+        const prevNames = prev.map(extractCategoryName).filter(Boolean);
+        const merged = Array.from(new Set([...prevNames, ...uniqueCats]));
         return merged;
       });
     }
   }, [productos]);
 
   const getCatValueFromName = (name) => {
+    const cleanName = extractCategoryName(name);
     const map = {
       'hamburguesas': 1,
       'perros': 2,
@@ -2879,14 +3592,16 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       'jugos naturales': 6,
       'limonadas': 7,
       'bebidas': 8,
-      'bebidas calientes': 9
+      'bebidas calientes': 9,
+      'adicionales': 10
     };
-    const key = String(name).toLowerCase().trim();
-    return map[key] !== undefined ? map[key] : name;
+    const key = String(cleanName).toLowerCase().trim();
+    return map[key] !== undefined ? map[key] : cleanName;
   };
 
   const getDisplayNameForCat = (catVal) => {
-    const num = Number(catVal);
+    const cleanVal = extractCategoryName(catVal);
+    const num = Number(cleanVal);
     if (!isNaN(num)) {
       const origCat = CATEGORIAS.find(c => c.id === num);
       if (origCat) return origCat.nombre;
@@ -2900,10 +3615,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       'jugos naturales': '🥤 Jugos Naturales',
       'limonadas': '🍟 Limonadas',
       'bebidas': '🌽 Bebidas / Cervezas',
-      'bebidas calientes': '☕ Bebidas Calientes'
+      'bebidas calientes': '☕ Bebidas Calientes',
+      'adicionales': '🍟 Adicionales'
     };
-    const key = String(catVal).toLowerCase().trim();
-    return cleanNameMap[key] || String(catVal);
+    const key = String(cleanVal).toLowerCase().trim();
+    return cleanNameMap[key] || String(cleanVal);
   };
 
   // --- METODOS DE LLAMADAS API ---
@@ -2948,7 +3664,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       nombre: newProdName.trim(),
       precio: precioNum || 0,
       desc: newProdDesc.trim(),
-      emoji: getEmojiForCategory(catId),
+      emoji: (newProdEmoji || '').trim() || sugerirEmojiPorNombre(newProdName.trim()),
       disp: newProdDisp ? 1 : 0,
       imagen: finalImageUrl
     };
@@ -2958,8 +3674,16 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       if (res.data && res.data.success) {
         showToast('✅ Producto guardado en SQLite');
 
-        if (creandoNuevaCat && !categorias.includes(nuevaCategoria.trim())) {
-          setCategorias(prev => [...prev, nuevaCategoria.trim()]);
+        if (creandoNuevaCat && nuevaCategoria.trim()) {
+          const catNombreNuevo = nuevaCategoria.trim();
+          try {
+            const cleanIP = serverIP ? serverIP.trim() : '';
+            const targetUrl = cleanIP.startsWith('http') ? cleanIP : `http://${cleanIP}:3001`;
+            await axios.post(`${targetUrl}/api/categorias`, { nombre: catNombreNuevo }, { timeout: 10000 });
+          } catch (errCat) {
+            console.log('Error guardando categoría:', errCat?.message);
+          }
+          setCategorias(prev => Array.from(new Set([...prev.map(extractCategoryName).filter(Boolean), catNombreNuevo])));
         }
 
         setNewProdName('');
@@ -3230,6 +3954,39 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     }
   };
 
+  // INVENTARIO: Eliminar Insumo
+  const eliminarInsumo = (ins) => {
+    if (!ins || !ins.id) return;
+    Alert.alert(
+      'Eliminar Insumo',
+      `¿Estás seguro de eliminar el insumo "${ins.nombre}"? Esta acción borrará su historial de movimientos e ingredientes asociados.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await axios.delete(
+                `${serverIP.startsWith('http') ? serverIP : `http://${serverIP}:3001`}/api/inventario/insumos/${ins.id}`,
+                { timeout: 15000 }
+              );
+              if (res.data && res.data.success) {
+                showToast('🗑️ Insumo eliminado con éxito');
+                cargarInventario();
+              } else {
+                showToast('⚠️ Error al eliminar insumo');
+              }
+            } catch (e) {
+              console.error('Error al eliminar insumo:', e);
+              showToast('⚠️ Error al eliminar insumo');
+            }
+          }
+        }
+      ]
+    );
+  };
+
   // --- HISTORIAL FACTURAS ---
   const cargarHistorialFacturas = async () => {
     try {
@@ -3280,6 +4037,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     if (cat && cat.toLowerCase() !== 'general') return cat;
 
     const nombre = (prod?.nombre || '').toLowerCase();
+    if (nombre.includes('adicional') || nombre.includes('extra') || nombre.includes('porción')) return 'Adicionales';
     if (nombre.includes('perro') || nombre.includes('chori') || nombre.includes('sencillo')) return 'Perros';
     if (nombre.includes('burro') || nombre.includes('burrito')) return 'Burritos';
     if (nombre.includes('hamburguesa') || nombre.includes('clásica') || nombre.includes('doble') || nombre.includes('especial') || nombre.includes('mexicana')) return 'Hamburguesas';
@@ -3335,6 +4093,11 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
             </View>
           </View>
 
+          {/* Carrusel Horizontal de Saldos Netos y Botones de Acción */}
+          {renderTarjetasSaldosNetos()}
+          {renderBotonRegistrarGasto()}
+          {renderBotonLimpiarFantasmas()}
+
           {/* Grid de submódulos */}
           <Text style={{ fontSize: 13, fontWeight: '800', color: C.cream, marginBottom: 10 }}>
             Secciones disponibles
@@ -3348,7 +4111,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               { id: 'auditoria', label: '📋 Log de Auditoría', desc: 'Registro de todas las acciones' },
               { id: 'cancelados', label: '📋 Pedidos Cancelados', desc: 'Historial de cancelaciones' },
               { id: 'historial', label: '🧾 Historial de Facturas', desc: 'Ventas y facturas cobradas' },
-              { id: 'impresora', label: '🏷️ Impresora Térmica', desc: 'Configurar conexión WiFi/Bluetooth' },
+              { id: 'impresora', label: '🏷️  Impresora Térmica', desc: 'Configurar conexión WiFi/Bluetooth' },
             ].map(item => (
               <TouchableOpacity
                 key={item.id}
@@ -3398,7 +4161,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10, gap: 8 }}
             >
-              {['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Mazorcadas', 'Bebidas', 'Otros'].map((cat) => {
+              {['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Mazorcadas', 'Bebidas', 'Adicionales', 'Otros'].map((cat) => {
                 const activa = catFiltroMovil === cat;
                 return (
                   <TouchableOpacity
@@ -3419,6 +4182,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       {cat === 'Perros' && '🌭 '}
                       {cat === 'Burritos' && '🌯 '}
                       {cat === 'Bebidas' && '🥤 '}
+                      {cat === 'Adicionales' && '🍟 '}
                       {cat}
                     </Text>
                   </TouchableOpacity>
@@ -3499,6 +4263,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               setNewProdCat(String(CATEGORIAS[0]?.id || 1));
               setNewProdDesc('');
               setNewProdDisp(true);
+              setNewProdEmoji('🍔');
+              setEmojiManualApp(false);
               setCreandoNuevaCat(false);
               setNuevaCategoria('');
               setNewProdImage(null);
@@ -3547,8 +4313,72 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     placeholder="Ej. Hamburguesa doble"
                     placeholderTextColor={C.text3}
                     value={newProdName}
-                    onChangeText={setNewProdName}
+                    onChangeText={(txt) => {
+                      setNewProdName(txt);
+                      if (!emojiManualApp) {
+                        setNewProdEmoji(sugerirEmojiPorNombre(txt));
+                      }
+                    }}
                   />
+
+                  {/* Selector y Campo Libre de Emoji */}
+                  <View style={{ marginTop: 14 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text }}>Ícono / Emoji</Text>
+                      {emojiManualApp && (
+                        <TouchableOpacity onPress={() => {
+                          setEmojiManualApp(false);
+                          setNewProdEmoji(sugerirEmojiPorNombre(newProdName));
+                        }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: C.orange }}>✨ Autodetectar</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                      <TextInput
+                        style={[s.formInput, { width: 62, height: 48, fontSize: 24, textAlign: 'center', padding: 0 }]}
+                        value={newProdEmoji}
+                        placeholder="🍽️"
+                        placeholderTextColor={C.text3}
+                        onChangeText={(txt) => {
+                          if (!txt.trim()) {
+                            setEmojiManualApp(false);
+                            setNewProdEmoji(sugerirEmojiPorNombre(newProdName));
+                          } else {
+                            setEmojiManualApp(true);
+                            setNewProdEmoji(txt);
+                          }
+                        }}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 11, color: C.text2 }}>Escribe o pega cualquier emoji.</Text>
+                        {!emojiManualApp && (
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: C.greenL, marginTop: 2 }}>🪄 Autodetectando por nombre</Text>
+                        )}
+                      </View>
+                    </View>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                      {['🍔', '🌭', '🌯', '🍕', '🍟', '🍗', '🥪', '🌽', '🥤', '🍺', '🍾', '☕', '🍰', '🍷', '🍣', '🍽️'].map(em => (
+                        <TouchableOpacity
+                          key={em}
+                          onPress={() => {
+                            setEmojiManualApp(true);
+                            setNewProdEmoji(em);
+                          }}
+                          style={{
+                            paddingVertical: 5,
+                            paddingHorizontal: 8,
+                            borderRadius: 8,
+                            borderWidth: 1,
+                            borderColor: newProdEmoji === em ? C.orange : C.border,
+                            backgroundColor: newProdEmoji === em ? C.orange : C.surf2
+                          }}
+                        >
+                          <Text style={{ fontSize: 16 }}>{em}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
 
                   <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Precio ($)</Text>
                   <TextInput
@@ -3573,10 +4403,12 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
 
                   <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginTop: 14, marginBottom: 6 }}>Categoría</Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-                    {categorias.map(catName => {
+                    {categorias.map(catItem => {
+                      const catName = extractCategoryName(catItem);
+                      if (!catName) return null;
                       const catValue = getCatValueFromName(catName);
                       const isSelected = !creandoNuevaCat && String(newProdCat) === String(catValue);
-                      const displayName = getDisplayNameForCat(catValue);
+                      const displayName = getDisplayNameForCat(catName);
                       return (
                         <TouchableOpacity
                           key={catName}
@@ -3698,14 +4530,21 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         <View style={{ flex: 1, paddingHorizontal: 14 }}>
           {renderBackHeader('Finanzas y Gastos')}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
+            {renderTarjetasSaldosNetos()}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <Text style={s.sectionTitle}>📊 Reporte Financiero</Text>
               <TouchableOpacity
-                onPress={() => setModalGastoVisible(true)}
+                onPress={() => {
+                  setDescGasto('');
+                  setMontoGasto('');
+                  setGrupoGasto('comida');
+                  setMetodoGasto('efectivo');
+                  setModalGastoVisible(true);
+                }}
                 style={{ backgroundColor: C.orange, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}
               >
                 <Ionicons name="add-circle" size={16} color="white" />
-                <Text style={{ color: 'white', fontWeight: '700', fontSize: 12 }}>NUEVO GASTO</Text>
+                <Text style={{ color: 'white', fontWeight: '700', fontSize: 12 }}>💸 REGISTRAR GASTO</Text>
               </TouchableOpacity>
             </View>
 
@@ -3977,29 +4816,6 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                     </View>
                   );
                 })()}
-                {/* Recent Expenses List */}
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 8 }}>
-                  <Text style={[s.sectionTitle, { fontSize: 14 }]}>💸 Últimos Egresos</Text>
-                </View>
-                <View style={[s.card, { padding: 14, backgroundColor: C.surface }]}>
-                  {(() => {
-                    const filteredGastos = dashboardData.ultimosGastos || [];
-                    if (filteredGastos.length === 0) {
-                      return <Text style={{ fontSize: 12, color: C.text3, textAlign: 'center', paddingVertical: 10 }}>No hay gastos registrados en este periodo</Text>;
-                    }
-                    return filteredGastos.map((g, idx) => (
-                      <View key={g.id || idx} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: idx < filteredGastos.length - 1 ? 1 : 0, borderBottomColor: C.border }}>
-                        <View style={{ flex: 1, marginRight: 8 }}>
-                          <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{g.descripcion}</Text>
-                          <Text style={{ fontSize: 10, color: C.text3 }}>🍋 {g.categoria} • 📅 {g.fecha}</Text>
-                        </View>
-                        <Text style={{ fontSize: 14, fontWeight: '800', color: C.red }}>
-                          -${(g.valor || 0).toLocaleString('es-CO')}
-                        </Text>
-                      </View>
-                    ));
-                  })()}
-                </View>
               </View>
             ) : (
               <Text style={{ color: C.cream2, textAlign: 'center', padding: 20 }}>Cargando datos financieros...</Text>
@@ -4189,6 +5005,23 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       >
                         <Ionicons name="options-outline" size={14} color="white" />
                         <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>➖ Ajuste</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        onPress={() => eliminarInsumo(ins)}
+                        style={{
+                          flex: 1,
+                          backgroundColor: C.red,
+                          paddingVertical: 6,
+                          borderRadius: 6,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexDirection: 'row',
+                          gap: 4
+                        }}
+                      >
+                        <Ionicons name="trash-outline" size={14} color="white" />
+                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 11 }}>🗑️ Eliminar</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -5196,88 +6029,198 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         </Modal>
       )}
 
-      {/* Modal para Registrar Gasto */}
-      {modalGastoVisible && (
-        <Modal visible={modalGastoVisible} transparent animationType="slide" onRequestClose={() => setModalGastoVisible(false)}>
-          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-            <View style={{ width: '100%', backgroundColor: C.surface, borderRadius: 16, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' }}>
-              <View style={{ backgroundColor: C.brand, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                <TouchableOpacity onPress={() => setModalGastoVisible(false)}>
-                  <Ionicons name="close" size={20} color={C.cream2} />
-                </TouchableOpacity>
-                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>💸 Registrar Gasto</Text>
+      {/* Modal Nativo para Registrar Gasto / Insumo por Macro-grupo */}
+      <Modal
+        visible={Boolean(modalGastoVisible)}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setModalGastoVisible(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 16 }}>
+          <View style={{ width: '100%', maxWidth: 440, backgroundColor: C.surface, borderRadius: 16, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' }}>
+            {/* Header del Modal */}
+            <View style={{ backgroundColor: C.brand, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Text style={{ fontSize: 20 }}>💸</Text>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: C.cream }}>
+                  Registrar Gasto / Insumo
+                </Text>
               </View>
+              <TouchableOpacity
+                onPress={() => setModalGastoVisible(false)}
+                style={{ padding: 4 }}
+              >
+                <Ionicons name="close" size={22} color={C.cream2} />
+              </TouchableOpacity>
+            </View>
 
-              <View style={{ padding: 18, gap: 12 }}>
-                <View>
-                  <Text style={s.formLabel}>Descripción del Gasto</Text>
-                  <TextInput
-                    style={s.formInput}
-                    placeholder="Ej. Pago de Internet"
-                    placeholderTextColor={C.text3}
-                    value={formGasto.descripcion}
-                    onChangeText={txt => setFormGasto({ ...formGasto, descripcion: txt })}
-                  />
-                </View>
-
-                <View>
-                  <Text style={s.formLabel}>Categoría</Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                    {["Proveedores", "Servicios", "Nómina", "Mantenimiento", "Varios"].map(cat => (
+            <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }}>
+              {/* 1. Selector de Macro-grupo (Píldoras) */}
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Grupo al que se descuenta:
+                </Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {MACRO_GRUPOS.map(grupo => {
+                    const isSelected = grupoGasto === grupo.id;
+                    return (
                       <TouchableOpacity
-                        key={cat}
-                        onPress={() => setFormGasto({ ...formGasto, categoria: cat })}
+                        key={grupo.id}
+                        onPress={() => setGrupoGasto(grupo.id)}
                         style={{
-                          paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16,
-                          backgroundColor: formGasto.categoria === cat ? C.orange : C.surf2,
-                          borderWidth: 1, borderColor: formGasto.categoria === cat ? C.orange : C.border
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 6,
+                          paddingVertical: 7,
+                          paddingHorizontal: 11,
+                          borderRadius: 20,
+                          backgroundColor: isSelected ? C.orange : C.surf2,
+                          borderWidth: 1.5,
+                          borderColor: isSelected ? C.orange : C.border
                         }}
                       >
-                        <Text style={{ fontSize: 12, fontWeight: '600', color: formGasto.categoria === cat ? 'white' : C.text2 }}>{cat}</Text>
+                        <Text style={{ fontSize: 14 }}>{grupo.emoji}</Text>
+                        <Text style={{ fontSize: 12, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#fff' : C.text }}>
+                          {grupo.label}
+                        </Text>
                       </TouchableOpacity>
-                    ))}
-                  </View>
+                    );
+                  })}
                 </View>
+              </View>
 
-                <View>
-                  <Text style={s.formLabel}>Monto ($)</Text>
-                  <TextInput
-                    style={s.formInput}
-                    placeholder="0"
-                    placeholderTextColor={C.text3}
-                    keyboardType="decimal-pad"
-                    value={String(formGasto.valor || '')}
-                    onChangeText={txt => setFormGasto({ ...formGasto, valor: formatMoneyInput(txt) })}
-                  />
-                </View>
+              {/* 2. Concepto / Descripción */}
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Concepto / Descripción:
+                </Text>
+                <TextInput
+                  style={[s.formInput, { backgroundColor: C.surf2, color: C.text, borderColor: C.border }]}
+                  placeholder="Ej: Carne y papas, Cerveza Poker, Frutas..."
+                  placeholderTextColor={C.text3}
+                  value={descGasto}
+                  onChangeText={setDescGasto}
+                />
+              </View>
 
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+              {/* 3. Monto ($) */}
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Monto ($):
+                </Text>
+                <TextInput
+                  style={[s.formInput, { backgroundColor: C.surf2, color: C.text, borderColor: C.border, fontSize: 16, fontWeight: '700' }]}
+                  placeholder="$ 0"
+                  placeholderTextColor={C.text3}
+                  keyboardType="numeric"
+                  value={montoGasto ? `$ ${formatMoneyInput(montoGasto)}` : ''}
+                  onChangeText={txt => setMontoGasto(txt.replace(/\D/g, ''))}
+                />
+              </View>
+
+              {/* 4. Método de Pago */}
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Método de Pago:
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
                   <TouchableOpacity
-                    onPress={() => setModalGastoVisible(false)}
-                    style={{ flex: 1, padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, alignItems: 'center', backgroundColor: 'transparent' }}
+                    onPress={() => setMetodoGasto('efectivo')}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      backgroundColor: metodoGasto === 'efectivo' ? '#10b981' : C.surf2,
+                      borderWidth: 1.5,
+                      borderColor: metodoGasto === 'efectivo' ? '#10b981' : C.border,
+                      alignItems: 'center',
+                      flexDirection: 'row',
+                      justifyContent: 'center',
+                      gap: 6
+                    }}
                   >
-                    <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>Cancelar</Text>
+                    <Text style={{ fontSize: 14 }}>💵</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: metodoGasto === 'efectivo' ? '#fff' : C.text }}>
+                      Efectivo
+                    </Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    onPress={handleRegistrarGasto}
-                    style={{ flex: 1, padding: 12, borderRadius: 8, backgroundColor: C.green, alignItems: 'center', justifyContent: 'center' }}
+                    onPress={() => setMetodoGasto('transferencia')}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      backgroundColor: metodoGasto === 'transferencia' ? '#3b82f6' : C.surf2,
+                      borderWidth: 1.5,
+                      borderColor: metodoGasto === 'transferencia' ? '#3b82f6' : C.border,
+                      alignItems: 'center',
+                      flexDirection: 'row',
+                      justifyContent: 'center',
+                      gap: 6
+                    }}
                   >
-                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>Guardar</Text>
+                    <Text style={{ fontSize: 14 }}>💳</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: metodoGasto === 'transferencia' ? '#fff' : C.text }}>
+                      Transferencia
+                    </Text>
                   </TouchableOpacity>
                 </View>
               </View>
-            </View>
+
+              {/* Botones Cancelar / Guardar */}
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                <TouchableOpacity
+                  onPress={() => setModalGastoVisible(false)}
+                  disabled={guardandoGasto}
+                  style={{
+                    flex: 1,
+                    padding: 12,
+                    borderRadius: 10,
+                    borderWidth: 1.5,
+                    borderColor: C.border,
+                    alignItems: 'center',
+                    backgroundColor: 'transparent'
+                  }}
+                >
+                  <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>Cancelar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleGuardarGastoMovil}
+                  disabled={guardandoGasto}
+                  style={{
+                    flex: 1.4,
+                    padding: 12,
+                    borderRadius: 10,
+                    backgroundColor: C.green,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 6
+                  }}
+                >
+                  {guardandoGasto ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                      <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14 }}>Guardar Gasto</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
-        </Modal>
-      )}
+        </View>
+      </Modal>
 
       {/* Modal de Abono a Crédito / Fiados */}
       <Modal
-        visible={abonoModalVisible}
+        visible={Boolean(abonoModalVisible)}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setAbonoModalVisible(false)}
+        onRequestClose={() => typeof setAbonoModalVisible === 'function' && setAbonoModalVisible(false)}
       >
         <View style={{
           flex: 1,
@@ -5298,7 +6241,15 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               💵 Abonar a Crédito
             </Text>
             <Text style={{ fontSize: 14, color: '#64748b', marginBottom: 16 }}>
-              Deudor: <Text style={{ fontWeight: 'bold', color: '#1e293b' }}>{deudorAbonoSelected || mesaActivaSelected?.deudor || 'Cliente'}</Text>
+              Deudor: <Text style={{ fontWeight: 'bold', color: '#1e293b' }}>
+                {typeof mesaActivaSelected !== 'undefined' && (mesaActivaSelected?.nombre || mesaActivaSelected?.deudor)
+                  ? (mesaActivaSelected.nombre || mesaActivaSelected.deudor)
+                  : (typeof deudorAbonoSelected !== 'undefined' && deudorAbonoSelected
+                      ? deudorAbonoSelected
+                      : (typeof abonoSeleccionado !== 'undefined' && (abonoSeleccionado?.cliente || abonoSeleccionado?.deudor)
+                          ? (abonoSeleccionado.cliente || abonoSeleccionado.deudor)
+                          : 'General'))}
+              </Text>
             </Text>
 
             {/* Selector Efectivo / Transferencia */}

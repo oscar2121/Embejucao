@@ -108,7 +108,14 @@ export function useAppStore() {
     });
 
     socketRef.current.on('caja_actualizada', (sesion) => {
-      setSesionActiva(sesion);
+      if (sesion && typeof sesion === 'object') {
+        setSesionActiva(sesion);
+      }
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
+    socketRef.current.on('credito_actualizado', () => {
+      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     socketRef.current.on('caja:estado', (data) => {
@@ -235,20 +242,39 @@ export function useAppStore() {
 
     const nuevasMesas = baseMesas.map(m => {
       const mesaNumStr = String(m.num || m.id || '');
+      const mDigits = mesaNumStr.replace(/\D/g, '');
+
       const pedidoActivo = (pedidos || []).find(p => {
-        const pMesaStr = String(p.mesa_id || p.mesa || '').trim().toLowerCase();
-        const matchesMesa = pMesaStr === mesaNumStr.toLowerCase() || 
+        const pMesaRaw = String(p.mesa_id || p.mesa || '').trim();
+        const pMesaStr = pMesaRaw.toLowerCase();
+        const pDigits = pMesaRaw.replace(/\D/g, '');
+
+        const isParaLlevar = p.isParaLlevar === true ||
+                             p.para_llevar === 1 ||
+                             String(p.tipo || p.tipo_origen || '').toLowerCase().includes('llevar') ||
+                             pMesaStr.includes('llevar') || pMesaStr.includes('para');
+
+        if (isParaLlevar) return false;
+
+        const matchesMesa = (mDigits && pDigits && mDigits === pDigits) ||
+                            pMesaStr === mesaNumStr.toLowerCase() || 
                             pMesaStr === `mesa ${mesaNumStr}`.toLowerCase() || 
-                            Number(p.mesa) === m.num;
-        const noFinalizado = !['cobrado', 'cancelado', 'archivado', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
-                             (p.pagado === 0 || p.pagado === null || p.pagado === undefined);
+                            Number(p.mesa) === Number(m.num || m.id);
+
+        const noFinalizado = !['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(String(p.estado || '').toLowerCase()) &&
+                             (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false);
         return matchesMesa && noFinalizado;
       });
 
-      if (!pedidoActivo) return { ...m, estado: 'libre' };
+      const mEstadoDB = String(m.estado || '').toLowerCase().trim();
+      const estaOcupadaEnDB = mEstadoDB === 'ocupada' || mEstadoDB === 'cuenta';
+
+      if (!pedidoActivo && !estaOcupadaEnDB) {
+        return { ...m, estado: 'libre' };
+      }
       
-      const estadoActual = String(pedidoActivo.estado || '').toLowerCase();
-      return { ...m, estado: (estadoActual === 'cuenta') ? 'cuenta' : 'ocupada' };
+      const estadoActual = pedidoActivo ? String(pedidoActivo.estado || '').toLowerCase() : mEstadoDB;
+      return { ...m, estado: (estadoActual === 'cuenta' || mEstadoDB === 'cuenta') ? 'cuenta' : 'ocupada' };
     });
     
     setMesas(nuevasMesas);

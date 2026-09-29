@@ -160,16 +160,30 @@ db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS gastos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      descripcion TEXT,
-      categoria TEXT,
-      valor REAL,
-      fecha TEXT,
-      sesion_id INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
+      categoria TEXT NOT NULL,
+      descripcion TEXT NOT NULL,
+      monto REAL NOT NULL,
+      metodo_pago TEXT NOT NULL DEFAULT 'efectivo',
+      usuario_id INTEGER,
+      caja_sesion_id INTEGER
     )
   `, () => {
+    db.run(`ALTER TABLE gastos ADD COLUMN valor REAL`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN monto REAL`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN metodo_pago TEXT DEFAULT 'efectivo'`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN usuario TEXT`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN usuario_id INTEGER`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN sesion_id INTEGER`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN caja_sesion_id INTEGER`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN grupo_afectado TEXT DEFAULT 'comida'`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN uuid TEXT UNIQUE`, () => {});
+    db.run(`UPDATE gastos SET monto = valor WHERE monto IS NULL AND valor IS NOT NULL`, () => {});
+    db.run(`UPDATE gastos SET valor = monto WHERE valor IS NULL AND monto IS NOT NULL`, () => {});
+    db.run(`UPDATE gastos SET caja_sesion_id = sesion_id WHERE caja_sesion_id IS NULL AND sesion_id IS NOT NULL`, () => {});
+    db.run(`UPDATE gastos SET sesion_id = caja_sesion_id WHERE sesion_id IS NULL AND caja_sesion_id IS NOT NULL`, () => {});
+    db.run(`UPDATE gastos SET metodo_pago = 'efectivo' WHERE metodo_pago IS NULL`, () => {});
+    db.run(`UPDATE gastos SET grupo_afectado = 'comida' WHERE grupo_afectado IS NULL`, () => {});
   });
 
   // 4. Insumos (Inventario)
@@ -413,7 +427,73 @@ db.serialize(() => {
           db.run(`
             UPDATE productos SET grupo_reporte = 'comida' 
             WHERE grupo_reporte IS NULL OR grupo_reporte NOT IN ('cervezas', 'gaseosas_embotellados', 'jugos_naturales', 'bebidas_calientes')
-          `);
+          `, () => {
+            // Rutina de consistencia contable: Backfill de pedidos cobrados sin detalles_pedidos
+            db.run(`
+              INSERT INTO detalles_pedidos (pedido_id, producto_id, cantidad, precio_unitario, subtotal, nombre)
+              SELECT p.id, NULL, 1, p.total, p.total, 'Consumo'
+              FROM pedidos p
+              WHERE p.estado = 'cobrado' 
+                AND p.id NOT IN (SELECT DISTINCT pedido_id FROM detalles_pedidos WHERE pedido_id IS NOT NULL);
+            `, () => {
+              // Asegurar que pedidos cobrados con total null o 0 se recalculen
+              db.run(`
+                UPDATE pedidos
+                SET total = (
+                  SELECT COALESCE(SUM(dp.cantidad * dp.precio_unitario), 0)
+                  FROM detalles_pedidos dp
+                  WHERE dp.pedido_id = pedidos.id
+                )
+                WHERE estado = 'cobrado' AND (total IS NULL OR total = 0);
+              `, () => {
+                // Reclasificación de gastos generales históricos que no son materia prima directa
+                // Reclasificación de gastos generales históricos que no son materia prima directa
+                db.run(`
+                  UPDATE gastos
+                  SET grupo_afectado = 'gastos_generales'
+                  WHERE (grupo_afectado IS NULL OR grupo_afectado = '' OR grupo_afectado = 'comida')
+                    AND (
+                      LOWER(categoria) IN ('servicios', 'nómina', 'nomina', 'varios', 'mantenimiento', 'administrativo')
+                      OR LOWER(descripcion) LIKE '%luz%'
+                      OR LOWER(descripcion) LIKE '%arriendo%'
+                      OR LOWER(descripcion) LIKE '%colaborador%'
+                      OR LOWER(descripcion) LIKE '%empleado%'
+                      OR LOWER(descripcion) LIKE '%servicio%'
+                      OR LOWER(descripcion) LIKE '%nomina%'
+                    );
+                `, () => {
+                  // Limpieza masiva al arrancar la BD: Cancelar pedidos fantasmas sin productos
+                  db.run(`
+                    UPDATE pedidos 
+                    SET estado = 'cancelado' 
+                    WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')
+                      AND (
+                        id NOT IN (SELECT DISTINCT pedido_id FROM detalles_pedidos WHERE pedido_id IS NOT NULL)
+                        OR items IS NULL OR TRIM(items) = '' OR TRIM(items) = '[]'
+                      );
+                  `, () => {
+                    // Reseteo masivo de mesas que no tengan pedidos reales activos
+                    db.run(`
+                      UPDATE mesas 
+                      SET estado = 'libre' 
+                      WHERE num NOT IN (
+                        SELECT DISTINCT CAST(REPLACE(mesa, 'Mesa ', '') AS INTEGER) 
+                        FROM pedidos 
+                        WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') AND mesa IS NOT NULL
+                      )
+                      AND id NOT IN (
+                        SELECT DISTINCT CAST(REPLACE(mesa, 'Mesa ', '') AS INTEGER) 
+                        FROM pedidos 
+                        WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') AND mesa IS NOT NULL
+                      );
+                    `, () => {
+                      console.log('✅ Mesas y pedidos fantasmas verificados y limpiados al iniciar la BD.');
+                    });
+                  });
+                });
+              });
+            });
+          });
         });
       });
     });

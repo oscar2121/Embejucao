@@ -30,6 +30,7 @@ export const CATEGORIAS = [
   { id: 7, nombre: "🍋 Limonadas" },
   { id: 8, nombre: "🍺 Bebidas / Cervezas" },
   { id: 9, nombre: "☕ Bebidas Calientes" },
+  { id: 10, nombre: "🍟 Adicionales" },
 ];
 
 export const obtenerMinutosTranscurridos = (horaPedidoString) => {

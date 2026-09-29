@@ -41,7 +41,7 @@ const io = new Server(server, {
 });
 
 // ─── CONEXIÓN Y MODULOS BACKEND ───
-const { db, dbAll, dbGet } = require('./src/database/db');
+const { db, dbAll, dbGet, dbRun } = require('./src/database/db');
 const { hashPin, logAuditoria, obtenerBalanceTurnoActivo } = require('./src/utils/helpers');
 const { setIO, getIO, broadcastComandasActivas, emitirSincronizacionCompleta, parsearItems } = require('./src/utils/socket');
 
@@ -207,6 +207,428 @@ app.use('/', cajaRoutes); // Retrocompatibilidad con /pedidos/fiado
 app.use('/api', mesasRoutes);
 app.use('/api', pedidosRoutes);
 app.use('/', pedidosRoutes); // Retrocompatibilidad con /pedidos
+
+// Endpoint para estado actual de caja (Cobrado vs Pendiente en Mesas)
+app.get('/api/caja/estado-actual', async (req, res) => {
+  try {
+    const cobrados = await dbGet("SELECT SUM(total) as total FROM pedidos WHERE LOWER(estado) = 'cobrado' AND date(datetime(fecha), 'localtime') = date('now', 'localtime')");
+    const abiertos = await dbGet("SELECT SUM(total) as total FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') AND (pagado = 0 OR pagado IS NULL)");
+    const efectivoEnCaja = cobrados?.total || 0;
+    const pendienteEnMesas = abiertos?.total || 0;
+
+    res.json({
+      success: true,
+      efectivo_en_caja: efectivoEnCaja,
+      pendiente_en_mesas: pendienteEnMesas,
+      total_proyectado: efectivoEnCaja + pendienteEnMesas
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoints de Abonos / Créditos (server.js)
+app.get('/api/creditos/abonos', async (req, res) => {
+  try {
+    const deudor = req.query.deudor || req.query.cliente_id;
+    let sql = `SELECT * FROM abonos_credito ORDER BY id DESC LIMIT 100`;
+    let params = [];
+    if (deudor) {
+      sql = `SELECT * FROM abonos_credito WHERE LOWER(cliente_id) = LOWER(?) OR LOWER(deudor) = LOWER(?) ORDER BY id DESC LIMIT 100`;
+      params = [deudor, deudor];
+    }
+    const rows = await dbAll(sql, params);
+    res.json({ success: true, abonos: rows || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/fiados/abonos', async (req, res) => {
+  try {
+    const deudor = req.query.deudor || req.query.cliente_id;
+    let sql = `SELECT * FROM abonos_fiados ORDER BY id DESC LIMIT 100`;
+    let params = [];
+    if (deudor) {
+      sql = `SELECT * FROM abonos_fiados WHERE LOWER(deudor) = LOWER(?) ORDER BY id DESC LIMIT 100`;
+      params = [deudor];
+    }
+    const rows = await dbAll(sql, params);
+    res.json({ success: true, abonos: rows || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/creditos/abono', async (req, res) => {
+  const { cliente_id, deudor, monto, metodo_pago, sesion_id } = req.body;
+  const targetCliente = String(cliente_id || deudor || '').trim();
+  const montoAbono = Number(monto);
+  if (!targetCliente || isNaN(montoAbono) || montoAbono <= 0) {
+    return res.status(400).json({ error: 'Cliente y monto válido son requeridos.' });
+  }
+
+  const fechaHoy = new Date().toISOString();
+
+  try {
+    await dbRun(`CREATE TABLE IF NOT EXISTS abonos_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente_id TEXT, deudor TEXT, monto REAL, metodo_pago TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS clientes_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE, saldo_pendiente REAL DEFAULT 0, ultimo_abono REAL DEFAULT 0, fecha_ultimo_abono TEXT)`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS abonos_fiados (id INTEGER PRIMARY KEY AUTOINCREMENT, deudor TEXT, monto REAL, metodo_pago TEXT, pedido_id INTEGER, sesion_id INTEGER, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    await dbRun(`ALTER TABLE pedidos ADD COLUMN abono_parcial REAL DEFAULT 0`, () => {});
+    await dbRun(`ALTER TABLE pedidos ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    await dbRun(`ALTER TABLE pedidos ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
+    await dbRun(`ALTER TABLE pedidos ADD COLUMN metodo_pago_abono TEXT`, () => {});
+    await dbRun(`ALTER TABLE clientes_credito ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    await dbRun(`ALTER TABLE clientes_credito ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
+
+    await dbRun(
+      `INSERT INTO abonos_credito (cliente_id, deudor, monto, metodo_pago, fecha) VALUES (?, ?, ?, ?, datetime('now', 'localtime'))`,
+      [targetCliente, targetCliente, montoAbono, metodo_pago || 'Efectivo']
+    );
+    await dbRun(
+      `UPDATE clientes_credito SET saldo_pendiente = MAX(0, saldo_pendiente - ?), ultimo_abono = ?, fecha_ultimo_abono = ? WHERE id = ? OR LOWER(nombre) = LOWER(?)`,
+      [montoAbono, montoAbono, fechaHoy, targetCliente, targetCliente.toLowerCase()]
+    );
+
+    const ordenesFiadas = await dbAll(
+      `SELECT * FROM pedidos WHERE (TRIM(LOWER(deudor)) = TRIM(LOWER(?)) OR id = ?) AND LOWER(estado) IN ('fiado', 'credito') ORDER BY id ASC`,
+      [targetCliente, targetCliente]
+    );
+
+    if (Array.isArray(ordenesFiadas) && ordenesFiadas.length > 0) {
+      let restante = montoAbono;
+      for (const ord of ordenesFiadas) {
+        if (restante <= 0) break;
+        let totalOrd = Number(ord.total || 0);
+        if (totalOrd <= 0 && ord.items) {
+          try {
+            const items = typeof ord.items === 'string' ? JSON.parse(ord.items) : (ord.items || []);
+            totalOrd = items.reduce((sum, item) => sum + (Number(item.precio || 0) * Number(item.cantidad || 1)), 0);
+          } catch (e) {}
+        }
+
+        const abonoPrev = Number(ord.abono_parcial || 0);
+        const saldoOrd = Math.max(0, totalOrd - abonoPrev);
+        if (saldoOrd <= 0) continue;
+
+        if (restante >= saldoOrd) {
+          restante -= saldoOrd;
+          await dbRun(
+            `UPDATE pedidos SET estado = 'cobrado', pagado = 1, abono_parcial = ?, ultimo_abono = ?, fecha_ultimo_abono = ?, metodo_pago_abono = ? WHERE id = ?`,
+            [totalOrd, saldoOrd, fechaHoy, metodo_pago || 'Efectivo', ord.id]
+          );
+          await dbRun(
+            `INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`,
+            [targetCliente, saldoOrd, metodo_pago || 'Efectivo', ord.id, sesion_id || null]
+          );
+        } else {
+          const nuevoAbono = abonoPrev + restante;
+          await dbRun(
+            `UPDATE pedidos SET abono_parcial = ?, ultimo_abono = ?, fecha_ultimo_abono = ?, metodo_pago_abono = ? WHERE id = ?`,
+            [nuevoAbono, restante, fechaHoy, metodo_pago || 'Efectivo', ord.id]
+          );
+          await dbRun(
+            `INSERT INTO abonos_fiados (deudor, monto, metodo_pago, pedido_id, sesion_id) VALUES (?, ?, ?, ?, ?)`,
+            [targetCliente, restante, metodo_pago || 'Efectivo', ord.id, sesion_id || null]
+          );
+          restante = 0;
+        }
+      }
+    }
+
+    if (req.io) {
+      req.io.emit('credito_actualizado');
+      req.io.emit('caja_actualizada');
+      req.io.emit('pedidos_actualizados');
+      req.io.emit('actualizar_pedidos');
+      req.io.emit('dashboard:actualizado');
+      req.io.emit('caja:estado');
+    }
+    res.json({ success: true, message: "Abono registrado correctamente", mensaje: "Abono registrado correctamente" });
+  } catch (err) {
+    console.error("Error abono crédito:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Endpoint para resetear estado de una mesa atascada (server.js)
+app.post('/api/mesas/:id/liberar-forzoso', async (req, res) => {
+  const mesaId = req.params.id;
+  try {
+    const mesaStr = String(mesaId).trim();
+    const mesaNum = mesaStr.replace(/\D/g, '');
+    const mesaVariante = mesaNum ? `Mesa ${mesaNum}` : mesaStr;
+
+    await dbRun(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaId, mesaNum || mesaId]);
+    await dbRun(`UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ? OR id = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')`, [mesaStr, mesaVariante, mesaId]);
+
+    const mesasActuales = await dbAll(`SELECT * FROM mesas ORDER BY num ASC`);
+    if (req.io) {
+      req.io.emit('mesas_actualizadas', mesasActuales);
+      req.io.emit('pedidos_actualizados');
+      req.io.emit('actualizar_pedidos');
+    }
+    res.json({ success: true, message: `Mesa ${mesaId} liberada con éxito.`, mensaje: `Mesa ${mesaId} liberada con éxito.`, mesas: mesasActuales });
+  } catch (err) {
+    console.error("Error al liberar mesa forzoso:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Endpoint de Reseteo Profundo de Mesa (server.js)
+app.post('/api/mesas/:id/forzar-limpieza-completa', async (req, res) => {
+  const mesaId = req.params.id;
+  try {
+    const mesaStr = String(mesaId).trim();
+    const mesaNum = mesaStr.replace(/\D/g, '');
+    const mesaVariante = mesaNum ? `Mesa ${mesaNum}` : mesaStr;
+
+    // 1. Marcar todos los pedidos abiertos/fantasmas de esta mesa como cancelados
+    await dbRun(
+      `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ? OR id = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')`,
+      [mesaStr, mesaVariante, mesaId]
+    );
+
+    // 2. Forzar estado libre en la mesa
+    await dbRun(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaId, mesaNum || mesaId]);
+
+    // 3. Emitir actualización a todos los clientes conectados por WebSocket
+    const mesasActuales = await dbAll(`SELECT * FROM mesas ORDER BY num ASC`);
+    if (req.io) {
+      req.io.emit('mesas_actualizadas', mesasActuales);
+      req.io.emit('caja_actualizada');
+      req.io.emit('pedidos_actualizados');
+      req.io.emit('actualizar_pedidos');
+    }
+    res.json({ success: true, message: `Mesa ${mesaId} limpiada y liberada por completo.`, mesas: mesasActuales });
+  } catch (err) {
+    console.error("Error en limpieza profunda de mesa:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Endpoint de Limpieza de Pedidos Huérfanos / Fantasmas en Backend
+app.post('/api/sistema/limpiar-fantasmas', async (req, res) => {
+  try {
+    // 1. Cancelar pedidos abiertos/fantasma que no tengan detalles o estén huérfanos sin ítems
+    await dbRun(`
+      UPDATE pedidos 
+      SET estado = 'cancelado' 
+      WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')
+        AND (
+          id NOT IN (SELECT DISTINCT pedido_id FROM detalles_pedidos WHERE pedido_id IS NOT NULL)
+          OR items IS NULL 
+          OR TRIM(items) = '' 
+          OR TRIM(items) = '[]'
+        )
+    `);
+
+    // 2. Liberar mesas que no tengan ningún pedido realmente activo
+    db.all(`SELECT id, num FROM mesas`, async (errMesas, todasMesas) => {
+      if (!errMesas && Array.isArray(todasMesas)) {
+        for (const m of todasMesas) {
+          const mesaNum = m.num || m.id;
+          const mesaStr = String(mesaNum);
+          const mesaVar = `Mesa ${mesaNum}`;
+          
+          const tienePedidoReal = await dbGet(`
+            SELECT id FROM pedidos 
+            WHERE (mesa = ? OR mesa = ? OR id = ?)
+              AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')
+            LIMIT 1
+          `, [mesaStr, mesaVar, m.id]);
+
+          if (!tienePedidoReal) {
+            await dbRun(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [m.id, mesaNum]);
+          }
+        }
+      }
+
+      const mesasActuales = await dbAll(`SELECT * FROM mesas ORDER BY num ASC`);
+
+      if (req.io) {
+        req.io.emit('mesas_actualizadas', mesasActuales);
+        req.io.emit('caja_actualizada');
+        req.io.emit('pedidos_actualizados');
+        req.io.emit('actualizar_pedidos');
+      }
+
+      res.json({ success: true, message: "Pedidos fantasmas eliminados y mesas sincronizadas.", mesas: mesasActuales });
+    });
+  } catch (err) {
+    console.error("Error limpiando fantasmas:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Endpoint de Sincronización Manual / Reseteo de Mesas
+app.post('/api/mesas/resetear-todas', async (req, res) => {
+  try {
+    await dbRun(`UPDATE mesas SET estado = 'libre'`);
+    await dbRun(`UPDATE pedidos SET estado = 'cancelado' WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`);
+    const mesasActuales = await dbAll(`SELECT * FROM mesas ORDER BY num ASC`);
+    if (req.io) {
+      req.io.emit('mesas_actualizadas', mesasActuales);
+      req.io.emit('pedidos_actualizados');
+      req.io.emit('actualizar_pedidos');
+      req.io.emit('caja_actualizada');
+    }
+    res.json({ success: true, message: "Todas las mesas han sido liberadas y reseteadas.", mesas: mesasActuales });
+  } catch (err) {
+    console.error("Error al resetear todas las mesas:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==========================================
+// ENDPOINTS DE PRODUCTIVIDAD Y REINVERSIÓN
+// ==========================================
+
+// 1. Productividad en vivo (Turno actual / Caja activa o ventas de hoy)
+app.get('/api/caja/productividad-en-vivo', async (req, res) => {
+  try {
+    const sesionActiva = await dbGet("SELECT id FROM caja_sesiones WHERE estado = 'abierta' ORDER BY id DESC LIMIT 1");
+    
+    let whereClause = "ped.estado = 'cobrado'";
+    const params = [];
+
+    if (sesionActiva && sesionActiva.id) {
+      whereClause += " AND ped.caja_sesion_id = ?";
+      params.push(sesionActiva.id);
+    } else {
+      // Si la caja no está formalmente abierta, mostrar las del día actual
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date('now', 'localtime')";
+    }
+
+    const query = `
+      SELECT 
+        COALESCE(p.grupo_reporte, 'comida') AS grupo,
+        SUM(COALESCE(dp.cantidad, 1)) AS unidades_vendidas,
+        SUM(COALESCE(dp.precio_unitario * dp.cantidad, ped.total, 0)) AS total_dinero
+      FROM pedidos ped
+      LEFT JOIN detalles_pedidos dp ON dp.pedido_id = ped.id
+      LEFT JOIN productos p ON p.id = dp.producto_id
+      WHERE ${whereClause}
+      GROUP BY grupo;
+    `;
+
+    const filas = await dbAll(query, params);
+    
+    const resultado = {
+      comida: 0,
+      jugos_naturales: 0,
+      cervezas: 0,
+      gaseosas_embotellados: 0,
+      bebidas_calientes: 0,
+      total: 0
+    };
+
+    if (Array.isArray(filas)) {
+      filas.forEach(f => {
+        const grupoKey = f.grupo;
+        const monto = Number(f.total_dinero) || 0;
+        if (resultado.hasOwnProperty(grupoKey)) {
+          resultado[grupoKey] = monto;
+          resultado.total += monto;
+        } else {
+          resultado.comida += monto;
+          resultado.total += monto;
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      productividad: { ...resultado, total_turno: resultado.total },
+      sesion_activa: sesionActiva || null,
+      total_turno: resultado.total,
+      ...resultado
+    });
+  } catch (error) {
+    console.error("Error en /api/caja/productividad-en-vivo:", error);
+    res.json({
+      success: true,
+      productividad: { comida: 0, jugos_naturales: 0, cervezas: 0, gaseosas_embotellados: 0, bebidas_calientes: 0, total_turno: 0, total: 0 },
+      comida: 0, jugos_naturales: 0, cervezas: 0, gaseosas_embotellados: 0, bebidas_calientes: 0, total: 0, total_turno: 0
+    });
+  }
+});
+
+// 2. Historial de productividad por rango de fechas
+app.get('/api/reportes/productividad/historial', async (req, res) => {
+  try {
+    const { fecha_inicio, fecha_fin, rango } = req.query;
+    let whereClause = "ped.estado = 'cobrado'";
+    const params = [];
+
+    if (fecha_inicio && fecha_fin) {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') BETWEEN date(?) AND date(?)";
+      params.push(fecha_inicio, fecha_fin);
+    } else if (fecha_inicio) {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date(?)";
+      params.push(fecha_inicio);
+    } else if (rango === 'todo') {
+      // Sin filtro de fecha para traer todo el historial
+    } else if (rango === 'mes' || rango === 'este_mes') {
+      whereClause += " AND strftime('%Y-%m', datetime(ped.fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+    } else if (rango === 'semana' || rango === 'esta_semana') {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') >= date('now', '-6 days', 'localtime')";
+    } else if (rango === 'hoy') {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date('now', 'localtime')";
+    } else if (rango === 'ayer') {
+      whereClause += " AND date(datetime(ped.fecha), 'localtime') = date('now', '-1 day', 'localtime')";
+    } else {
+      whereClause += " AND strftime('%Y-%m', datetime(ped.fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime')";
+    }
+
+    const query = `
+      SELECT 
+        date(datetime(ped.fecha), 'localtime') AS fecha,
+        COALESCE(p.grupo_reporte, 'comida') AS grupo,
+        SUM(COALESCE(dp.cantidad, 1)) AS unidades_vendidas,
+        SUM(COALESCE(dp.precio_unitario * dp.cantidad, ped.total, 0)) AS total_dinero
+      FROM pedidos ped
+      LEFT JOIN detalles_pedidos dp ON dp.pedido_id = ped.id
+      LEFT JOIN productos p ON p.id = dp.producto_id
+      WHERE ${whereClause}
+      GROUP BY date(datetime(ped.fecha), 'localtime'), grupo
+      ORDER BY date(datetime(ped.fecha), 'localtime') DESC;
+    `;
+
+    const filas = await dbAll(query, params);
+    const agrupado = {};
+
+    if (Array.isArray(filas)) {
+      filas.forEach(f => {
+        if (!f.fecha) return;
+        if (!agrupado[f.fecha]) {
+          agrupado[f.fecha] = {
+            fecha: f.fecha,
+            comida: 0,
+            jugos_naturales: 0,
+            cervezas: 0,
+            gaseosas_embotellados: 0,
+            bebidas_calientes: 0,
+            total_dia: 0
+          };
+        }
+        const monto = Number(f.total_dinero) || 0;
+        const g = (f.grupo || 'comida').toLowerCase();
+        if (agrupado[f.fecha].hasOwnProperty(g)) {
+          agrupado[f.fecha][g] += monto;
+        } else {
+          agrupado[f.fecha].comida += monto;
+        }
+        agrupado[f.fecha].total_dia += monto;
+      });
+    }
+
+    res.json(Object.values(agrupado));
+  } catch (error) {
+    console.error("Error en /api/reportes/productividad/historial:", error);
+    res.json([]);
+  }
+});
 
 // ─── SUBIDA DE IMÁGENES ───
 const storage = multer.diskStorage({
@@ -457,7 +879,10 @@ app.get('/api/categorias', (req, res) => {
         });
       }
 
-      // 3. Siempre incluir 'Otros'
+      // 3. Siempre incluir 'Adicionales' y 'Otros'
+      if (!categoriasMap.has('adicionales')) {
+        categoriasMap.set('adicionales', { id: 10, nombre: 'Adicionales', categoria: 'Adicionales', color: '#ea580c' });
+      }
       if (!categoriasMap.has('otros')) {
         categoriasMap.set('otros', { id: 'temp-otros', nombre: 'Otros', categoria: 'Otros', color: '#64748b' });
       }
@@ -473,12 +898,12 @@ app.post('/api/categorias', (req, res) => {
   if (!nombre || !nombre.trim()) return res.status(400).json({ error: "Nombre de categoría requerido" });
   const nombreLimpio = nombre.trim();
   
-  db.run(`INSERT INTO categorias (nombre, color) VALUES (?, ?)`, [nombreLimpio, color || '#16a34a'], function (err) {
+  db.run(`INSERT OR IGNORE INTO categorias (nombre, color) VALUES (?, ?)`, [nombreLimpio, color || '#16a34a'], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     if (req.io) req.io.emit('catalogo_actualizado');
     if (typeof io !== 'undefined') io.emit('productos_actualizados');
     broadcastComandasActivas();
-    res.json({ success: true, id: this.lastID, nombre: nombreLimpio, color: color || '#16a34a' });
+    res.json({ success: true, id: this.lastID || nombreLimpio, nombre: nombreLimpio, color: color || '#16a34a' });
   });
 });
 
@@ -556,56 +981,243 @@ app.delete('/api/categorias/:nombre', (req, res) => {
 });
 
 // ─── GASTOS ───
-app.post('/api/gastos', authorize(['admin', 'caja']), (req, res) => {
-  const { descripcion, categoria, valor, fecha, sesion_id } = req.body;
-  const fechaGasto = fecha || new Date().toISOString().split('T')[0];
-  const usuarioResp = req.user ? req.user.nombre : 'Desconocido';
+// Registrar un nuevo gasto
+app.post('/api/gastos', async (req, res) => {
+  const { categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id } = req.body;
+  const montoNum = Number(monto !== undefined ? monto : valor);
+  const metodoPagoLimpio = String(metodo_pago || 'efectivo').toLowerCase().trim();
+  const grupoLimpio = String(grupo_afectado || 'comida').toLowerCase().trim();
 
-  const resolveSesionId = new Promise((resolve) => {
-    if (sesion_id && sesion_id !== 1) {
-      resolve(sesion_id);
-    } else {
-      db.get(`SELECT id FROM caja_sesiones WHERE estado = 'abierta' ORDER BY id DESC LIMIT 1`, [], (err, row) => {
-        resolve(row ? row.id : null);
-      });
+  if (!descripcion || isNaN(montoNum) || !metodo_pago) {
+    return res.status(400).json({ error: "Descripción, monto y método de pago (efectivo/transferencia) son obligatorios." });
+  }
+
+  try {
+    let finalSesionId = caja_sesion_id || sesion_id || null;
+    if (!finalSesionId) {
+      const sesionAbierta = await dbGet(`SELECT id FROM caja_sesiones WHERE estado = 'abierta' ORDER BY id DESC LIMIT 1`);
+      if (sesionAbierta) finalSesionId = sesionAbierta.id;
     }
-  });
 
-  const valorLimpio = typeof valor === 'string'
-    ? parseInt(valor.replace(/\D/g, ''), 10) || 0
-    : Number(valor || 0);
+    const usuarioResp = req.user ? req.user.nombre : 'Administrador';
+    const categoriaFinal = categoria || 'Insumos';
 
-  resolveSesionId.then((final_sesion_id) => {
-    db.run(
-      `INSERT INTO gastos (descripcion, categoria, valor, fecha, sesion_id, usuario) VALUES (?, ?, ?, ?, ?, ?)`,
-      [descripcion, categoria, valorLimpio, fechaGasto, final_sesion_id, usuarioResp],
-      async function (err) {
-        if (err) return res.status(400).json({ error: err.message });
-        logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${valorLimpio}) en cat. ${categoria}`);
-        res.json({ success: true, id: this.lastID });
-
-        if (typeof io !== 'undefined') {
-          io.emit('dashboard:actualizado');
-          io.emit('caja:estado');
-        }
-
-        try {
-          const balanceActual = await obtenerBalanceTurnoActivo();
-          io.emit('caja:estado', { abierta: Boolean(balanceActual), sesion: balanceActual, turno: balanceActual });
-          io.emit('dashboard:actualizado');
-        } catch (e) {
-          console.error("Error emitiendo actualizacion de gasto", e);
-        }
-      }
+    const insertResult = await dbRun(
+      `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp]
     );
-  });
+
+    logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${montoNum} - ${metodoPagoLimpio} - ${grupoLimpio}) en cat. ${categoriaFinal}`);
+
+    if (req.io) {
+      req.io.emit('caja_actualizada');
+      req.io.emit('gastos_actualizados');
+      req.io.emit('caja:estado');
+      req.io.emit('dashboard:actualizado');
+    }
+
+    try {
+      const balanceActual = await obtenerBalanceTurnoActivo();
+      if (req.io) {
+        req.io.emit('caja:estado', { abierta: Boolean(balanceActual), sesion: balanceActual, turno: balanceActual });
+      }
+    } catch (e) {}
+
+    res.status(201).json({ success: true, mensaje: "Gasto registrado exitosamente.", id: insertResult?.lastID });
+  } catch (err) {
+    console.error("Error al registrar gasto:", err);
+    res.status(500).json({ error: "Error al registrar gasto: " + err.message });
+  }
 });
 
-app.get('/api/gastos', (req, res) => {
-  db.all(`SELECT * FROM gastos ORDER BY id DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ gastos: rows });
-  });
+// Consultar resumen de gastos agrupados por macro-grupo
+app.get('/api/gastos/resumen-por-grupo', async (req, res) => {
+  const { fecha_inicio, fecha_fin, rango } = req.query;
+  try {
+    let where = "1=1";
+    const params = [];
+
+    if (rango === 'mes') {
+      where += " AND (strftime('%Y-%m', datetime(fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime') OR substr(fecha, 1, 7) = strftime('%Y-%m', 'now', 'localtime'))";
+    } else if (rango === 'semana') {
+      where += " AND (date(datetime(fecha), 'localtime') >= date('now', '-6 days', 'localtime') OR substr(fecha, 1, 10) >= date('now', '-6 days', 'localtime'))";
+    } else if (rango === 'hoy') {
+      where += " AND (date(datetime(fecha), 'localtime') = date('now', 'localtime') OR substr(fecha, 1, 10) = date('now', 'localtime'))";
+    } else if (rango === 'ayer') {
+      where += " AND (date(datetime(fecha), 'localtime') = date('now', '-1 day', 'localtime') OR substr(fecha, 1, 10) = date('now', '-1 day', 'localtime'))";
+    } else if (fecha_inicio && fecha_fin) {
+      where += " AND (date(datetime(fecha), 'localtime') BETWEEN date(?) AND date(?) OR substr(fecha, 1, 10) BETWEEN ? AND ?)";
+      params.push(fecha_inicio, fecha_fin, fecha_inicio, fecha_fin);
+    } else if (fecha_inicio) {
+      where += " AND (date(datetime(fecha), 'localtime') = date(?) OR substr(fecha, 1, 10) = ?)";
+      params.push(fecha_inicio, fecha_inicio);
+    } else {
+      where += " AND (strftime('%Y-%m', datetime(fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime') OR substr(fecha, 1, 7) = strftime('%Y-%m', 'now', 'localtime'))";
+    }
+
+    const query = `
+      SELECT 
+        COALESCE(grupo_afectado, 'gastos_generales') AS grupo_afectado,
+        SUM(COALESCE(monto, valor, 0)) AS total_gastado,
+        SUM(CASE WHEN LOWER(COALESCE(metodo_pago, 'efectivo')) = 'efectivo' THEN COALESCE(monto, valor, 0) ELSE 0 END) AS gastado_efectivo,
+        SUM(CASE WHEN LOWER(COALESCE(metodo_pago, 'efectivo')) = 'transferencia' THEN COALESCE(monto, valor, 0) ELSE 0 END) AS gastado_transferencia
+      FROM gastos
+      WHERE ${where}
+      GROUP BY COALESCE(grupo_afectado, 'gastos_generales');
+    `;
+    const filas = await dbAll(query, params);
+    res.json(filas || []);
+  } catch (err) {
+    console.error("Error en resumen de gastos por grupo:", err);
+    res.json([]);
+  }
+});
+
+// Consultar gastos por rango de fechas
+app.get('/api/gastos', async (req, res) => {
+  const { fecha_inicio, fecha_fin, rango } = req.query;
+  try {
+    let where = "1=1";
+    const params = [];
+
+    if (rango === 'mes') {
+      where += " AND (strftime('%Y-%m', datetime(fecha), 'localtime') = strftime('%Y-%m', 'now', 'localtime') OR substr(fecha, 1, 7) = strftime('%Y-%m', 'now', 'localtime'))";
+    } else if (rango === 'semana') {
+      where += " AND (date(datetime(fecha), 'localtime') >= date('now', '-6 days', 'localtime') OR substr(fecha, 1, 10) >= date('now', '-6 days', 'localtime'))";
+    } else if (rango === 'hoy') {
+      where += " AND (date(datetime(fecha), 'localtime') = date('now', 'localtime') OR substr(fecha, 1, 10) = date('now', 'localtime'))";
+    } else if (rango === 'ayer') {
+      where += " AND (date(datetime(fecha), 'localtime') = date('now', '-1 day', 'localtime') OR substr(fecha, 1, 10) = date('now', '-1 day', 'localtime'))";
+    } else if (fecha_inicio && fecha_fin) {
+      where += " AND (date(datetime(fecha), 'localtime') BETWEEN date(?) AND date(?) OR substr(fecha, 1, 10) BETWEEN ? AND ?)";
+      params.push(fecha_inicio, fecha_fin, fecha_inicio, fecha_fin);
+    } else if (fecha_inicio) {
+      where += " AND (date(datetime(fecha), 'localtime') = date(?) OR substr(fecha, 1, 10) = ?)";
+      params.push(fecha_inicio, fecha_inicio);
+    }
+
+    const rows = await dbAll(
+      `SELECT id, fecha, categoria, descripcion, 
+              COALESCE(monto, valor, 0) as monto, 
+              COALESCE(monto, valor, 0) as valor, 
+              COALESCE(metodo_pago, 'efectivo') as metodo_pago, 
+              COALESCE(grupo_afectado, 'gastos_generales') as grupo_afectado, 
+              COALESCE(caja_sesion_id, sesion_id) as caja_sesion_id, 
+              usuario, created_at 
+       FROM gastos 
+       WHERE ${where} 
+       ORDER BY fecha DESC, id DESC`,
+      params
+    );
+
+    const resumen = {
+      total_efectivo: 0,
+      total_transferencia: 0,
+      total_gastos: 0,
+      lista: rows || [],
+      gastos: rows || []
+    };
+
+    (rows || []).forEach(g => {
+      const val = Number(g.monto) || 0;
+      const metodo = String(g.metodo_pago || '').toLowerCase();
+      if (metodo === 'transferencia' || metodo.includes('nequi') || metodo.includes('daviplata')) {
+        resumen.total_transferencia += val;
+      } else {
+        resumen.total_efectivo += val;
+      }
+      resumen.total_gastos += val;
+    });
+
+    res.json(resumen);
+  } catch (err) {
+    console.error("Error al consultar gastos:", err);
+    res.status(500).json({ error: err.message, total_efectivo: 0, total_transferencia: 0, total_gastos: 0, lista: [], gastos: [] });
+  }
+});
+
+// Modificar grupo afectado de un gasto existente
+app.put('/api/gastos/:id/grupo', async (req, res) => {
+  const { id } = req.params;
+  const { grupo_afectado } = req.body;
+  try {
+    const validGrupos = ['comida', 'jugos_naturales', 'cervezas', 'gaseosas_embotellados', 'bebidas_calientes', 'gastos_generales'];
+    const nuevoGrupo = validGrupos.includes(grupo_afectado) ? grupo_afectado : 'gastos_generales';
+    await dbRun("UPDATE gastos SET grupo_afectado = ? WHERE id = ?", [nuevoGrupo, id]);
+    if (req.io) {
+      req.io.emit('caja_actualizada');
+      req.io.emit('gastos_actualizados');
+      req.io.emit('dashboard:actualizado');
+    }
+    res.json({ success: true, mensaje: "Grupo del gasto actualizado", id, grupo_afectado: nuevoGrupo });
+  } catch (err) {
+    console.error("Error al actualizar grupo del gasto:", err);
+    res.status(500).json({ error: "Error al actualizar grupo del gasto" });
+  }
+});
+
+// Modificar gasto existente (completo)
+app.put('/api/gastos/:id', async (req, res) => {
+  const { id } = req.params;
+  const { grupo_afectado, descripcion, categoria, monto, valor, metodo_pago } = req.body;
+  try {
+    const fields = [];
+    const params = [];
+    if (grupo_afectado !== undefined) {
+      fields.push("grupo_afectado = ?");
+      params.push(grupo_afectado);
+    }
+    if (descripcion !== undefined) {
+      fields.push("descripcion = ?");
+      params.push(descripcion);
+    }
+    if (categoria !== undefined) {
+      fields.push("categoria = ?");
+      params.push(categoria);
+    }
+    if (monto !== undefined || valor !== undefined) {
+      const v = Number(monto !== undefined ? monto : valor) || 0;
+      fields.push("monto = ?");
+      params.push(v);
+      fields.push("valor = ?");
+      params.push(v);
+    }
+    if (metodo_pago !== undefined) {
+      fields.push("metodo_pago = ?");
+      params.push(metodo_pago);
+    }
+    if (fields.length === 0) {
+      return res.status(400).json({ error: "No hay campos para actualizar" });
+    }
+    params.push(id);
+    await dbRun(`UPDATE gastos SET ${fields.join(', ')} WHERE id = ?`, params);
+    if (req.io) {
+      req.io.emit('caja_actualizada');
+      req.io.emit('gastos_actualizados');
+      req.io.emit('dashboard:actualizado');
+    }
+    res.json({ success: true, mensaje: "Gasto actualizado exitosamente", id });
+  } catch (err) {
+    console.error("Error al actualizar gasto:", err);
+    res.status(500).json({ error: "Error al actualizar gasto" });
+  }
+});
+
+app.delete('/api/gastos/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await dbRun("DELETE FROM gastos WHERE id = ?", [id]);
+    if (req.io) {
+      req.io.emit('caja_actualizada');
+      req.io.emit('gastos_actualizados');
+      req.io.emit('dashboard:actualizado');
+    }
+    res.json({ success: true, mensaje: "Gasto eliminado exitosamente" });
+  } catch (err) {
+    console.error("Error al eliminar gasto:", err);
+    res.status(500).json({ error: "Error al eliminar gasto" });
+  }
 });
 
 // ─── FINANZAS / REPORTES ───
@@ -826,6 +1438,32 @@ app.post('/api/inventario/insumos', (req, res) => {
       res.json({ success: true, id: insumoId });
     }
   );
+});
+
+app.delete('/api/inventario/insumos/:id', (req, res) => {
+  const { id } = req.params;
+  const usuario = req.body?.usuario || req.query?.usuario || 'Admin';
+
+  db.get(`SELECT nombre FROM insumos WHERE id = ?`, [id], (errGet, ins) => {
+    if (errGet) return res.status(500).json({ error: errGet.message });
+    if (!ins) return res.status(404).json({ error: 'Insumo no encontrado' });
+
+    const insNombre = ins.nombre;
+
+    db.serialize(() => {
+      db.run(`DELETE FROM movimientos_inventario WHERE insumo_id = ?`, [id]);
+      db.run(`DELETE FROM producto_insumos WHERE insumo_id = ?`, [id]);
+      db.run(`DELETE FROM insumos WHERE id = ?`, [id], function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        if (typeof logAuditoria === 'function') {
+          logAuditoria(usuario, 'insumo_eliminado', `Insumo eliminado: ${insNombre}`);
+        }
+        if (req.io) req.io.emit('inventario:actualizado');
+        if (typeof io !== 'undefined') io.emit('inventario:actualizado');
+        res.json({ success: true, deleted: this.changes, message: 'Insumo eliminado con éxito' });
+      });
+    });
+  });
 });
 
 app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {

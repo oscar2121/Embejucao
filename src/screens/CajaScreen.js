@@ -89,19 +89,26 @@ export default function CajaScreen({
   const calcularTotal = (pedido) => {
     if (!pedido) return 0;
     if (pedido.ordenes_historial) {
-      return pedido.ordenes_historial.reduce((totalSum, orden) => {
+      const sumHistorial = pedido.ordenes_historial.reduce((totalSum, orden) => {
         if (!orden.items) return totalSum;
         return totalSum + orden.items.reduce((sum, item) => {
           const price = item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0);
           return sum + (price * item.cantidad);
         }, 0);
       }, 0);
+      if (sumHistorial > 0) return sumHistorial;
     }
-    if (!pedido.items) return 0;
-    return pedido.items.reduce((sum, item) => {
-      const price = item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0);
-      return sum + (price * item.cantidad);
-    }, 0);
+    let total = 0;
+    if (pedido.items && Array.isArray(pedido.items)) {
+      total = pedido.items.reduce((sum, item) => {
+        const price = item.precio !== undefined ? item.precio : (productos.find(p => p.nombre === item.nombre)?.precio || 0);
+        return sum + (price * item.cantidad);
+      }, 0);
+    }
+    if (total <= 0 && Number(pedido.total) > 0) {
+      total = Number(pedido.total);
+    }
+    return total;
   };
 
   // PROCESAR EL COBRO DESDE UNA MESA
@@ -253,6 +260,9 @@ export default function CajaScreen({
 
         const payload = {
           uuid: pedido.uuid,
+          pedido_id: pedido.id || pedido.uuid,
+          id: pedido.id,
+          mesa: pedido.mesa,
           total,
           metodo_pago: metodo,
           monto_efectivo: efec,
@@ -541,7 +551,17 @@ export default function CajaScreen({
           const esCuenta = estado === 'cuenta';
 
           return (
-            <View key={p.uuid} style={[s.card, { marginBottom: 12, padding: 14, backgroundColor: C.surf2, borderWidth: esCuenta ? 2 : 1, borderColor: esCuenta ? C.orange : C.border }]}>
+            <TouchableOpacity 
+              key={p.uuid} 
+              activeOpacity={0.85}
+              onPress={() => {
+                setPedidoSel(p);
+                setMetodoPago('efectivo');
+                setNombreDeudor('');
+                setCajaCobroModalVisible(true);
+              }}
+              style={[s.card, { marginBottom: 12, padding: 14, backgroundColor: C.surf2, borderWidth: esCuenta ? 2 : 1, borderColor: esCuenta ? C.orange : C.border }]}
+            >
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
                 <Text style={{ fontSize: 16, fontWeight: '800', color: C.text }}>{isLlevar ? (p.mesa === 'llevar' ? `Para Llevar (#${p.id || ''})` : p.mesa) : `Mesa ${p.mesa}`}</Text>
                 <Text style={{ fontSize: 12, color: C.text3 }}>🕒 {p.hora}</Text>
@@ -592,7 +612,7 @@ export default function CajaScreen({
                   </TouchableOpacity>
                 </View>
               </View>
-            </View>
+            </TouchableOpacity>
           );
         });
       })()}
@@ -833,31 +853,6 @@ export default function CajaScreen({
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.border, paddingBottom: 6, backgroundColor: 'rgba(232,82,10,0.05)', padding: 6, borderRadius: 6 }}>
                     <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>💵 Saldo Esperado en Caja:</Text>
                     <Text style={{ color: C.orange, fontWeight: '800', fontSize: 14 }}>{cierreReporte.saldo_final_esperado.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                  </View>
-
-                  {/* 5 Macro-Grupos de Productividad */}
-                  <View style={{ backgroundColor: C.surf2, padding: 10, borderRadius: 8, marginTop: 4, gap: 6, borderWidth: 1, borderColor: C.border }}>
-                    <Text style={{ fontSize: 11, fontWeight: '800', color: C.text2, textTransform: 'uppercase' }}>📊 Recaudo por Productividad</Text>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontSize: 12, color: C.text }}>🍔 Total Comida:</Text>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text }}>{((cierreReporte.productividad && cierreReporte.productividad.comida) || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontSize: 12, color: C.text }}>🥤 Total Jugos Naturales:</Text>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text }}>{((cierreReporte.productividad && cierreReporte.productividad.jugos_naturales) || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontSize: 12, color: C.text }}>🍺 Total Cervezas:</Text>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text }}>{((cierreReporte.productividad && cierreReporte.productividad.cervezas) || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontSize: 12, color: C.text }}>🍾 Total Gaseosas y Embotellados:</Text>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text }}>{((cierreReporte.productividad && cierreReporte.productividad.gaseosas_embotellados) || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontSize: 12, color: C.text }}>☕ Total Bebidas Calientes:</Text>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: C.text }}>{((cierreReporte.productividad && cierreReporte.productividad.bebidas_calientes) || 0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}</Text>
-                    </View>
                   </View>
                 </View>
 

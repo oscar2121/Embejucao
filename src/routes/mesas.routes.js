@@ -77,11 +77,97 @@ router.put('/mesas/cantidad', (req, res) => {
         
         db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, rows) => {
           if (io) io.emit('mesas_actualizadas', rows);
-          res.json({ success: true, mesas: rows });
         });
       });
     }
   });
+});
+
+// POST - Endpoint para resetear estado de una mesa atascada
+router.post('/mesas/:id/liberar-forzoso', async (req, res) => {
+  const io = req.io || getIO();
+  const mesaId = req.params.id;
+  try {
+    const mesaStr = String(mesaId).trim();
+    const mesaNum = mesaStr.replace(/\D/g, '');
+    const mesaVariante = mesaNum ? `Mesa ${mesaNum}` : mesaStr;
+
+    // 1. Resetear estado de la mesa en la tabla mesas
+    db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaId, mesaNum || mesaId], async () => {
+      // 2. Marcar cualquier pedido atascado/abierto de esa mesa como cancelado
+      db.run(
+        `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')`,
+        [mesaStr, mesaVariante],
+        () => {
+          db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, rows) => {
+            if (io) {
+              io.emit('mesas_actualizadas', rows || []);
+              io.emit('pedidos_actualizados');
+              io.emit('actualizar_pedidos');
+            }
+            res.json({ success: true, mensaje: `Mesa ${mesaId} liberada forzosamente.`, mesas: rows || [] });
+          });
+        }
+      );
+    });
+  } catch (err) {
+    console.error("Error al liberar mesa forzoso:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST - Endpoint de Reseteo Profundo de Mesa
+router.post('/mesas/:id/forzar-limpieza-completa', async (req, res) => {
+  const io = req.io || getIO();
+  const mesaId = req.params.id;
+  try {
+    const mesaStr = String(mesaId).trim();
+    const mesaNum = mesaStr.replace(/\D/g, '');
+    const mesaVariante = mesaNum ? `Mesa ${mesaNum}` : mesaStr;
+
+    db.run(
+      `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ? OR id = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')`,
+      [mesaStr, mesaVariante, mesaId],
+      () => {
+        db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaId, mesaNum || mesaId], () => {
+          db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, rows) => {
+            if (io) {
+              io.emit('mesas_actualizadas', rows || []);
+              io.emit('caja_actualizada');
+              io.emit('pedidos_actualizados');
+              io.emit('actualizar_pedidos');
+            }
+            res.json({ success: true, message: `Mesa ${mesaId} limpiada y liberada por completo.`, mesas: rows || [] });
+          });
+        });
+      }
+    );
+  } catch (err) {
+    console.error("Error en limpieza profunda de mesa:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST - Reseteo manual masivo de todas las mesas
+router.post('/mesas/resetear-todas', async (req, res) => {
+  const io = req.io || getIO();
+  try {
+    db.run(`UPDATE mesas SET estado = 'libre'`, () => {
+      db.run(`UPDATE pedidos SET estado = 'cancelado' WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`, () => {
+        db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err, rows) => {
+          if (io) {
+            io.emit('mesas_actualizadas', rows || []);
+            io.emit('pedidos_actualizados');
+            io.emit('actualizar_pedidos');
+          }
+          res.json({ success: true, message: "Todas las mesas han sido liberadas y reseteadas.", mesas: rows || [] });
+        });
+      });
+    });
+  } catch (err) {
+    console.error("Error reseteando todas las mesas:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;

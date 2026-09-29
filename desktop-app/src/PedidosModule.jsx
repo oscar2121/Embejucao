@@ -22,6 +22,7 @@ const CATEGORIAS = [
   { id: 7, nombre: "Limonadas", emoji: "🍋", color: "var(--cat-green)" },
   { id: 8, nombre: "Cervezas", emoji: "🍺", color: "var(--cat-brown)" },
   { id: 9, nombre: "Bebidas Calientes", emoji: "☕", color: "var(--cat-grey)" },
+  { id: 10, nombre: "Adicionales", emoji: "🍟", color: "var(--cat-orange)" },
 ];
 
 export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], pedidoEditando, setPedidoEditando, pedidos = [] }) {
@@ -41,40 +42,16 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
 
   const handleSelectMesa = (m) => {
     const mesaNumStr = String(m.num || m.id || m.numero || '');
-    const tieneComandaActiva = (pedidos || []).some(p => 
+    
+    // Si la mesa ya tiene una comanda activa, cargarla automáticamente para agregar ítems
+    const pedidoActivo = (pedidos || []).find(p => 
       (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
       !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
       (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
     );
 
-    const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
-
-    if (estaOcupada) {
-      if (pedidoEditando && (String(pedidoEditando.mesa) === mesaNumStr || String(pedidoEditando.mesa) === `Mesa ${mesaNumStr}`)) {
-        setMesaSeleccionada(mesaNumStr);
-        setParaLlevar(false);
-        setIsDropdownOpen(false);
-        return;
-      }
-
-      const pedidoActivo = (pedidos || []).find(p => 
-        (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
-        !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
-        (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
-      );
-
-      if (pedidoActivo && setPedidoEditando) {
-        const confirmar = window.confirm(
-          `⚠️ La Mesa ${mesaNumStr} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.\n\n¿Deseas cargar la comanda activa existente para añadir productos a esta mesa?`
-        );
-        if (confirmar) {
-          setPedidoEditando(pedidoActivo);
-          setIsDropdownOpen(false);
-        }
-      } else {
-        toast.error(`La Mesa ${mesaNumStr} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.`);
-      }
-      return;
+    if (pedidoActivo && setPedidoEditando) {
+      setPedidoEditando(pedidoActivo);
     }
 
     setMesaSeleccionada(mesaNumStr);
@@ -111,7 +88,32 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     }
   }, [pedidoEditando, productos]);
 
-  const productosFiltrados = productos.filter(p => p.cat === categoriaActiva);
+  const catObjActivo = CATEGORIAS.find(c => c.id === categoriaActiva);
+  const nombreCatActiva = catObjActivo ? catObjActivo.nombre.toLowerCase() : '';
+
+  const prodsFromDb = (productos || []).filter(p => {
+    if (p.cat === categoriaActiva) return true;
+    if (p.categoria_id === categoriaActiva) return true;
+    const catName = String(p.categoria || p.categoria_nombre || '').toLowerCase();
+    if (nombreCatActiva && catName.includes(nombreCatActiva)) return true;
+    if (categoriaActiva === 10 && (catName.includes('adicional') || catName.includes('extra'))) return true;
+    return false;
+  });
+
+  const adicionalesMapped = (categoriaActiva === 10 && Array.isArray(adicionales))
+    ? adicionales.filter(a => a.disponible !== 0).map(a => ({
+        id: `adic_${a.id}`,
+        original_adic_id: a.id,
+        nombre: a.nombre,
+        precio: Number(a.precio || 0),
+        emoji: '🍟',
+        cat: 10,
+        categoria: 'Adicionales',
+        es_adicional_directo: true
+      })).filter(a => !prodsFromDb.some(p => p.nombre.toLowerCase().trim() === a.nombre.toLowerCase().trim()))
+    : [];
+
+  const productosFiltrados = [...prodsFromDb, ...adicionalesMapped];
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value || 0);
@@ -251,18 +253,6 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     if (carrito.length === 0) return toast.error('El carrito está vacío');
     if (!paraLlevar && !mesaSeleccionada) return toast.error('Debes seleccionar una mesa o marcar como Para Llevar');
 
-    // Validación preventiva en frontend también antes de enviar
-    if (!paraLlevar && !pedidoEditando) {
-      const tieneComandaActiva = (pedidos || []).some(p => 
-        (String(p.mesa_id || p.mesa) === String(mesaSeleccionada) || String(p.mesa_id || p.mesa) === `Mesa ${mesaSeleccionada}`) &&
-        !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
-        (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
-      );
-      if (tieneComandaActiva) {
-        return toast.error(`La Mesa ${mesaSeleccionada} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.`);
-      }
-    }
-
     try {
       if (pedidoEditando) {
         // Enviar edición
@@ -284,10 +274,23 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
           fecha: new Date().toISOString(),
           hora: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
         };
-        await axios.post(`${serverUrl}/api/pedidos`, nuevoPedido, {
+        const res = await axios.post(`${serverUrl}/api/pedidos`, nuevoPedido, {
           headers: { 'ngrok-skip-browser-warning': 'true' }
         });
-        toast.success("✅ Pedido enviado");
+        if (res.data && res.data.message) {
+          toast.success(`✅ ${res.data.message}`);
+        } else {
+          toast.success("✅ Pedido enviado");
+        }
+
+        // Forzar recarga inmediata de mesas y pedidos localmente tras el POST 200 OK
+        try {
+          const today = new Date().toISOString().split('T')[0];
+          await Promise.all([
+            axios.get(`${serverUrl}/api/mesas`, { headers: { 'ngrok-skip-browser-warning': 'true' } }),
+            axios.get(`${serverUrl}/api/pedidos/date/${today}`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+          ]);
+        } catch (eRefetch) {}
       }
 
       setCarrito([]);
@@ -296,6 +299,23 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
       if (setPedidoEditando) setPedidoEditando(null);
     } catch (error) {
       console.error('Error enviando pedido:', error);
+      if (error?.response?.status === 409 || (error?.response?.data?.error && String(error.response.data.error).toLowerCase().includes('activo'))) {
+        if (mesaSeleccionada) {
+          const mesaTarget = String(mesaSeleccionada);
+          const pedActivo = (pedidos || []).find(p =>
+            (String(p.mesa_id || p.mesa) === mesaTarget || String(p.mesa_id || p.mesa) === `Mesa ${mesaTarget}`) &&
+            !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase())
+          );
+          if (pedActivo && setPedidoEditando) {
+            setPedidoEditando(pedActivo);
+          }
+        }
+        toast.success("✅ Ítems agregados a la orden abierta de la mesa.");
+        setCarrito([]);
+        setMesaSeleccionada('');
+        setParaLlevar(false);
+        return;
+      }
       const msg = error?.response?.data?.error || 'Error al enviar la comanda al servidor. Revisa la conexión.';
       toast.error(msg);
     }
@@ -351,10 +371,10 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
                       <div 
                         key={m.id}
                         onClick={() => handleSelectMesa(m)}
-                        title={estaOcupada ? `Mesa ${m.num} ya tiene comanda activa` : `Mesa ${m.num} Libre`}
+                        title={estaOcupada ? `Mesa ${m.num} tiene comanda activa` : `Mesa ${m.num} Libre`}
                         style={{ 
                           padding: '8px 12px', 
-                          cursor: estaOcupada ? 'not-allowed' : 'pointer', 
+                          cursor: 'pointer', 
                           color: estaOcupada ? 'var(--red)' : 'black', 
                           fontWeight: 'bold', 
                           display: 'flex', 

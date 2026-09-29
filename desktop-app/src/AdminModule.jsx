@@ -28,6 +28,27 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
   return '🍽️';
 };
 
+export const sugerirEmojiPorNombre = (nombre) => {
+  if (!nombre) return '🍔';
+  const n = String(nombre).toLowerCase().trim();
+  if (n.includes('pizza')) return '🍕';
+  if (n.includes('cafe') || n.includes('café') || n.includes('tinto') || n.includes('capuchino') || n.includes('cappuccino') || n.includes('aromatica') || n.includes('aromática') || n.includes('chocolate')) return '☕';
+  if (n.includes('cerveza') || n.includes('poker') || n.includes('aguila') || n.includes('águila') || n.includes('corona') || n.includes('club') || n.includes('heineken') || n.includes('stella')) return '🍺';
+  if (n.includes('jugo') || n.includes('limonada') || n.includes('mango') || n.includes('fresa') || n.includes('mora') || n.includes('maracuya') || n.includes('maracuyá') || n.includes('lulo') || n.includes('naranja') || n.includes('guanabana') || n.includes('guanábana')) return '🥤';
+  if (n.includes('perro') || n.includes('hot dog') || n.includes('salchipapa') || n.includes('choriperro')) return '🌭';
+  if (n.includes('burrito') || n.includes('taco') || n.includes('quesadilla') || n.includes('wrap') || n.includes('fajita')) return '🌯';
+  if (n.includes('postre') || n.includes('cake') || n.includes('pastel') || n.includes('torta') || n.includes('helado') || n.includes('brownie')) return '🍰';
+  if (n.includes('agua') || n.includes('gaseosa') || n.includes('coca') || n.includes('postobon') || n.includes('postobón') || n.includes('soda') || n.includes('red bull') || n.includes('hit') || n.includes('quatro') || n.includes('colombiana')) return '🍾';
+  if (n.includes('hamburguesa') || n.includes('burger') || n.includes('carne') || n.includes('clasica') || n.includes('clásica') || n.includes('especial') || n.includes('doble')) return '🍔';
+  if (n.includes('papa') || n.includes('frita') || n.includes('fritas') || n.includes('chips')) return '🍟';
+  if (n.includes('alita') || n.includes('alitas') || n.includes('pollo') || n.includes('nugget') || n.includes('crispy')) return '🍗';
+  if (n.includes('sandwich') || n.includes('sándwich') || n.includes('sub')) return '🥪';
+  if (n.includes('mazorcada') || n.includes('maiz') || n.includes('maíz') || n.includes('choclo')) return '🌽';
+  if (n.includes('vino') || n.includes('copa')) return '🍷';
+  if (n.includes('coctel') || n.includes('cóctel') || n.includes('mojito') || n.includes('margarita')) return '🍸';
+  return '🍽️';
+};
+
 const sugerirGrupoReporte = (categoriaTexto, nombreTexto = '') => {
   const c = String(categoriaTexto || '').toLowerCase().trim();
   const n = String(nombreTexto || '').toLowerCase().trim();
@@ -58,7 +79,9 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [modalSubTab, setModalSubTab] = useState('producto'); // 'producto' | 'categorias'
   const [productoEditando, setProductoEditando] = useState(null); // null = Crear Nuevo, Object = Editar
   const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '', disp: true, grupo_reporte: 'comida' });
+  const [emojiManual, setEmojiManual] = useState(false);
   const [catFiltro, setCatFiltro] = useState('Todos');
+  const [guardandoProd, setGuardandoProd] = useState(false);
 
   const [categoriasDinamicas, setCategoriasDinamicas] = useState(['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros']);
   const [categoriasFull, setCategoriasFull] = useState([]);
@@ -161,8 +184,6 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [dashboardFechaPersonalizada, setDashboardFechaPersonalizada] = useState('');
   const [cajaActual, setCajaActual] = useState(null);
   const [dashboardData, setDashboardData] = useState({ ventas: 0, gastos: 0, balance: 0, gastosPorCategoria: [], ultimosGastos: [] });
-  const [modalGastoVisible, setModalGastoVisible] = useState(false);
-  const [formGasto, setFormGasto] = useState({ descripcion: '', categoria: 'Proveedores', valor: '' });
   const [modalPedidosActivosVisible, setModalPedidosActivosVisible] = useState(false);
 
   // Estados para Usuarios
@@ -211,9 +232,405 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   };
 
+  const eliminarInsumoDesktop = async (ins) => {
+    if (!ins || !ins.id) return;
+    if (!window.confirm(`¿Estás seguro de eliminar el insumo "${ins.nombre}"?\n\nEsta acción no se puede deshacer y borrará también sus registros de movimiento e ingredientes.`)) {
+      return;
+    }
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const res = await axios.delete(`${targetUrl}/api/inventario/insumos/${ins.id}`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (res.data && res.data.success) {
+        if (typeof toast !== 'undefined' && toast.success) {
+          toast.success("Insumo eliminado correctamente");
+        } else {
+          alert("Insumo eliminado correctamente");
+        }
+        cargarInventarioDesktop();
+      } else {
+        alert("⚠️ Error al eliminar el insumo");
+      }
+    } catch (err) {
+      console.error("Error al eliminar insumo:", err);
+      alert("⚠️ Error al eliminar insumo: " + (err.response?.data?.error || err.message));
+    }
+  };
+
   useEffect(() => {
     if (adminTab === 'insumos') {
       cargarInventarioDesktop();
+    }
+  }, [adminTab]);
+
+  // Estados para Productividad y Reinversión
+  const [productividadEnVivo, setProductividadEnVivo] = useState({
+    comida: 0,
+    jugos_naturales: 0,
+    cervezas: 0,
+    gaseosas_embotellados: 0,
+    bebidas_calientes: 0,
+    total_turno: 0
+  });
+  const [cargandoProdVivo, setCargandoProdVivo] = useState(false);
+  const [sesionActivaInfo, setSesionActivaInfo] = useState(null);
+
+  const getPrimerDiaMes = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  };
+  const getHoyStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  const [historialProdData, setHistorialProdData] = useState([]);
+  const [filtroProdInicio, setFiltroProdInicio] = useState(getPrimerDiaMes());
+  const [filtroProdFin, setFiltroProdFin] = useState(getHoyStr());
+  const [cargandoHistorialProd, setCargandoHistorialProd] = useState(false);
+
+  // Gran acumulado consolidado de todo el período
+  const acumuladoPeriodo = useMemo(() => {
+    return (historialProdData || []).reduce((acc, dia) => {
+      acc.comida += Number(dia.comida) || 0;
+      acc.jugos_naturales += Number(dia.jugos_naturales) || 0;
+      acc.cervezas += Number(dia.cervezas) || 0;
+      acc.gaseosas_embotellados += Number(dia.gaseosas_embotellados) || 0;
+      acc.bebidas_calientes += Number(dia.bebidas_calientes) || 0;
+      acc.total_general += Number(dia.total_dia) || 0;
+      return acc;
+    }, { comida: 0, jugos_naturales: 0, cervezas: 0, gaseosas_embotellados: 0, bebidas_calientes: 0, total_general: 0 });
+  }, [historialProdData]);
+
+  // Estados del Módulo de Gastos / Egresos
+  const [gastosData, setGastosData] = useState([]);
+  const [gastosResumen, setGastosResumen] = useState({ total_efectivo: 0, total_transferencia: 0, total_gastos: 0 });
+  const [gastosPorGrupo, setGastosPorGrupo] = useState({
+    comida: 0,
+    jugos_naturales: 0,
+    cervezas: 0,
+    gaseosas_embotellados: 0,
+    bebidas_calientes: 0,
+    gastos_generales: 0,
+    total_gastado: 0,
+    gastado_efectivo: 0,
+    gastado_transferencia: 0
+  });
+  const [cargandoGastos, setCargandoGastos] = useState(false);
+  const [filtroGastosInicio, setFiltroGastosInicio] = useState(getPrimerDiaMes());
+  const [filtroGastosFin, setFiltroGastosFin] = useState(getHoyStr());
+  const [modalGastoVisible, setModalGastoVisible] = useState(false);
+  const [formGasto, setFormGasto] = useState({
+    categoria: 'Insumos / Ingredientes',
+    descripcion: '',
+    monto: '',
+    metodo_pago: 'efectivo',
+    grupo_afectado: 'comida'
+  });
+  const [guardandoGasto, setGuardandoGasto] = useState(false);
+
+  const cargarProductividadEnVivo = async () => {
+    setCargandoProdVivo(true);
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const res = await axios.get(`${targetUrl}/api/caja/productividad-en-vivo`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (res.data?.success && res.data?.productividad) {
+        setProductividadEnVivo(res.data.productividad);
+        setSesionActivaInfo(res.data.sesion_activa || null);
+      }
+    } catch (err) {
+      console.error("Error al cargar productividad en vivo:", err);
+    } finally {
+      setCargandoProdVivo(false);
+    }
+  };
+
+  const cargarHistorialProd = async (fInicio = filtroProdInicio, fFin = filtroProdFin, rango = '') => {
+    setCargandoHistorialProd(true);
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      let url = `${targetUrl}/api/reportes/productividad/historial`;
+      const params = new URLSearchParams();
+      if (rango) {
+        params.append('rango', rango);
+      } else if (fInicio === getPrimerDiaMes() && (!fFin || fFin === getHoyStr())) {
+        params.append('rango', 'mes');
+      }
+      if (fInicio) params.append('fecha_inicio', fInicio);
+      if (fFin) params.append('fecha_fin', fFin);
+      if (params.toString()) url += `?${params.toString()}`;
+
+      const res = await axios.get(url, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+      setHistorialProdData(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error("Error al cargar historial productividad:", err);
+      toast.error("⚠️ Error al consultar historial de productividad");
+    } finally {
+      setCargandoHistorialProd(false);
+    }
+  };
+
+  const cargarGastos = async (fInicio = filtroGastosInicio, fFin = filtroGastosFin, rango = '') => {
+    setCargandoGastos(true);
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      let url = `${targetUrl}/api/gastos`;
+      const params = new URLSearchParams();
+      if (rango) {
+        params.append('rango', rango);
+      } else if (fInicio === getPrimerDiaMes() && (!fFin || fFin === getHoyStr())) {
+        params.append('rango', 'mes');
+      }
+      if (fInicio) params.append('fecha_inicio', fInicio);
+      if (fFin) params.append('fecha_fin', fFin);
+      if (params.toString()) url += `?${params.toString()}`;
+
+      const res = await axios.get(url, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+      if (res.data) {
+        setGastosResumen({
+          total_efectivo: Number(res.data.total_efectivo) || 0,
+          total_transferencia: Number(res.data.total_transferencia) || 0,
+          total_gastos: Number(res.data.total_gastos) || 0
+        });
+        setGastosData(Array.isArray(res.data.lista) ? res.data.lista : (Array.isArray(res.data.gastos) ? res.data.gastos : []));
+      }
+    } catch (err) {
+      console.error("Error al cargar gastos:", err);
+      toast.error("⚠️ Error al consultar gastos");
+    } finally {
+      setCargandoGastos(false);
+    }
+  };
+
+  const cargarGastosPorGrupo = async (fInicio = filtroProdInicio, fFin = filtroProdFin, rango = '') => {
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      let url = `${targetUrl}/api/gastos/resumen-por-grupo`;
+      const params = new URLSearchParams();
+      if (rango) {
+        params.append('rango', rango);
+      } else if (fInicio === getPrimerDiaMes() && (!fFin || fFin === getHoyStr())) {
+        params.append('rango', 'mes');
+      }
+      if (fInicio) params.append('fecha_inicio', fInicio);
+      if (fFin) params.append('fecha_fin', fFin);
+      if (params.toString()) url += `?${params.toString()}`;
+
+      const res = await axios.get(url, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+      const map = {
+        comida: 0,
+        jugos_naturales: 0,
+        cervezas: 0,
+        gaseosas_embotellados: 0,
+        bebidas_calientes: 0,
+        gastos_generales: 0,
+        total_gastado: 0,
+        gastado_efectivo: 0,
+        gastado_transferencia: 0
+      };
+      let totalGastado = 0;
+      let totalEf = 0;
+      let totalTr = 0;
+      if (Array.isArray(res.data)) {
+        res.data.forEach(item => {
+          const key = String(item.grupo_afectado || '').toLowerCase().trim();
+          const montoGasto = Number(item.total_gastado) || 0;
+          const montoEf = Number(item.gastado_efectivo) || 0;
+          const montoTr = Number(item.gastado_transferencia) || 0;
+          totalGastado += montoGasto;
+          totalEf += montoEf;
+          totalTr += montoTr;
+          if (key && map.hasOwnProperty(key)) {
+            map[key] = montoGasto;
+          } else {
+            map.gastos_generales = (map.gastos_generales || 0) + montoGasto;
+          }
+        });
+      }
+      map.total_gastado = totalGastado;
+      map.gastado_efectivo = totalEf;
+      map.gastado_transferencia = totalTr;
+      setGastosPorGrupo(map);
+    } catch (err) {
+      console.error("Error al cargar resumen de gastos por grupo:", err);
+    }
+  };
+
+  const handleActualizarGrupoGasto = async (gastoId, nuevoGrupo) => {
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const res = await axios.put(`${targetUrl}/api/gastos/${gastoId}/grupo`, {
+        grupo_afectado: nuevoGrupo
+      }, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (res.data?.success) {
+        toast.success(`Grupo del egreso reclasificado a: ${nuevoGrupo}`);
+        cargarGastos();
+        cargarGastosPorGrupo();
+      }
+    } catch (err) {
+      console.error("Error al reclasificar grupo de gasto:", err);
+      toast.error("Error al reclasificar grupo de gasto");
+    }
+  };
+
+  const handleCrearGasto = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const montoLimpio = Number(cleanNum(formGasto.monto));
+    if (!formGasto.descripcion.trim()) {
+      return toast.error("Por favor ingresa la descripción del gasto");
+    }
+    if (!montoLimpio || montoLimpio <= 0) {
+      return toast.error("El monto debe ser un valor válido mayor a 0");
+    }
+    if (!formGasto.metodo_pago) {
+      return toast.error("Elige si el pago fue en Efectivo o Transferencia");
+    }
+
+    setGuardandoGasto(true);
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const payload = {
+        categoria: formGasto.categoria,
+        descripcion: formGasto.descripcion.trim(),
+        monto: montoLimpio,
+        metodo_pago: formGasto.metodo_pago,
+        grupo_afectado: formGasto.grupo_afectado || 'comida',
+        caja_sesion_id: sesionActivaInfo?.id || null
+      };
+
+      await axios.post(`${targetUrl}/api/gastos`, payload, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+
+      toast.success("✅ Gasto registrado y descontado exitosamente");
+      setModalGastoVisible(false);
+      setFormGasto({
+        categoria: 'Insumos / Ingredientes',
+        descripcion: '',
+        monto: '',
+        metodo_pago: 'efectivo',
+        grupo_afectado: 'comida'
+      });
+      cargarGastos(filtroGastosInicio, filtroGastosFin);
+      cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
+      cargarProductividadEnVivo();
+      cargarHistorialProd(filtroProdInicio, filtroProdFin);
+      if (socket && typeof socket.emit === 'function') {
+        socket.emit('caja_actualizada');
+        socket.emit('gastos_actualizados');
+      }
+    } catch (err) {
+      console.error("Error guardando gasto:", err);
+      toast.error(err.response?.data?.error || "Error al registrar gasto");
+    } finally {
+      setGuardandoGasto(false);
+    }
+  };
+
+  const setFiltroProdRapido = (tipo) => {
+    const hoy = new Date();
+    const formatDate = (d) => {
+      if (!d) return '';
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    let inicio = '';
+    let fin = formatDate(hoy); // Por defecto hoy
+
+    if (tipo === 'hoy') {
+      inicio = formatDate(hoy);
+      fin = formatDate(hoy);
+    } else if (tipo === 'ayer') {
+      const ayer = new Date(hoy);
+      ayer.setDate(hoy.getDate() - 1);
+      inicio = formatDate(ayer);
+      fin = formatDate(ayer);
+    } else if (tipo === 'esta_semana' || tipo === 'semana') {
+      const primerDiaSemana = new Date(hoy);
+      primerDiaSemana.setDate(hoy.getDate() - hoy.getDay());
+      inicio = formatDate(primerDiaSemana);
+      fin = formatDate(hoy);
+    } else if (tipo === 'este_mes' || tipo === 'mes') {
+      const primerDiaMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+      inicio = formatDate(primerDiaMes);
+      fin = formatDate(hoy);
+    } else if (tipo === 'todo') {
+      inicio = '';
+      fin = '';
+    }
+
+    setFiltroProdInicio(inicio);
+    setFiltroProdFin(fin);
+    setFiltroGastosInicio(inicio);
+    setFiltroGastosFin(fin);
+
+    cargarHistorialProd(inicio, fin, tipo);
+    cargarGastos(inicio, fin, tipo);
+    cargarGastosPorGrupo(inicio, fin, tipo);
+  };
+
+  const limpiarFiltrosProd = () => {
+    setFiltroProdInicio('');
+    setFiltroProdFin('');
+    cargarHistorialProd('', '');
+    setFiltroGastosInicio('');
+    setFiltroGastosFin('');
+    cargarGastos('', '');
+    cargarGastosPorGrupo('', '');
+  };
+
+  const [limpiandoFantasmas, setLimpiandoFantasmas] = useState(false);
+
+  const handleLimpiarFantasmas = async () => {
+    try {
+      setLimpiandoFantasmas(true);
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const res = await axios.post(`${targetUrl}/api/sistema/limpiar-fantasmas`, {}, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (res.data?.success) {
+        toast.success(`✅ ${res.data.message || 'Pedidos fantasmas eliminados y mesas sincronizadas.'}`);
+        if (typeof cargarHistorialProd === 'function') cargarHistorialProd();
+        if (typeof cargarGastos === 'function') cargarGastos();
+      }
+    } catch (err) {
+      console.error("Error al limpiar fantasmas:", err);
+      toast.error("⚠️ Error al ejecutar la limpieza de fantasmas");
+    } finally {
+      setLimpiandoFantasmas(false);
+    }
+  };
+
+  const formatFechaTabla = (dateStr) => {
+    if (!dateStr) return '-';
+    try {
+      const parts = String(dateStr).split('-');
+      if (parts.length === 3) {
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      const d = new Date(dateStr);
+      return isNaN(d.getTime()) ? dateStr : d.toLocaleDateString('es-CO');
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
+  useEffect(() => {
+    if (adminTab === 'productividad' || adminTab === 'gastos') {
+      const inicioMes = getPrimerDiaMes();
+      const finHoy = getHoyStr();
+      cargarProductividadEnVivo();
+      cargarHistorialProd(filtroProdInicio || inicioMes, filtroProdFin || finHoy);
+      cargarGastos(filtroGastosInicio || inicioMes, filtroGastosFin || finHoy);
+      cargarGastosPorGrupo(filtroProdInicio || inicioMes, filtroProdFin || finHoy);
     }
   }, [adminTab]);
 
@@ -230,15 +647,23 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       if (typeof cargarInsumos === 'function') {
         cargarInsumos();
       }
+      cargarProductividadEnVivo();
+      cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
+      cargarGastos(filtroGastosInicio, filtroGastosFin);
+      cargarHistorialProd(filtroProdInicio, filtroProdFin);
     };
 
     s.on('dashboard:actualizado', recargarEnVivo);
     s.on('caja:estado', recargarEnVivo);
+    s.on('caja_actualizada', recargarEnVivo);
+    s.on('gastos_actualizados', recargarEnVivo);
     s.on('inventario:actualizado', recargarEnVivo);
 
     return () => {
       s.off('dashboard:actualizado', recargarEnVivo);
       s.off('caja:estado', recargarEnVivo);
+      s.off('caja_actualizada', recargarEnVivo);
+      s.off('gastos_actualizados', recargarEnVivo);
       s.off('inventario:actualizado', recargarEnVivo);
     };
   }, [typeof socket !== 'undefined' ? socket : null]);
@@ -389,25 +814,6 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   };
 
-  const handleRegistrarGasto = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await axios.post(`${serverUrl}/api/gastos`, {
-        descripcion: formGasto.descripcion,
-        categoria: formGasto.categoria,
-        valor: parseInt(String(formGasto.valor).replace(/\D/g, ''), 10) || 0,
-
-      }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
-
-      if (res.data.success) {
-        setModalGastoVisible(false);
-        setFormGasto({ descripcion: '', categoria: 'Proveedores', valor: '' });
-        cargarDashboardFinanciero();
-      }
-    } catch (error) {
-      toast.error('Error registrando gasto: ' + error.message);
-    }
-  };
 
   useEffect(() => {
     if (adminTab === 'auditoria') {
@@ -623,9 +1029,17 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     return sinTodos;
   }, [categoriasDinamicas]);
 
+  const resetFormProducto = () => {
+    setFormProd({ nombre: '', precio: '', desc: '', emoji: '', disp: true, categoria: '', grupo_reporte: 'comida', imagen: '' });
+    if (typeof setCategoriaInput === 'function') setCategoriaInput('');
+    if (typeof setImageFile === 'function') setImageFile(null);
+    if (typeof setProductoEditando === 'function') setProductoEditando(null);
+  };
+
   const abrirModalNuevo = () => {
     setProductoEditando(null);
     const initialCat = listaCategorias[0] || 'Otros';
+    setEmojiManual(false);
     setFormProd({ 
       nombre: '', 
       precio: '', 
@@ -648,10 +1062,11 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const abrirModalEditar = (prod) => {
     setProductoEditando(prod);
     const prodCat = prod.categoria || prod.cat || 'Otros';
+    setEmojiManual(true);
     setFormProd({
       nombre: prod.nombre,
       precio: prod.precio,
-      emoji: prod.emoji || '🍔',
+      emoji: prod.emoji || sugerirEmojiPorNombre(prod.nombre),
       categoria: prodCat,
       cat: prodCat,
       desc: prod.desc || prod.descripcion || '',
@@ -672,30 +1087,34 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   };
 
   const guardarProducto = async () => {
+    if (guardandoProd) return;
     if (!formProd.nombre || !formProd.precio) return toast.error("Completa los campos.");
+  
     const catFinal = (categoriaInput || formProd.categoria || 'Otros').trim() || 'Otros';
+    setGuardandoProd(true);
+  
     try {
       let finalImageUrl = formProd.imagen;
-
-      // Si el usuario seleccionó un nuevo archivo, súbelo primero
+  
       if (imageFile) {
         const formData = new FormData();
         formData.append('imagen', imageFile);
         const uploadRes = await axios.post(`${serverUrl}/api/upload`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data', 'Bypass-Tunnel-Reminder': 'true' }
+          headers: { 'Content-Type': 'multipart/form-data', 'Bypass-Tunnel-Reminder': 'true' },
+          timeout: 10000
         });
-        if (uploadRes.data.success) {
+        if (uploadRes.data?.success) {
           finalImageUrl = uploadRes.data.url;
         }
       }
-
+  
       const payload = {
-        nombre: formProd.nombre,
+        nombre: formProd.nombre.trim(),
         cat: catFinal,
         categoria: catFinal,
-        desc: formProd.desc,
-        descripcion: formProd.desc,
-        emoji: formProd.emoji,
+        desc: formProd.desc || '',
+        descripcion: formProd.desc || '',
+        emoji: formProd.emoji || '',
         precio: Number(cleanNum(formProd.precio)),
         imagen: finalImageUrl,
         disp: formProd.disp !== false ? 1 : 0,
@@ -703,36 +1122,28 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         grupo_reporte: formProd.grupo_reporte || 'comida',
         usuario: 'Admin'
       };
-
+  
       if (productoEditando) {
-        // Actualizar
-        await axios.post(`${serverUrl}/api/productos`, { ...payload, id: productoEditando.id });
-        try {
-          await axios.put(`${serverUrl}/api/productos/${productoEditando.id}`, {
-            nombre: formProd.nombre,
-            precio: Number(cleanNum(formProd.precio)),
-            categoria: catFinal,
-            cat: catFinal,
-            activo: formProd.disp !== false ? 1 : 0,
-            grupo_reporte: formProd.grupo_reporte || 'comida'
-          });
-        } catch (ePut) {}
+        // Usar una sola ruta definitiva para actualizar
+        await axios.put(`${serverUrl}/api/productos/${productoEditando.id}`, { ...payload, id: productoEditando.id }, { timeout: 8000 });
         toast.success('Producto actualizado exitosamente');
       } else {
-        // Crear
-        await axios.post(`${serverUrl}/api/productos`, payload);
+        await axios.post(`${serverUrl}/api/productos`, payload, { timeout: 8000 });
         toast.success('Producto creado exitosamente');
       }
-
-      if (socket && typeof socket.emit === 'function') {
+  
+      if (socket?.emit) {
         socket.emit('catalogo_actualizado');
       }
-
+  
       setModalVisible(false);
-      cargarCatalogo();
+      resetFormProducto();
+      if (typeof cargarCatalogo === 'function') cargarCatalogo();
     } catch (e) {
-      console.error(e);
-      toast.error("Error al guardar el producto en el servidor. Revisa la consola o la ruta del API.");
+      console.error("Error al guardar producto:", e);
+      toast.error("Error al guardar el producto. Revisa la consola.");
+    } finally {
+      setGuardandoProd(false);
     }
   };
 
@@ -761,6 +1172,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         <h2 style={{ fontSize: '24px', color: 'var(--brand)' }}>⚙️ Configuración</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <button onClick={() => setAdminTab('dashboard')} style={navBtnStyle(adminTab === 'dashboard')}>📊 Dashboard de Hoy</button>
+          <button onClick={() => setAdminTab('productividad')} style={navBtnStyle(adminTab === 'productividad')}>📊 Productividad y Reinversión</button>
+          <button onClick={() => setAdminTab('gastos')} style={navBtnStyle(adminTab === 'gastos')}>💸 Control de Gastos</button>
           <button onClick={() => setAdminTab('catalogo')} style={navBtnStyle(adminTab === 'catalogo' || adminTab === 'productos')}>🍔 Catálogo</button>
           <button onClick={() => setAdminTab('adicionales')} style={navBtnStyle(adminTab === 'adicionales')}>🍟 Adicionales</button>
           <button onClick={() => setAdminTab('historial')} style={navBtnStyle(adminTab === 'historial')}>📄 Historial de Facturas</button>
@@ -769,6 +1182,29 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
           <button onClick={() => setAdminTab('auditoria')} style={navBtnStyle(adminTab === 'auditoria')}>📋 Log de Auditoría</button>
           <button onClick={() => setAdminTab('mesas')} style={navBtnStyle(adminTab === 'mesas')}>🪑 Gestión de Mesas</button>
           <button onClick={() => setAdminTab('impresora')} style={navBtnStyle(adminTab === 'impresora')}>🖨️ Impresora Térmica</button>
+          <button
+            type="button"
+            onClick={handleLimpiarFantasmas}
+            disabled={limpiandoFantasmas}
+            style={{
+              padding: '12px 14px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: 'bold',
+              border: '1px solid #f87171',
+              backgroundColor: '#fef2f2',
+              color: '#dc2626',
+              cursor: 'pointer',
+              marginTop: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              boxShadow: 'var(--shadow-sm)'
+            }}
+          >
+            {limpiandoFantasmas ? '⏳ Limpiando...' : '🧹 Limpiar Pedidos Fantasmas / Destrabar Mesas'}
+          </button>
         </div>
       </div>
 
@@ -838,6 +1274,971 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         )}
 
         {adminTab === 'dashboard' && <DashboardFinanciero serverUrl={serverUrl} socket={socket} adminToken={adminToken} />}
+
+        {adminTab === 'productividad' && (
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {/* Cabecera Principal */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h2 style={{ fontSize: '26px', fontWeight: 'bold', color: 'var(--brand)', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  📊 Productividad y Reinversión
+                </h2>
+                <p style={{ margin: 0, color: 'var(--text2)', fontSize: '14px' }}>
+                  Auditoría contable y liquidez clasificada por los 5 macro-grupos para reinversión estratégica
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => setModalGastoVisible(true)}
+                  style={{
+                    padding: '10px 16px',
+                    borderRadius: '10px',
+                    backgroundColor: '#dc2626',
+                    color: 'white',
+                    border: 'none',
+                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 4px rgba(220,38,38,0.2)'
+                  }}
+                >
+                  💸 + Registrar Gasto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    cargarProductividadEnVivo();
+                    cargarHistorialProd(filtroProdInicio, filtroProdFin);
+                    cargarGastos(filtroGastosInicio, filtroGastosFin);
+                    toast.success('Métricas actualizadas');
+                  }}
+                  disabled={cargandoProdVivo || cargandoHistorialProd || cargandoGastos}
+                  style={{
+                    padding: '10px 16px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--surf2)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  🔄 Actualizar Datos
+                </button>
+              </div>
+            </div>
+
+            {/* SECCIÓN SUPERIOR: Consolidado Total del Período */}
+            <div style={{
+              backgroundColor: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              border: '1px solid var(--border)',
+              boxShadow: 'var(--shadow-sm)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '20px'
+            }}>
+              {/* Barra de Filtros y Presets del Período */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px', borderBottom: '1px solid var(--border)', paddingBottom: '16px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '18px' }}>📈</span>
+                    <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: 'var(--text)' }}>
+                      Total Consolidado del Período
+                    </h3>
+                    <span style={{ backgroundColor: 'rgba(232,82,10,0.1)', color: 'var(--brand)', padding: '3px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
+                      {(!filtroProdInicio && !filtroProdFin) ? 'Histórico Completo' : `${formatFechaTabla(filtroProdInicio)} al ${formatFechaTabla(filtroProdFin)}`}
+                    </span>
+                  </div>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: 'var(--text2)' }}>
+                    Sumatoria total acumulada en ventas durante el rango de fechas seleccionado
+                  </p>
+                </div>
+
+                {/* Presets Rápidos */}
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroProdRapido('hoy')}
+                    style={{
+                      padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold',
+                      border: '1px solid var(--border)', cursor: 'pointer',
+                      backgroundColor: 'var(--surf2)', color: 'var(--text)'
+                    }}
+                  >
+                    Hoy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroProdRapido('ayer')}
+                    style={{
+                      padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold',
+                      border: '1px solid var(--border)', cursor: 'pointer',
+                      backgroundColor: 'var(--surf2)', color: 'var(--text)'
+                    }}
+                  >
+                    Ayer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroProdRapido('esta_semana')}
+                    style={{
+                      padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold',
+                      border: '1px solid var(--border)', cursor: 'pointer',
+                      backgroundColor: 'var(--surf2)', color: 'var(--text)'
+                    }}
+                  >
+                    Esta Semana
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroProdRapido('este_mes')}
+                    style={{
+                      padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold',
+                      border: '1px solid var(--border)', cursor: 'pointer',
+                      backgroundColor: 'var(--surf2)', color: 'var(--text)'
+                    }}
+                  >
+                    Este Mes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroProdRapido('todo')}
+                    style={{
+                      padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold',
+                      border: '1px solid var(--border)', cursor: 'pointer',
+                      backgroundColor: (!filtroProdInicio && !filtroProdFin) ? '#0f172a' : 'var(--surf2)',
+                      color: (!filtroProdInicio && !filtroProdFin) ? 'white' : 'var(--text)'
+                    }}
+                  >
+                    Todo
+                  </button>
+                </div>
+              </div>
+
+              {/* Filtro Manual por Fechas */}
+              <div style={{
+                display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
+                backgroundColor: 'var(--surf2)', padding: '12px 16px', borderRadius: '10px',
+                border: '1px solid var(--border)'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)' }}>Desde:</span>
+                  <input
+                    type="date"
+                    value={filtroProdInicio}
+                    onChange={(e) => setFiltroProdInicio(e.target.value)}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', fontSize: '13px', backgroundColor: 'white' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)' }}>Hasta:</span>
+                  <input
+                    type="date"
+                    value={filtroProdFin}
+                    onChange={(e) => setFiltroProdFin(e.target.value)}
+                    style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', fontSize: '13px', backgroundColor: 'white' }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    cargarHistorialProd(filtroProdInicio, filtroProdFin);
+                    cargarGastos(filtroProdInicio, filtroProdFin);
+                    cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
+                  }}
+                  disabled={cargandoHistorialProd || cargandoGastos}
+                  style={{
+                    padding: '6px 14px', borderRadius: '6px', border: 'none',
+                    backgroundColor: 'var(--brand)', color: 'white', fontWeight: 'bold',
+                    fontSize: '13px', cursor: 'pointer'
+                  }}
+                >
+                  {cargandoHistorialProd ? 'Cargando...' : '🔍 Filtrar'}
+                </button>
+                <button
+                  type="button"
+                  onClick={limpiarFiltrosProd}
+                  style={{
+                    padding: '6px 14px', borderRadius: '6px', border: '1px solid var(--border)',
+                    backgroundColor: 'white', color: 'var(--text)', fontWeight: 'bold',
+                    fontSize: '13px', cursor: 'pointer'
+                  }}
+                >
+                  Limpiar
+                </button>
+              </div>
+
+              {/* 6 Tarjetas Ejecutivas con Descuento Dinámico y Saldo Neto de Reinversión */}
+              {(() => {
+                const totalGenerales = Number(gastosPorGrupo.gastos_generales || 0);
+                const totalIngresosCategorias = Number(acumuladoPeriodo.comida || 0) +
+                  Number(acumuladoPeriodo.jugos_naturales || 0) +
+                  Number(acumuladoPeriodo.cervezas || 0) +
+                  Number(acumuladoPeriodo.gaseosas_embotellados || 0) +
+                  Number(acumuladoPeriodo.bebidas_calientes || 0);
+
+                const getGastoGeneralProrrateado = (ingresosCat) => {
+                  if (totalGenerales <= 0) return 0;
+                  const prop = totalIngresosCategorias > 0 ? (ingresosCat / totalIngresosCategorias) : (1 / 5);
+                  return Math.round(totalGenerales * prop);
+                };
+
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '14px' }}>
+                    {/* 1. Comida */}
+                    {(() => {
+                      const ingresos = Number(acumuladoPeriodo.comida || 0);
+                      const egresos = Number(gastosPorGrupo.comida || 0);
+                      const gastoGeneral = getGastoGeneralProrrateado(ingresos);
+                      const totalEgresosCat = egresos + gastoGeneral;
+                      const neto = ingresos - totalEgresosCat;
+                      const esDeficit = neto < 0;
+                      return (
+                        <div style={{
+                          backgroundColor: esDeficit ? '#fef2f2' : 'var(--surf2)',
+                          borderRadius: '12px',
+                          padding: '14px',
+                          border: esDeficit ? '1.5px solid #f87171' : '1px solid var(--border)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: '8px'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <span>🍔</span> COMIDA
+                            </span>
+                            {esDeficit && (
+                              <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
+                                ⚠️ Déficit
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16a34a', fontWeight: '600' }}>
+                              <span>Ingresos:</span>
+                              <span>+${ingresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#dc2626', fontWeight: '600' }}>
+                              <span>Gastos Insumos:</span>
+                              <span>-${egresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            {gastoGeneral > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#b91c1c', fontSize: '10px' }}>
+                                <span>G. Generales:</span>
+                                <span>-${gastoGeneral.toLocaleString('es-CO')}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text3)', fontWeight: 'bold' }}>Saldo Disponible:</div>
+                            <div style={{
+                              fontSize: '18px',
+                              fontWeight: '900',
+                              color: esDeficit ? '#dc2626' : 'var(--text)',
+                              marginTop: '2px'
+                            }}>
+                              =${neto.toLocaleString('es-CO')}
+                            </div>
+                            {esDeficit && (
+                              <div style={{ fontSize: '10px', color: '#b91c1c', marginTop: '2px', fontWeight: '600' }}>
+                                Gastos superan ventas
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 2. Jugos Naturales */}
+                    {(() => {
+                      const ingresos = Number(acumuladoPeriodo.jugos_naturales || 0);
+                      const egresos = Number(gastosPorGrupo.jugos_naturales || 0);
+                      const gastoGeneral = getGastoGeneralProrrateado(ingresos);
+                      const totalEgresosCat = egresos + gastoGeneral;
+                      const neto = ingresos - totalEgresosCat;
+                      const esDeficit = neto < 0;
+                      return (
+                        <div style={{
+                          backgroundColor: esDeficit ? '#fef2f2' : 'var(--surf2)',
+                          borderRadius: '12px',
+                          padding: '14px',
+                          border: esDeficit ? '1.5px solid #f87171' : '1px solid var(--border)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: '8px'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <span>🥤</span> JUGOS NAT.
+                            </span>
+                            {esDeficit && (
+                              <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
+                                ⚠️ Déficit
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16a34a', fontWeight: '600' }}>
+                              <span>Ingresos:</span>
+                              <span>+${ingresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#dc2626', fontWeight: '600' }}>
+                              <span>Gastos Insumos:</span>
+                              <span>-${egresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            {gastoGeneral > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#b91c1c', fontSize: '10px' }}>
+                                <span>G. Generales:</span>
+                                <span>-${gastoGeneral.toLocaleString('es-CO')}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text3)', fontWeight: 'bold' }}>Saldo Disponible:</div>
+                            <div style={{
+                              fontSize: '18px',
+                              fontWeight: '900',
+                              color: esDeficit ? '#dc2626' : 'var(--text)',
+                              marginTop: '2px'
+                            }}>
+                              =${neto.toLocaleString('es-CO')}
+                            </div>
+                            {esDeficit && (
+                              <div style={{ fontSize: '10px', color: '#b91c1c', marginTop: '2px', fontWeight: '600' }}>
+                                Gastos superan ventas
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 3. Cervezas */}
+                    {(() => {
+                      const ingresos = Number(acumuladoPeriodo.cervezas || 0);
+                      const egresos = Number(gastosPorGrupo.cervezas || 0);
+                      const gastoGeneral = getGastoGeneralProrrateado(ingresos);
+                      const totalEgresosCat = egresos + gastoGeneral;
+                      const neto = ingresos - totalEgresosCat;
+                      const esDeficit = neto < 0;
+                      return (
+                        <div style={{
+                          backgroundColor: esDeficit ? '#fef2f2' : 'var(--surf2)',
+                          borderRadius: '12px',
+                          padding: '14px',
+                          border: esDeficit ? '1.5px solid #f87171' : '1px solid var(--border)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: '8px'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <span>🍺</span> CERVEZAS
+                            </span>
+                            {esDeficit && (
+                              <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
+                                ⚠️ Déficit
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16a34a', fontWeight: '600' }}>
+                              <span>Ingresos:</span>
+                              <span>+${ingresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#dc2626', fontWeight: '600' }}>
+                              <span>Gastos Insumos:</span>
+                              <span>-${egresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            {gastoGeneral > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#b91c1c', fontSize: '10px' }}>
+                                <span>G. Generales:</span>
+                                <span>-${gastoGeneral.toLocaleString('es-CO')}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text3)', fontWeight: 'bold' }}>Saldo Disponible:</div>
+                            <div style={{
+                              fontSize: '18px',
+                              fontWeight: '900',
+                              color: esDeficit ? '#dc2626' : 'var(--text)',
+                              marginTop: '2px'
+                            }}>
+                              =${neto.toLocaleString('es-CO')}
+                            </div>
+                            {esDeficit && (
+                              <div style={{ fontSize: '10px', color: '#b91c1c', marginTop: '2px', fontWeight: '600' }}>
+                                Gastos superan ventas
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 4. Gaseosas y Embotellados */}
+                    {(() => {
+                      const ingresos = Number(acumuladoPeriodo.gaseosas_embotellados || 0);
+                      const egresos = Number(gastosPorGrupo.gaseosas_embotellados || 0);
+                      const gastoGeneral = getGastoGeneralProrrateado(ingresos);
+                      const totalEgresosCat = egresos + gastoGeneral;
+                      const neto = ingresos - totalEgresosCat;
+                      const esDeficit = neto < 0;
+                      return (
+                        <div style={{
+                          backgroundColor: esDeficit ? '#fef2f2' : 'var(--surf2)',
+                          borderRadius: '12px',
+                          padding: '14px',
+                          border: esDeficit ? '1.5px solid #f87171' : '1px solid var(--border)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: '8px'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <span>🍾</span> EMBOTELLADOS
+                            </span>
+                            {esDeficit && (
+                              <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
+                                ⚠️ Déficit
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16a34a', fontWeight: '600' }}>
+                              <span>Ingresos:</span>
+                              <span>+${ingresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#dc2626', fontWeight: '600' }}>
+                              <span>Gastos Insumos:</span>
+                              <span>-${egresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            {gastoGeneral > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#b91c1c', fontSize: '10px' }}>
+                                <span>G. Generales:</span>
+                                <span>-${gastoGeneral.toLocaleString('es-CO')}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text3)', fontWeight: 'bold' }}>Saldo Disponible:</div>
+                            <div style={{
+                              fontSize: '18px',
+                              fontWeight: '900',
+                              color: esDeficit ? '#dc2626' : 'var(--text)',
+                              marginTop: '2px'
+                            }}>
+                              =${neto.toLocaleString('es-CO')}
+                            </div>
+                            {esDeficit && (
+                              <div style={{ fontSize: '10px', color: '#b91c1c', marginTop: '2px', fontWeight: '600' }}>
+                                Gastos superan ventas
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 5. Bebidas Calientes */}
+                    {(() => {
+                      const ingresos = Number(acumuladoPeriodo.bebidas_calientes || 0);
+                      const egresos = Number(gastosPorGrupo.bebidas_calientes || 0);
+                      const gastoGeneral = getGastoGeneralProrrateado(ingresos);
+                      const totalEgresosCat = egresos + gastoGeneral;
+                      const neto = ingresos - totalEgresosCat;
+                      const esDeficit = neto < 0;
+                      return (
+                        <div style={{
+                          backgroundColor: esDeficit ? '#fef2f2' : 'var(--surf2)',
+                          borderRadius: '12px',
+                          padding: '14px',
+                          border: esDeficit ? '1.5px solid #f87171' : '1px solid var(--border)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: '8px'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <span>☕</span> BEB. CALIENTES
+                            </span>
+                            {esDeficit && (
+                              <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
+                                ⚠️ Déficit
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16a34a', fontWeight: '600' }}>
+                              <span>Ingresos:</span>
+                              <span>+${ingresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#dc2626', fontWeight: '600' }}>
+                              <span>Gastos Insumos:</span>
+                              <span>-${egresos.toLocaleString('es-CO')}</span>
+                            </div>
+                            {gastoGeneral > 0 && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#b91c1c', fontSize: '10px' }}>
+                                <span>G. Generales:</span>
+                                <span>-${gastoGeneral.toLocaleString('es-CO')}</span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ borderTop: '1px dashed var(--border)', paddingTop: '6px' }}>
+                            <div style={{ fontSize: '11px', color: 'var(--text3)', fontWeight: 'bold' }}>Saldo Disponible:</div>
+                            <div style={{
+                              fontSize: '18px',
+                              fontWeight: '900',
+                              color: esDeficit ? '#dc2626' : 'var(--text)',
+                              marginTop: '2px'
+                            }}>
+                              =${neto.toLocaleString('es-CO')}
+                            </div>
+                            {esDeficit && (
+                              <div style={{ fontSize: '10px', color: '#b91c1c', marginTop: '2px', fontWeight: '600' }}>
+                                Gastos superan ventas
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                {/* 6. Total Recaudado General y Liquidez Neta */}
+                {(() => {
+                  const totalRecaudado = Number(acumuladoPeriodo.total_general || 0);
+                  const totalGastosPeriodo = Number(gastosPorGrupo.total_gastado || gastosResumen.total_gastos || 0);
+                  const totalEf = Number(gastosPorGrupo.gastado_efectivo || gastosResumen.total_efectivo || 0);
+                  const totalTr = Number(gastosPorGrupo.gastado_transferencia || gastosResumen.total_transferencia || 0);
+                  const liquidezNeta = totalRecaudado - totalGastosPeriodo;
+                  const esDeficit = liquidezNeta < 0;
+
+                  return (
+                    <div style={{
+                      backgroundColor: esDeficit ? '#fef2f2' : 'rgba(232,82,10,0.06)',
+                      borderRadius: '12px',
+                      padding: '14px',
+                      border: esDeficit ? '2px solid #ef4444' : '2px solid var(--brand)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'space-between',
+                      gap: '8px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 'bold', color: esDeficit ? '#b91c1c' : 'var(--brand)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <span>💰</span> TOTAL GENERAL
+                        </span>
+                        {esDeficit && (
+                          <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
+                            ⚠️ Déficit
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#16a34a', fontWeight: '600' }}>
+                          <span>Recaudado Bruto:</span>
+                          <span>+${totalRecaudado.toLocaleString('es-CO')}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#dc2626', fontWeight: '600' }}>
+                          <span>Total Gastos:</span>
+                          <span>-${totalGastosPeriodo.toLocaleString('es-CO')}</span>
+                        </div>
+                        <div style={{ fontSize: '10px', color: 'var(--text3)', textAlign: 'right', marginTop: '1px' }}>
+                          💵 Ef: ${totalEf.toLocaleString('es-CO')} | 💳 Tr: ${totalTr.toLocaleString('es-CO')}
+                        </div>
+                      </div>
+                      <div style={{ borderTop: '1px dashed #fdba74', paddingTop: '6px' }}>
+                        <div style={{ fontSize: '11px', color: esDeficit ? '#b91c1c' : 'var(--brand)', fontWeight: 'bold' }}>
+                          Liquidez Neta Real:
+                        </div>
+                        <div style={{
+                          fontSize: '19px',
+                          fontWeight: '900',
+                          color: esDeficit ? '#dc2626' : 'var(--brand)',
+                          marginTop: '2px'
+                        }}>
+                          =${liquidezNeta.toLocaleString('es-CO')}
+                        </div>
+                        <div style={{ fontSize: '10px', color: esDeficit ? '#b91c1c' : 'var(--brand)', marginTop: '2px', fontWeight: '600' }}>
+                          En Mano / Bancos
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })()}
+
+              {/* Indicador sutil de Turno en Vivo */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text2)', backgroundColor: 'var(--surf2)', padding: '8px 14px', borderRadius: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span>🟢</span>
+                  <span><strong>Turno Actual en Vivo:</strong> {sesionActivaInfo ? `Sesión Activa #${sesionActivaInfo.id}` : 'Caja Cerrada (Día de hoy)'}</span>
+                  <span>|</span>
+                  <span>Comida: <strong>${Number(productividadEnVivo.comida || 0).toLocaleString('es-CO')}</strong></span>
+                  <span>|</span>
+                  <span>Bebidas/Otros: <strong>${(Number(productividadEnVivo.total_turno || 0) - Number(productividadEnVivo.comida || 0)).toLocaleString('es-CO')}</strong></span>
+                  <span>|</span>
+                  <span>Total Turno: <strong style={{ color: 'var(--brand)' }}>${Number(productividadEnVivo.total_turno || 0).toLocaleString('es-CO')}</strong></span>
+                </div>
+                {cargandoProdVivo && <span>⏳ Sincronizando...</span>}
+              </div>
+            </div>
+
+            {/* SECCIÓN INFERIOR: Historial y Auditoría de Fechas */}
+            <div style={{
+              backgroundColor: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              border: '1px solid var(--border)',
+              boxShadow: 'var(--shadow-sm)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              <div>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: '18px', fontWeight: 'bold', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  📅 Desglose Diario por Fechas
+                </h3>
+                <p style={{ margin: 0, fontSize: '13px', color: 'var(--text2)' }}>
+                  Detalle del dinero recaudado día a día por cada uno de los 5 grupos en el período
+                </p>
+              </div>
+
+              {/* Tabla de Auditoría Histórica */}
+              <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: '12px' }}>
+                {cargandoHistorialProd ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text2)' }}>
+                    <span style={{ fontSize: '24px', display: 'block', marginBottom: '8px' }}>⏳</span>
+                    Cargando auditoría histórica de productividad...
+                  </div>
+                ) : (!historialProdData || historialProdData.length === 0) ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text2)' }}>
+                    <span style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>📋</span>
+                    No se registraron ventas en el período seleccionado.
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: 'var(--surf2)', borderBottom: '2px solid var(--border)' }}>
+                        <th style={thStyle}>Fecha</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>🍔 Comida</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>🥤 Jugos Nat.</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>🍺 Cervezas</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>🍾 Embotellados</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>☕ Beb. Calientes</th>
+                        <th style={{ ...thStyle, textAlign: 'right', color: 'var(--brand)' }}>💰 Total Día</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historialProdData.map((fila, idx) => (
+                        <tr key={fila.fecha || idx} style={{ borderBottom: '1px solid var(--border)', backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa' }}>
+                          <td style={{ ...tdStyle, fontWeight: '600' }}>
+                            {formatFechaTabla(fila.fecha)}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>
+                            $ {Number(fila.comida || 0).toLocaleString('es-CO')}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>
+                            $ {Number(fila.jugos_naturales || 0).toLocaleString('es-CO')}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>
+                            $ {Number(fila.cervezas || 0).toLocaleString('es-CO')}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>
+                            $ {Number(fila.gaseosas_embotellados || 0).toLocaleString('es-CO')}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>
+                            $ {Number(fila.bebidas_calientes || 0).toLocaleString('es-CO')}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 'bold', color: 'var(--brand)' }}>
+                            $ {Number(fila.total_dia || 0).toLocaleString('es-CO')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ backgroundColor: 'var(--surf2)', borderTop: '2px solid var(--border)', fontWeight: 'bold' }}>
+                        <td style={{ ...tdStyle, fontSize: '14px', color: 'var(--text)' }}>
+                          TOTALES GENERALES ({historialProdData.length} días)
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', fontSize: '14px' }}>
+                          $ {Number(acumuladoPeriodo.comida || 0).toLocaleString('es-CO')}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', fontSize: '14px' }}>
+                          $ {Number(acumuladoPeriodo.jugos_naturales || 0).toLocaleString('es-CO')}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', fontSize: '14px' }}>
+                          $ {Number(acumuladoPeriodo.cervezas || 0).toLocaleString('es-CO')}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', fontSize: '14px' }}>
+                          $ {Number(acumuladoPeriodo.gaseosas_embotellados || 0).toLocaleString('es-CO')}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', fontSize: '14px' }}>
+                          $ {Number(acumuladoPeriodo.bebidas_calientes || 0).toLocaleString('es-CO')}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--brand)', fontSize: '16px', fontWeight: '900' }}>
+                          $ {Number(acumuladoPeriodo.total_general || 0).toLocaleString('es-CO')}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {adminTab === 'gastos' && (
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {/* Cabecera Principal Gastos */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h2 style={{ fontSize: '26px', fontWeight: 'bold', color: '#dc2626', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  💸 Control de Gastos y Egresos
+                </h2>
+                <p style={{ margin: 0, color: 'var(--text2)', fontSize: '14px' }}>
+                  Control de insumos, proveedores, nómina y servicios clasificando el pago en Efectivo o Transferencia
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => setModalGastoVisible(true)}
+                  style={{
+                    padding: '10px 18px',
+                    borderRadius: '10px',
+                    backgroundColor: '#dc2626',
+                    color: 'white',
+                    border: 'none',
+                    fontWeight: 'bold',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 8px rgba(220,38,38,0.25)'
+                  }}
+                >
+                  ➕ Registrar Gasto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    cargarGastos(filtroGastosInicio, filtroGastosFin);
+                    toast.success('Gastos actualizados');
+                  }}
+                  disabled={cargandoGastos}
+                  style={{
+                    padding: '10px 16px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--surf2)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  🔄 Refrescar
+                </button>
+              </div>
+            </div>
+
+            {/* 3 Tarjetas Ejecutivas de Gastos */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+              <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#16a34a', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>💵</span> GASTOS EN EFECTIVO
+                </div>
+                <div style={{ fontSize: '24px', fontWeight: '900', color: 'var(--text)' }}>
+                  $ {Number(gastosResumen.total_efectivo || 0).toLocaleString('es-CO')}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '4px' }}>Salidas físicas de caja</div>
+              </div>
+
+              <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#2563eb', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>💳</span> GASTOS EN TRANSFERENCIA
+                </div>
+                <div style={{ fontSize: '24px', fontWeight: '900', color: 'var(--text)' }}>
+                  $ {Number(gastosResumen.total_transferencia || 0).toLocaleString('es-CO')}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '4px' }}>Nequi, Daviplata y bancos</div>
+              </div>
+
+              <div style={{ backgroundColor: 'rgba(220,38,38,0.06)', borderRadius: '16px', padding: '20px', border: '2px solid #dc2626', boxShadow: 'var(--shadow-sm)' }}>
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#dc2626', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>📉</span> TOTAL EGRESOS GLOBALES
+                </div>
+                <div style={{ fontSize: '26px', fontWeight: '900', color: '#dc2626' }}>
+                  $ {Number(gastosResumen.total_gastos || 0).toLocaleString('es-CO')}
+                </div>
+                <div style={{ fontSize: '12px', color: '#dc2626', marginTop: '4px', fontWeight: 'bold' }}>Período seleccionado</div>
+              </div>
+            </div>
+
+            {/* Filtros de Gastos */}
+            <div style={{
+              backgroundColor: 'white',
+              borderRadius: '16px',
+              padding: '20px',
+              border: '1px solid var(--border)',
+              boxShadow: 'var(--shadow-sm)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <span style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--text)' }}>
+                  Filtrar Egresos por Fecha:
+                </span>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button type="button" onClick={() => setFiltroProdRapido('hoy')} style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', border: '1px solid var(--border)', cursor: 'pointer', backgroundColor: 'var(--surf2)', color: 'var(--text)' }}>Hoy</button>
+                  <button type="button" onClick={() => setFiltroProdRapido('ayer')} style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', border: '1px solid var(--border)', cursor: 'pointer', backgroundColor: 'var(--surf2)', color: 'var(--text)' }}>Ayer</button>
+                  <button type="button" onClick={() => setFiltroProdRapido('esta_semana')} style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', border: '1px solid var(--border)', cursor: 'pointer', backgroundColor: 'var(--surf2)', color: 'var(--text)' }}>Esta Semana</button>
+                  <button type="button" onClick={() => setFiltroProdRapido('este_mes')} style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', border: '1px solid var(--border)', cursor: 'pointer', backgroundColor: 'var(--surf2)', color: 'var(--text)' }}>Este Mes</button>
+                  <button type="button" onClick={() => setFiltroProdRapido('todo')} style={{ padding: '6px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', border: '1px solid var(--border)', cursor: 'pointer', backgroundColor: 'var(--surf2)', color: 'var(--text)' }}>Todo</button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', backgroundColor: 'var(--surf2)', padding: '12px 16px', borderRadius: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)' }}>Desde:</span>
+                  <input type="date" value={filtroGastosInicio} onChange={(e) => setFiltroGastosInicio(e.target.value)} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', fontSize: '13px', backgroundColor: 'white' }} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)' }}>Hasta:</span>
+                  <input type="date" value={filtroGastosFin} onChange={(e) => setFiltroGastosFin(e.target.value)} style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border)', fontSize: '13px', backgroundColor: 'white' }} />
+                </div>
+                <button type="button" onClick={() => cargarGastos(filtroGastosInicio, filtroGastosFin)} disabled={cargandoGastos} style={{ padding: '6px 14px', borderRadius: '6px', border: 'none', backgroundColor: '#dc2626', color: 'white', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer' }}>
+                  {cargandoGastos ? 'Cargando...' : '🔍 Filtrar'}
+                </button>
+                <button type="button" onClick={() => { setFiltroGastosInicio(''); setFiltroGastosFin(''); cargarGastos('', ''); }} style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'white', color: 'var(--text)', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer' }}>
+                  Limpiar
+                </button>
+              </div>
+
+              {/* Tabla de Gastos */}
+              <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: '12px' }}>
+                {cargandoGastos ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text2)' }}>
+                    <span style={{ fontSize: '24px', display: 'block', marginBottom: '8px' }}>⏳</span>
+                    Cargando historial de gastos...
+                  </div>
+                ) : (!gastosData || gastosData.length === 0) ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text2)' }}>
+                    <span style={{ fontSize: '32px', display: 'block', marginBottom: '8px' }}>💸</span>
+                    No se registran gastos en el período seleccionado.
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: 'var(--surf2)', borderBottom: '2px solid var(--border)' }}>
+                        <th style={thStyle}>Fecha / Hora</th>
+                        <th style={thStyle}>Categoría</th>
+                        <th style={thStyle}>Grupo Afectado</th>
+                        <th style={thStyle}>Descripción</th>
+                        <th style={{ ...thStyle, textAlign: 'center' }}>Método de Pago</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>Monto</th>
+                        <th style={thStyle}>Responsable</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gastosData.map((g, idx) => (
+                        <tr key={g.id || idx} style={{ borderBottom: '1px solid var(--border)', backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa' }}>
+                          <td style={{ ...tdStyle, fontWeight: '600' }}>
+                            {formatFechaTabla(g.fecha ? g.fecha.split('T')[0] : '')} {g.created_at ? g.created_at.split(' ')[1] || '' : ''}
+                          </td>
+                          <td style={tdStyle}>
+                            <span style={{ backgroundColor: '#e2e8f0', color: '#334155', padding: '3px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
+                              {g.categoria || 'Insumos'}
+                            </span>
+                          </td>
+                          <td style={tdStyle}>
+                            <select
+                              value={g.grupo_afectado || 'gastos_generales'}
+                              onChange={(e) => handleActualizarGrupoGasto(g.id, e.target.value)}
+                              title="Reclasificar grupo de gasto"
+                              style={{
+                                padding: '4px 8px',
+                                borderRadius: '6px',
+                                border: '1px solid var(--border)',
+                                fontSize: '12px',
+                                fontWeight: 'bold',
+                                backgroundColor: (g.grupo_afectado || 'gastos_generales') === 'gastos_generales' ? '#f1f5f9' : '#fff7ed',
+                                color: (g.grupo_afectado || 'gastos_generales') === 'gastos_generales' ? '#475569' : '#ea580c',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <option value="comida">🍔 Comida</option>
+                              <option value="jugos_naturales">🥤 Jugos Naturales</option>
+                              <option value="cervezas">🍺 Cervezas</option>
+                              <option value="gaseosas_embotellados">🍾 Embotellados</option>
+                              <option value="bebidas_calientes">☕ Bebidas Calientes</option>
+                              <option value="gastos_generales">🏢 Gastos Generales</option>
+                            </select>
+                          </td>
+                          <td style={{ ...tdStyle, fontWeight: '500' }}>
+                            {g.descripcion}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'center' }}>
+                            {String(g.metodo_pago).toLowerCase() === 'transferencia' ? (
+                              <span style={{ backgroundColor: 'rgba(37,99,235,0.1)', color: '#2563eb', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
+                                💳 Transferencia
+                              </span>
+                            ) : (
+                              <span style={{ backgroundColor: 'rgba(22,163,74,0.1)', color: '#16a34a', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
+                                💵 Efectivo
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 'bold', color: '#dc2626' }}>
+                            $ {Number(g.monto || g.valor || 0).toLocaleString('es-CO')}
+                          </td>
+                          <td style={{ ...tdStyle, color: 'var(--text2)', fontSize: '13px' }}>
+                            {g.usuario || 'Admin'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ backgroundColor: 'var(--surf2)', borderTop: '2px solid var(--border)', fontWeight: 'bold' }}>
+                        <td colSpan={5} style={{ ...tdStyle, fontSize: '14px', color: 'var(--text)' }}>
+                          TOTAL EGRESOS DEL PERÍODO ({gastosData.length} registros)
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: 'right', color: '#dc2626', fontSize: '16px', fontWeight: '900' }}>
+                          $ {Number(gastosResumen.total_gastos || 0).toLocaleString('es-CO')}
+                        </td>
+                        <td style={tdStyle}></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
 
         {(adminTab === 'productos' || adminTab === 'catalogo') && (
@@ -1259,6 +2660,13 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                             >
                               Ajuste
                             </button>
+                            <button
+                              onClick={() => eliminarInsumoDesktop(ins)}
+                              style={{ marginLeft: '6px', padding: '6px 10px', borderRadius: '6px', border: 'none', backgroundColor: '#FEE2E2', color: '#DC2626', cursor: 'pointer', fontWeight: 'bold' }}
+                              title="Eliminar insumo"
+                            >
+                              🗑️ Eliminar
+                            </button>
                           </td>
                         </tr>
                       );
@@ -1327,21 +2735,31 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   <form onSubmit={async (e) => {
                     e.preventDefault();
                     const f = e.target;
+                    const btnSubmit = f.querySelector('button[type="submit"]');
+                    if (btnSubmit) btnSubmit.disabled = true;
+
                     try {
                       const targetUrl = serverUrl || 'http://localhost:3001';
                       await axios.post(`${targetUrl}/api/inventario/insumos`, {
-                        nombre: f.nombre.value,
+                        nombre: f.nombre.value.trim(),
                         unidad: f.unidad.value,
                         stock_minimo: Number(f.stock_minimo.value) || 0,
                         cantidad_actual: Number(f.cantidad_actual.value) || 0,
                         precio_compra: Number(f.precio_compra.value) || 0
-                      }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+                      }, { 
+                        headers: { 'ngrok-skip-browser-warning': 'true' },
+                        timeout: 8000
+                      });
 
+                      f.reset();
                       setModalInsumoOpen(false);
                       if (typeof cargarInventarioDesktop === 'function') cargarInventarioDesktop();
+                      toast.success("Insumo registrado correctamente");
                     } catch (err) {
                       console.error('Error creando insumo:', err);
                       alert('Error al guardar el insumo');
+                    } finally {
+                      if (btnSubmit) btnSubmit.disabled = false;
                     }
                   }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
@@ -1515,14 +2933,46 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label style={{ display: 'block', fontSize: '12px', color: 'var(--text2)', marginBottom: '4px' }}>Fecha (AAAA-MM-DD):</label>
-                  <input
-                    type="text"
-                    placeholder="Ej. 2026-06-08"
-                    value={auditFechaFilter}
-                    onChange={(e) => setAuditFechaFilter(e.target.value)}
-                    style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '14px', backgroundColor: 'var(--surf2)' }}
-                  />
+                  <label style={{ display: 'block', fontSize: '12px', color: 'var(--text2)', marginBottom: '4px', fontWeight: 'bold' }}>
+                    📅 Fecha de Auditoría:
+                  </label>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <input
+                      type="date"
+                      value={auditFechaFilter}
+                      onChange={(e) => setAuditFechaFilter(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '8px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid #cbd5e1',
+                        backgroundColor: '#fff',
+                        fontSize: '14px',
+                        color: '#0f172a',
+                        outline: 'none',
+                        cursor: 'pointer'
+                      }}
+                    />
+                    {auditFechaFilter && (
+                      <button
+                        type="button"
+                        onClick={() => setAuditFechaFilter('')}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          backgroundColor: 'var(--surf2, #f1f5f9)',
+                          color: 'var(--text2, #64748b)',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                        title="Limpiar fecha"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1793,74 +3243,31 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
             {/* Pestaña 1: Nuevo / Editar Producto */}
             {modalSubTab === 'producto' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                {/* Categoría Híbrida */}
+                {/* Categoría */}
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px', fontWeight: 'bold' }}>
                     Categoría:
                   </label>
-                  {!modoNuevaCat ? (
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <select
-                        value={categoriaInput}
-                        onChange={(e) => {
-                          setCategoriaInput(e.target.value);
-                          handleCambioCategoria(e.target.value);
-                        }}
-                        style={{
-                          flex: 1,
-                          padding: '10px',
-                          borderRadius: '6px',
-                          border: '1px solid var(--border)',
-                          background: 'var(--bg)',
-                          color: 'var(--text)',
-                          fontSize: '14px'
-                        }}
-                      >
-                        {listaCategorias.map(c => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => { setModoNuevaCat(true); setCategoriaInput(''); }}
-                        style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
-                      >
-                        ➕ Nueva
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        placeholder="Nombre de la nueva categoría..."
-                        value={categoriaInput}
-                        onChange={(e) => {
-                          setCategoriaInput(e.target.value);
-                          handleCambioCategoria(e.target.value);
-                        }}
-                        autoFocus
-                        style={{
-                          flex: 1,
-                          padding: '10px',
-                          borderRadius: '6px',
-                          border: '1px solid #16a34a',
-                          background: 'var(--bg)',
-                          color: 'var(--text)',
-                          fontSize: '14px'
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setModoNuevaCat(false);
-                          setCategoriaInput(listaCategorias[0] || 'Otros');
-                        }}
-                        style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: 'var(--text)' }}
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  )}
+                  <select
+                    value={categoriaInput}
+                    onChange={(e) => {
+                      setCategoriaInput(e.target.value);
+                      handleCambioCategoria(e.target.value);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg)',
+                      color: 'var(--text)',
+                      fontSize: '14px'
+                    }}
+                  >
+                    {listaCategorias.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Estado del Producto (Activo/Inactivo) */}
@@ -1886,39 +3293,96 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   </button>
                 </div>
 
-                {/* Selector y vista previa de Emoji */}
+                {/* Selector libre y autodetección de Emoji */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px', fontWeight: 'bold' }}>
-                    Ícono / Emoji:
-                  </label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <input
-                      type="text"
-                      value={formProd.emoji || '🍽️'}
-                      onChange={(e) => setFormProd({ ...formProd, emoji: e.target.value })}
-                      style={{
-                        width: '50px',
-                        textAlign: 'center',
-                        fontSize: '20px',
-                        padding: '6px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--border)'
-                      }}
-                    />
-                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {['🍔', '🌭', '🌯', '🌽', '🍟', '🥤', '🍺', '🍰', '🍕', '🍽️'].map((em) => (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '13px', color: 'var(--text2)', fontWeight: 'bold' }}>
+                      Ícono / Emoji:
+                    </label>
+                    {emojiManual && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEmojiManual(false);
+                          setFormProd(prev => ({ ...prev, emoji: sugerirEmojiPorNombre(prev.nombre) }));
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--brand, #16A34A)',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          padding: 0
+                        }}
+                        title="Volver a sugerir automáticamente según el nombre"
+                      >
+                        ✨ Autodetectar por nombre
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <input
+                        type="text"
+                        value={formProd.emoji || ''}
+                        placeholder="🍽️"
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (!val.trim()) {
+                            // Si se borra, vuelve a autodetectar por nombre
+                            setEmojiManual(false);
+                            setFormProd({ ...formProd, emoji: sugerirEmojiPorNombre(formProd.nombre) });
+                          } else {
+                            setEmojiManual(true);
+                            setFormProd({ ...formProd, emoji: val });
+                          }
+                        }}
+                        style={{
+                          width: '64px',
+                          height: '46px',
+                          textAlign: 'center',
+                          fontSize: '24px',
+                          padding: '4px',
+                          borderRadius: '8px',
+                          border: '2px solid var(--border)',
+                          backgroundColor: 'var(--surface, #ffffff)',
+                          color: 'var(--text, #0f172a)'
+                        }}
+                        title="Escribe o pega cualquier emoji desde el teclado o portapapeles"
+                      />
+                      <div style={{ fontSize: '12px', color: 'var(--text3)', lineHeight: '1.4' }}>
+                        <span>Pega o escribe cualquier emoji libremente (ej. 🍕, ☕, 🍣, 🍷).</span>
+                        {!emojiManual && (
+                          <span style={{ color: 'var(--brand, #16A34A)', fontWeight: 'bold', display: 'block' }}>
+                            🪄 Autodetectando según el nombre del producto
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Paleta rápida de emojis populares */}
+                    <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text3)', fontWeight: '600', marginRight: '4px' }}>Rápidos:</span>
+                      {['🍔', '🌭', '🌯', '🍕', '🍟', '🍗', '🥪', '🌽', '🥤', '🍺', '🍾', '☕', '🍰', '🍷', '🍣', '🍽️'].map((em) => (
                         <button
                           key={em}
                           type="button"
-                          onClick={() => setFormProd({ ...formProd, emoji: em })}
-                          style={{
-                            background: 'var(--surf, #f3f4f6)',
-                            border: '1px solid var(--border)',
-                            borderRadius: '6px',
-                            padding: '4px 8px',
-                            cursor: 'pointer',
-                            fontSize: '15px'
+                          onClick={() => {
+                            setEmojiManual(true);
+                            setFormProd({ ...formProd, emoji: em });
                           }}
+                          style={{
+                            background: formProd.emoji === em ? 'var(--brand, #16A34A)' : 'var(--surf, #f3f4f6)',
+                            color: formProd.emoji === em ? '#fff' : 'inherit',
+                            border: formProd.emoji === em ? '1px solid var(--brand, #16A34A)' : '1px solid var(--border)',
+                            borderRadius: '6px',
+                            padding: '4px 7px',
+                            cursor: 'pointer',
+                            fontSize: '15px',
+                            transition: 'all 0.15s ease'
+                          }}
+                          title={`Seleccionar ${em}`}
                         >
                           {em}
                         </button>
@@ -1932,7 +3396,15 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   <label style={{ display: 'block', marginBottom: '4px', fontWeight: 'bold', color: 'var(--text2)', fontSize: '13px' }}>Nombre del Producto</label>
                   <input
                     value={formProd.nombre}
-                    onChange={e => setFormProd({ ...formProd, nombre: e.target.value })}
+                    onChange={e => {
+                      const nuevoNombre = e.target.value;
+                      setFormProd(prev => ({
+                        ...prev,
+                        nombre: nuevoNombre,
+                        emoji: emojiManual ? prev.emoji : sugerirEmojiPorNombre(nuevoNombre),
+                        grupo_reporte: prev.grupo_reporte || sugerirGrupoReporte(prev.categoria || prev.cat, nuevoNombre)
+                      }));
+                    }}
                     placeholder="Ej. Hamburguesa Doble Carne"
                     style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '14px' }}
                   />
@@ -2159,6 +3631,230 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         </div>
       )}
 
+      {/* Modal para Registrar Gasto */}
+      {modalGastoVisible && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }}>
+          <div className="animate-fade-in" style={{
+            backgroundColor: 'white',
+            padding: '28px',
+            borderRadius: '20px',
+            width: '460px',
+            maxWidth: '92%',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.25)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '18px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '12px' }}>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold', color: '#dc2626', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                💸 Registrar Nuevo Gasto / Egreso
+              </h2>
+              <button
+                type="button"
+                onClick={() => setModalGastoVisible(false)}
+                style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text2)' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCrearGasto} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* ¿A qué grupo pertenece el gasto? */}
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text)', marginBottom: '6px' }}>
+                  ¿A qué grupo pertenece el gasto? (Descontar de):
+                </label>
+                <select
+                  value={formGasto.grupo_afectado || 'comida'}
+                  onChange={(e) => {
+                    const g = e.target.value;
+                    const catMap = {
+                      comida: 'Insumos / Ingredientes',
+                      jugos_naturales: 'Insumos / Ingredientes',
+                      cervezas: 'Bebidas / Licores',
+                      gaseosas_embotellados: 'Bebidas / Licores',
+                      bebidas_calientes: 'Insumos / Ingredientes',
+                      gastos_generales: 'Servicios / Generales'
+                    };
+                    setFormGasto({ ...formGasto, grupo_afectado: g, categoria: catMap[g] || 'Insumos' });
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '2px solid var(--brand)',
+                    fontSize: '13.5px',
+                    backgroundColor: 'white',
+                    fontWeight: '600',
+                    color: 'var(--text)'
+                  }}
+                >
+                  <option value="comida">🍔 Comida (Pan, carnes, verduras, salsas, quesos)</option>
+                  <option value="jugos_naturales">🥤 Jugos Naturales (Frutas, pulpas, leche, azúcar)</option>
+                  <option value="cervezas">🍺 Cervezas (Canastas y barriles de cerveza)</option>
+                  <option value="gaseosas_embotellados">🍾 Embotellados (Gaseosas, aguas, jugos en caja)</option>
+                  <option value="bebidas_calientes">☕ Bebidas Calientes (Café, té, aromáticas, leche)</option>
+                  <option value="gastos_generales">🏢 Gastos Generales (Servicios, aseo, mantenimiento)</option>
+                </select>
+              </div>
+
+              {/* Descripción */}
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text)', marginBottom: '6px' }}>
+                  Descripción / Concepto:
+                </label>
+                <input
+                  type="text"
+                  placeholder="ej: Compra de carne y papas, Cajas de Postobón..."
+                  value={formGasto.descripcion}
+                  onChange={(e) => setFormGasto({ ...formGasto, descripcion: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    fontSize: '14px',
+                    boxSizing: 'border-box'
+                  }}
+                  required
+                />
+              </div>
+
+              {/* Monto */}
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text)', marginBottom: '6px' }}>
+                  Monto ($ COP):
+                </label>
+                <input
+                  type="text"
+                  placeholder="ej: 50.000"
+                  value={formGasto.monto}
+                  onChange={(e) => setFormGasto({ ...formGasto, monto: formatNumberInput(e.target.value) })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    fontSize: '16px',
+                    fontWeight: 'bold',
+                    color: '#dc2626',
+                    boxSizing: 'border-box'
+                  }}
+                  required
+                />
+              </div>
+
+              {/* Método de Pago */}
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text)', marginBottom: '6px' }}>
+                  Método de Pago (¿De dónde salió el dinero?):
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setFormGasto({ ...formGasto, metodo_pago: 'efectivo' })}
+                    style={{
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: formGasto.metodo_pago === 'efectivo' ? '2px solid #16a34a' : '1px solid var(--border)',
+                      backgroundColor: formGasto.metodo_pago === 'efectivo' ? 'rgba(22,163,74,0.1)' : 'white',
+                      color: formGasto.metodo_pago === 'efectivo' ? '#16a34a' : 'var(--text)',
+                      fontWeight: 'bold',
+                      fontSize: '14px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <span>💵</span> Efectivo (Caja)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormGasto({ ...formGasto, metodo_pago: 'transferencia' })}
+                    style={{
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: formGasto.metodo_pago === 'transferencia' ? '2px solid #2563eb' : '1px solid var(--border)',
+                      backgroundColor: formGasto.metodo_pago === 'transferencia' ? 'rgba(37,99,235,0.1)' : 'white',
+                      color: formGasto.metodo_pago === 'transferencia' ? '#2563eb' : 'var(--text)',
+                      fontWeight: 'bold',
+                      fontSize: '14px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <span>💳</span> Transferencia
+                  </button>
+                </div>
+                <p style={{ margin: '4px 0 0 0', fontSize: '11px', color: 'var(--text3)' }}>
+                  Transferencia incluye: Nequi, Daviplata, Bancolombia u otros bancos.
+                </p>
+              </div>
+
+              {/* Acciones */}
+              <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setModalGastoVisible(false)}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    backgroundColor: 'var(--surf2)',
+                    color: 'var(--text)',
+                    fontWeight: 'bold',
+                    fontSize: '14px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={guardandoGasto}
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    backgroundColor: '#dc2626',
+                    color: 'white',
+                    fontWeight: 'bold',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 6px rgba(220,38,38,0.2)'
+                  }}
+                >
+                  {guardandoGasto ? 'Guardando...' : '💾 Guardar Gasto'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Modal de Usuario */}
       {userModalVisible && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 }}>
@@ -2252,61 +3948,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
           </div>
         </div>
       )}
-      {/* Modal para Registrar Gasto */}
-      {modalGastoVisible && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 }}>
-          <div className="animate-fade-in" style={{ backgroundColor: 'white', padding: '32px', borderRadius: '24px', width: '90%', maxWidth: '400px', boxShadow: '0 20px 40px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ fontSize: '24px', color: 'var(--brand)', margin: '0 0 24px 0' }}>Registrar Gasto</h3>
-            <form onSubmit={handleRegistrarGasto} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Descripción del Gasto</label>
-                <input
-                  type="text"
-                  value={formGasto.descripcion}
-                  onChange={e => setFormGasto({ ...formGasto, descripcion: e.target.value })}
-                  placeholder="Ej. Pago de Internet"
-                  style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '2px solid var(--border)', fontSize: '16px' }}
-                  required
-                />
-              </div>
 
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Categoría</label>
-                <select
-                  value={formGasto.categoria}
-                  onChange={e => setFormGasto({ ...formGasto, categoria: e.target.value })}
-                  style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '2px solid var(--border)', fontSize: '16px', backgroundColor: 'white' }}
-                >
-                  {["Proveedores", "Servicios", "Nómina", "Mantenimiento", "Varios"].map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text2)' }}>Monto ($)</label>
-                <input
-                  type="text" inputMode="numeric"
-                  value={formGasto.valor}
-                  onChange={e => setFormGasto({ ...formGasto, valor: formatNumberInput(e.target.value) })}
-                  placeholder="0.00"
-                  style={{ width: '100%', padding: '12px', borderRadius: '12px', border: '2px solid var(--border)', fontSize: '16px' }}
-                  required
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-                <button type="button" onClick={() => setModalGastoVisible(false)} style={{ flex: 1, padding: '14px', borderRadius: '12px', border: 'none', backgroundColor: 'var(--surf3)', color: 'var(--text)', fontWeight: 'bold', cursor: 'pointer', fontSize: '16px' }}>
-                  Cancelar
-                </button>
-                <button type="submit" style={{ flex: 1, padding: '14px', borderRadius: '12px', border: 'none', backgroundColor: 'var(--orange)', color: 'white', fontWeight: 'bold', cursor: 'pointer', fontSize: '16px' }}>
-                  Registrar
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Modal de Adicionales */}
       {modalAdicionalVisible && (
