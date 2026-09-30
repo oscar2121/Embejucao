@@ -19,8 +19,11 @@ export function useAppStore() {
   const [pedidos, setPedidos] = useState([]);
   const [sesionActiva, setSesionActiva] = useState(null);
   const [adicionales, setAdicionales] = useState([]);
+  const [categorias, setCategorias] = useState([]);
   
   const socketRef = useRef(null);
+  const syncTimerRef = useRef(null);
+  const isSyncingRef = useRef(false);
 
   // Initialize socket connection
   useEffect(() => {
@@ -111,11 +114,11 @@ export function useAppStore() {
       if (sesion && typeof sesion === 'object') {
         setSesionActiva(sesion);
       }
-      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     socketRef.current.on('credito_actualizado', () => {
-      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     socketRef.current.on('caja:estado', (data) => {
@@ -141,20 +144,23 @@ export function useAppStore() {
     });
 
     socketRef.current.on('actualizar_pedidos', () => {
-      // Re-fetch activos al recibir señal genérica
-      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     socketRef.current.on('pedidos_actualizados', () => {
-      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     socketRef.current.on('catalogo_actualizado', () => {
-      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     socketRef.current.on('productos_actualizados', () => {
-      sincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
+    socketRef.current.on('categorias_actualizadas', () => {
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
     return () => {
@@ -164,8 +170,17 @@ export function useAppStore() {
     };
   }, []); // <-- ARREGLO DE DEPENDENCIAS VACÍO PARA EVITAR EL BUCLE
 
+  const debouncedSincronizarDatos = (url) => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      sincronizarDatos(url || serverUrlRef.current || DEFAULT_SERVER_URL);
+    }, 200);
+  };
+
   // Initial Sync Logic
   const sincronizarDatos = async (url) => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
     try {
       const baseUrl = `${url}/api`;
       
@@ -191,6 +206,19 @@ export function useAppStore() {
       });
       if (adicRes.data) {
         setAdicionales(adicRes.data.filter(a => a.disponible === 1));
+      }
+
+      // 1.7 Fetch Categorías
+      try {
+        const catRes = await axios.get(`${baseUrl}/categorias`, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        });
+        if (catRes.data) {
+          const rawCats = Array.isArray(catRes.data) ? catRes.data : (catRes.data.categorias || []);
+          setCategorias(rawCats);
+        }
+      } catch (errCat) {
+        console.log("No se pudieron obtener las categorías dinámicas");
       }
 
       // 2. Fetch Pedidos del día y Fiados históricos
@@ -233,6 +261,8 @@ export function useAppStore() {
       console.log("✅ Datos sincronizados correctamente.");
     } catch (error) {
       console.error("Error sincronizando datos:", error);
+    } finally {
+      isSyncingRef.current = false;
     }
   };
 
@@ -292,6 +322,8 @@ export function useAppStore() {
     setSesionActiva,
     adicionales,
     setAdicionales,
+    categorias,
+    setCategorias,
     socket: socketRef.current
   };
 }

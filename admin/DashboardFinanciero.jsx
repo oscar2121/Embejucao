@@ -6,7 +6,7 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
   const [dashboardRango, setDashboardRango] = useState('hoy');
   const [dashboardFechaPersonalizada, setDashboardFechaPersonalizada] = useState('');
   const [modalGastoOpen, setModalGastoOpen] = useState(false);
-  const [gastoForm, setGastoForm] = useState({ descripcion: '', categoria: 'Insumos', valor: '' });
+  const [gastoForm, setGastoForm] = useState({ descripcion: '', categoria: 'Servicios', valor: '', fuente_financiamiento: 'caja_negocio' });
 
   const cargarDashboard = async () => {
     try {
@@ -286,6 +286,7 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                   descripcion: gastoForm.descripcion,
                   categoria: gastoForm.categoria,
                   valor: valorSanitizado,
+                  fuente_financiamiento: gastoForm.fuente_financiamiento || 'caja_negocio',
                   sesion_id: sesion?.id || null
                 }, {
                   headers: {
@@ -295,7 +296,7 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                 });
 
                 setModalGastoOpen(false);
-                setGastoForm({ descripcion: '', categoria: 'Insumos', valor: '' });
+                setGastoForm({ descripcion: '', categoria: 'Servicios', valor: '', fuente_financiamiento: 'caja_negocio' });
                 cargarDashboard();
               } catch (err) {
                 console.error('Error registrando gasto:', err);
@@ -320,7 +321,6 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                   onChange={(e) => setGastoForm({ ...gastoForm, categoria: e.target.value })}
                   style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 >
-                  <option value="Insumos">Insumos</option>
                   <option value="Servicios">Servicios</option>
                   <option value="Nómina">Nómina</option>
                   <option value="Mantenimiento">Mantenimiento</option>
@@ -343,6 +343,20 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                   placeholder="Ej. 50.000"
                   style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Fuente de Financiamiento / Origen</label>
+                <select
+                  value={gastoForm.fuente_financiamiento || 'caja_negocio'}
+                  onChange={(e) => setGastoForm({ ...gastoForm, fuente_financiamiento: e.target.value })}
+                  style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                >
+                  <option value="caja_negocio">🏪 Caja del Negocio (Ventas)</option>
+                  <option value="aporte_capital">💼 Aporte de Capital (Inyección)</option>
+                  <option value="prestamo">🤝 Préstamo / Pasivo (A devolver)</option>
+                  <option value="ingreso_no_operacional">📈 Ingreso No Operacional</option>
+                </select>
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>

@@ -177,13 +177,18 @@ db.serialize(() => {
     db.run(`ALTER TABLE gastos ADD COLUMN sesion_id INTEGER`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN caja_sesion_id INTEGER`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN grupo_afectado TEXT DEFAULT 'comida'`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN fuente_financiamiento TEXT DEFAULT 'caja_negocio'`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN origen_dinero TEXT DEFAULT 'caja_negocio'`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN uuid TEXT UNIQUE`, () => {});
-    db.run(`UPDATE gastos SET monto = valor WHERE monto IS NULL AND valor IS NOT NULL`, () => {});
-    db.run(`UPDATE gastos SET valor = monto WHERE valor IS NULL AND monto IS NOT NULL`, () => {});
+    db.run(`UPDATE gastos SET fuente_financiamiento = 'caja_negocio' WHERE fuente_financiamiento IS NULL`, () => {});
+    db.run(`UPDATE gastos SET origen_dinero = 'caja_negocio' WHERE origen_dinero IS NULL`, () => {});
+    db.run(`UPDATE gastos SET monto = valor WHERE (monto IS NULL OR monto = 0) AND valor IS NOT NULL AND valor > 0`, () => {});
+    db.run(`UPDATE gastos SET valor = monto WHERE (valor IS NULL OR valor = 0) AND monto IS NOT NULL AND monto > 0`, () => {});
     db.run(`UPDATE gastos SET caja_sesion_id = sesion_id WHERE caja_sesion_id IS NULL AND sesion_id IS NOT NULL`, () => {});
     db.run(`UPDATE gastos SET sesion_id = caja_sesion_id WHERE sesion_id IS NULL AND caja_sesion_id IS NOT NULL`, () => {});
-    db.run(`UPDATE gastos SET metodo_pago = 'efectivo' WHERE metodo_pago IS NULL`, () => {});
-    db.run(`UPDATE gastos SET grupo_afectado = 'comida' WHERE grupo_afectado IS NULL`, () => {});
+    db.run(`UPDATE gastos SET metodo_pago = 'efectivo' WHERE metodo_pago IS NULL OR TRIM(metodo_pago) = ''`, () => {});
+    db.run(`UPDATE gastos SET grupo_afectado = 'comida' WHERE grupo_afectado IS NULL OR TRIM(grupo_afectado) = ''`, () => {});
+    db.run(`UPDATE gastos SET fecha = datetime('now', 'localtime') WHERE fecha IS NULL OR TRIM(fecha) = ''`, () => {});
   });
 
   // 4. Insumos (Inventario)
@@ -195,6 +200,18 @@ db.serialize(() => {
       cantidad_actual REAL DEFAULT 0,
       stock_minimo REAL DEFAULT 0,
       precio_compra REAL DEFAULT 0
+    )
+  `);
+
+  // 4.1 Relación Producto - Insumos (Recetas)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS producto_insumos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      producto_id INTEGER NOT NULL,
+      insumo_id INTEGER NOT NULL,
+      cantidad REAL NOT NULL DEFAULT 1,
+      FOREIGN KEY(producto_id) REFERENCES productos(id) ON DELETE CASCADE,
+      FOREIGN KEY(insumo_id) REFERENCES insumos(id) ON DELETE CASCADE
     )
   `);
 
@@ -487,7 +504,24 @@ db.serialize(() => {
                         WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') AND mesa IS NOT NULL
                       );
                     `, () => {
-                      console.log('✅ Mesas y pedidos fantasmas verificados y limpiados al iniciar la BD.');
+                      // Limpieza automática de gastos huérfanos de insumos eliminados
+                      db.all(`SELECT id, descripcion FROM gastos WHERE LOWER(descripcion) LIKE 'compra%:' OR LOWER(descripcion) LIKE 'entrada%:'`, [], (errG, rowsG) => {
+                        if (!errG && rowsG && rowsG.length > 0) {
+                          db.all(`SELECT LOWER(nombre) as nom FROM insumos`, [], (errI, rowsI) => {
+                            if (!errI) {
+                              const insSet = new Set((rowsI || []).map(i => (i.nom || '').trim()));
+                              rowsG.forEach(r => {
+                                const parts = (r.descripcion || '').split(': ');
+                                const insNom = (parts[1] || '').split(' (')[0].trim().toLowerCase();
+                                if (insNom && !insSet.has(insNom)) {
+                                  db.run(`DELETE FROM gastos WHERE id = ?`, [r.id]);
+                                }
+                              });
+                            }
+                          });
+                        }
+                      });
+                      console.log('✅ Mesas, pedidos y gastos huérfanos verificados y limpiados al iniciar la BD.');
                     });
                   });
                 });

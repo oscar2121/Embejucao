@@ -407,59 +407,7 @@ app.post('/api/mesas/:id/forzar-limpieza-completa', async (req, res) => {
   }
 });
 
-// Endpoint de Limpieza de Pedidos Huérfanos / Fantasmas en Backend
-app.post('/api/sistema/limpiar-fantasmas', async (req, res) => {
-  try {
-    // 1. Cancelar pedidos abiertos/fantasma que no tengan detalles o estén huérfanos sin ítems
-    await dbRun(`
-      UPDATE pedidos 
-      SET estado = 'cancelado' 
-      WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')
-        AND (
-          id NOT IN (SELECT DISTINCT pedido_id FROM detalles_pedidos WHERE pedido_id IS NOT NULL)
-          OR items IS NULL 
-          OR TRIM(items) = '' 
-          OR TRIM(items) = '[]'
-        )
-    `);
 
-    // 2. Liberar mesas que no tengan ningún pedido realmente activo
-    db.all(`SELECT id, num FROM mesas`, async (errMesas, todasMesas) => {
-      if (!errMesas && Array.isArray(todasMesas)) {
-        for (const m of todasMesas) {
-          const mesaNum = m.num || m.id;
-          const mesaStr = String(mesaNum);
-          const mesaVar = `Mesa ${mesaNum}`;
-          
-          const tienePedidoReal = await dbGet(`
-            SELECT id FROM pedidos 
-            WHERE (mesa = ? OR mesa = ? OR id = ?)
-              AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')
-            LIMIT 1
-          `, [mesaStr, mesaVar, m.id]);
-
-          if (!tienePedidoReal) {
-            await dbRun(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [m.id, mesaNum]);
-          }
-        }
-      }
-
-      const mesasActuales = await dbAll(`SELECT * FROM mesas ORDER BY num ASC`);
-
-      if (req.io) {
-        req.io.emit('mesas_actualizadas', mesasActuales);
-        req.io.emit('caja_actualizada');
-        req.io.emit('pedidos_actualizados');
-        req.io.emit('actualizar_pedidos');
-      }
-
-      res.json({ success: true, message: "Pedidos fantasmas eliminados y mesas sincronizadas.", mesas: mesasActuales });
-    });
-  } catch (err) {
-    console.error("Error limpiando fantasmas:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // Endpoint de Sincronización Manual / Reseteo de Mesas
 app.post('/api/mesas/resetear-todas', async (req, res) => {
@@ -887,7 +835,9 @@ app.get('/api/categorias', (req, res) => {
         categoriasMap.set('otros', { id: 'temp-otros', nombre: 'Otros', categoria: 'Otros', color: '#64748b' });
       }
 
-      const lista = Array.from(categoriasMap.values());
+      const lista = Array.from(categoriasMap.values()).sort((a, b) => 
+        (a.nombre || '').localeCompare(b.nombre || '', 'es', { sensitivity: 'base' })
+      );
       res.json(lista);
     });
   });
@@ -983,10 +933,11 @@ app.delete('/api/categorias/:nombre', (req, res) => {
 // ─── GASTOS ───
 // Registrar un nuevo gasto
 app.post('/api/gastos', async (req, res) => {
-  const { categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id } = req.body;
+  const { categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, fuente_financiamiento, origen_dinero } = req.body;
   const montoNum = Number(monto !== undefined ? monto : valor);
   const metodoPagoLimpio = String(metodo_pago || 'efectivo').toLowerCase().trim();
   const grupoLimpio = String(grupo_afectado || 'comida').toLowerCase().trim();
+  const fuenteFinLimpia = String(fuente_financiamiento || origen_dinero || 'caja_negocio').toLowerCase().trim();
 
   if (!descripcion || isNaN(montoNum) || !metodo_pago) {
     return res.status(400).json({ error: "Descripción, monto y método de pago (efectivo/transferencia) son obligatorios." });
@@ -1000,15 +951,15 @@ app.post('/api/gastos', async (req, res) => {
     }
 
     const usuarioResp = req.user ? req.user.nombre : 'Administrador';
-    const categoriaFinal = categoria || 'Insumos';
+    const categoriaFinal = categoria || 'Gastos Generales';
 
     const insertResult = await dbRun(
-      `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp]
+      `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp, fuenteFinLimpia, fuenteFinLimpia]
     );
 
-    logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${montoNum} - ${metodoPagoLimpio} - ${grupoLimpio}) en cat. ${categoriaFinal}`);
+    logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${montoNum} - ${metodoPagoLimpio} - ${grupoLimpio} - Fuente: ${fuenteFinLimpia}) en cat. ${categoriaFinal}`);
 
     if (req.io) {
       req.io.emit('caja_actualizada');
@@ -1346,20 +1297,20 @@ app.get('/api/dashboard/financiero', authorize(['admin']), (req, res) => {
 
     console.log(`[DASHBOARD DEBUG] Rango: ${rango || 'hoy'} | Ventas: ${ventas} | Efe: ${efectivo} | Trans: ${transferencia}`);
     
-    db.get(`SELECT COALESCE(SUM(valor), 0) as total FROM gastos WHERE ${dateConditionGastos}`, [], (err, rGastos) => {
+    db.get(`SELECT COALESCE(SUM(COALESCE(monto, valor, 0)), 0) as total FROM gastos WHERE ${dateConditionGastos}`, [], (err, rGastos) => {
       const gastos = Number(rGastos?.total || 0);
       
-      db.all(`SELECT categoria, SUM(valor) as total FROM gastos WHERE ${dateConditionGastos} GROUP BY categoria`, [], (err, catList) => {
+      db.all(`SELECT COALESCE(categoria, 'Ingredientes / Materia Prima') AS categoria, SUM(COALESCE(monto, valor, 0)) as total FROM gastos WHERE ${dateConditionGastos} GROUP BY COALESCE(categoria, 'Ingredientes / Materia Prima')`, [], (err, catList) => {
         const gastosPorCategoria = catList || [];
         
-        db.all(`SELECT * FROM gastos WHERE ${dateConditionGastos} ORDER BY id DESC LIMIT 50`, [], (err, ultimosGastos) => {
+        db.all(`SELECT id, fecha, categoria, descripcion, COALESCE(monto, valor, 0) AS monto, COALESCE(monto, valor, 0) AS valor, COALESCE(metodo_pago, 'efectivo') AS metodo_pago, COALESCE(grupo_afectado, 'comida') AS grupo_afectado, usuario, fuente_financiamiento FROM gastos WHERE ${dateConditionGastos} ORDER BY id DESC LIMIT 50`, [], (err, ultimosGastos) => {
           let flowSelect = "strftime('%H:00', datetime(fecha, 'localtime')) as label";
           if (rango === 'semana' || rango === 'mes') {
             flowSelect = `substr(${sqlFecha('fecha')}, 1, 10) as label`;
           }
 
           db.all(`SELECT ${flowSelect}, SUM(total) as total FROM ventas WHERE ${dateConditionVentas} GROUP BY label ORDER BY label ASC`, [], (err, flujoVentas) => {
-            db.all(`SELECT ${flowSelect}, SUM(valor) as total FROM gastos WHERE ${dateConditionGastos} GROUP BY label ORDER BY label ASC`, [], (err, flujoGastos) => {
+            db.all(`SELECT ${flowSelect}, SUM(COALESCE(monto, valor, 0)) as total FROM gastos WHERE ${dateConditionGastos} GROUP BY label ORDER BY label ASC`, [], (err, flujoGastos) => {
               
               const fVentas = flujoVentas || [];
               const fGastos = flujoGastos || [];
@@ -1407,32 +1358,80 @@ app.get('/api/dashboard/financiero', authorize(['admin']), (req, res) => {
 app.get('/api/inventario/insumos', (req, res) => {
   db.all(`SELECT * FROM insumos ORDER BY nombre ASC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ insumos: rows });
+    res.json({ insumos: rows || [] });
   });
 });
 
-app.post('/api/inventario/insumos', (req, res) => {
-  const { nombre, unidad, cantidad_actual, stock_minimo, precio_compra, usuario, metodo_pago } = req.body;
-  
+app.get('/api/inventario/movimientos', (req, res) => {
+  db.all(`
+    SELECT m.*, i.nombre AS insumo_nombre, i.unidad 
+    FROM movimientos_inventario m 
+    LEFT JOIN insumos i ON m.insumo_id = i.id 
+    ORDER BY m.id DESC LIMIT 100
+  `, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ movimientos: rows || [] });
+  });
+});
+
+app.post('/api/inventario/insumos', async (req, res) => {
+  const { nombre, unidad, cantidad_actual, stock_minimo, precio_compra, usuario, metodo_pago, grupo_afectado, fuente_financiamiento, registrar_gasto } = req.body;
+  const cantNum = Number(cantidad_actual) || 0;
+  const precioNum = Number(precio_compra) || 0;
+  const stockMinNum = Number(stock_minimo) || 0;
+  const usuarioResp = usuario || 'Administrador';
+
   db.run(
     `INSERT INTO insumos (nombre, unidad, cantidad_actual, stock_minimo, precio_compra) VALUES (?, ?, ?, ?, ?)`,
-    [nombre, unidad, cantidad_actual || 0, stock_minimo || 0, precio_compra || 0],
-    function (err) {
+    [String(nombre || '').trim(), unidad || 'Unidad', cantNum, stockMinNum, precioNum],
+    async function (err) {
       if (err) return res.status(400).json({ error: err.message });
       const insumoId = this.lastID;
-      logAuditoria(usuario, 'insumo_creado', `Insumo registrado: ${nombre} (${cantidad_actual} ${unidad})`);
-      
-      const costoTotalCompra = (parseFloat(cantidad_actual) || 0) * (parseFloat(precio_compra) || 0);
-      if (costoTotalCompra > 0) {
-        const formaPagoGasto = (metodo_pago || 'efectivo').toLowerCase();
-        const fechaGasto = new Date().toISOString();
+      logAuditoria(usuarioResp, 'insumo_creado', `Insumo registrado: ${nombre} (${cantNum} ${unidad})`);
 
-        db.run(`
-          INSERT INTO gastos (descripcion, monto, categoria, metodo_pago, fecha)
-          VALUES (?, ?, 'Insumos', ?, ?)
-        `, [`Compra inicial: ${nombre}`, costoTotalCompra, formaPagoGasto, fechaGasto], () => {
-          if (typeof io !== 'undefined') io.emit('dashboard:actualizado');
-        });
+      const registrarGastoBool = registrar_gasto !== false;
+      const costoTotalCompra = precioNum > 0 ? (cantNum > 0 ? cantNum * precioNum : precioNum) : 0;
+
+      if (registrarGastoBool && costoTotalCompra > 0) {
+        const metodoPagoLimpio = String(metodo_pago || 'efectivo').toLowerCase().trim();
+        const grupoLimpio = String(grupo_afectado || 'comida').toLowerCase().trim();
+        const fuenteFinLimpia = String(fuente_financiamiento || 'caja_negocio').toLowerCase().trim();
+        
+        let sesionId = null;
+        try {
+          const sesionAbierta = await dbGet(`SELECT id FROM caja_sesiones WHERE estado = 'abierta' ORDER BY id DESC LIMIT 1`);
+          if (sesionAbierta) sesionId = sesionAbierta.id;
+        } catch (e) {}
+
+        db.run(
+          `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            'Ingredientes / Materia Prima',
+            `Compra Insumo: ${String(nombre || '').trim()} (${cantNum > 0 ? cantNum : 1} ${unidad})`,
+            costoTotalCompra,
+            costoTotalCompra,
+            metodoPagoLimpio,
+            grupoLimpio,
+            sesionId,
+            sesionId,
+            usuarioResp,
+            fuenteFinLimpia,
+            fuenteFinLimpia
+          ],
+          () => {
+            if (req.io) {
+              req.io.emit('caja_actualizada');
+              req.io.emit('gastos_actualizados');
+              req.io.emit('caja:estado');
+              req.io.emit('dashboard:actualizado');
+            }
+          }
+        );
+      }
+
+      if (req.io) {
+        req.io.emit('inventario:actualizado');
       }
 
       res.json({ success: true, id: insumoId });
@@ -1448,19 +1447,28 @@ app.delete('/api/inventario/insumos/:id', (req, res) => {
     if (errGet) return res.status(500).json({ error: errGet.message });
     if (!ins) return res.status(404).json({ error: 'Insumo no encontrado' });
 
-    const insNombre = ins.nombre;
+    const insNombre = String(ins.nombre || '').trim();
 
     db.serialize(() => {
       db.run(`DELETE FROM movimientos_inventario WHERE insumo_id = ?`, [id]);
       db.run(`DELETE FROM producto_insumos WHERE insumo_id = ?`, [id]);
+      db.run(
+        `DELETE FROM gastos WHERE LOWER(descripcion) LIKE LOWER(?)`,
+        [`%${insNombre.toLowerCase()}%`]
+      );
       db.run(`DELETE FROM insumos WHERE id = ?`, [id], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         if (typeof logAuditoria === 'function') {
-          logAuditoria(usuario, 'insumo_eliminado', `Insumo eliminado: ${insNombre}`);
+          logAuditoria(usuario, 'insumo_eliminado', `Insumo eliminado y dinero revertido: ${insNombre}`);
         }
-        if (req.io) req.io.emit('inventario:actualizado');
-        if (typeof io !== 'undefined') io.emit('inventario:actualizado');
-        res.json({ success: true, deleted: this.changes, message: 'Insumo eliminado con éxito' });
+        if (req.io) {
+          req.io.emit('inventario:actualizado');
+          req.io.emit('gastos_actualizados');
+          req.io.emit('caja_actualizada');
+          req.io.emit('caja:estado');
+          req.io.emit('dashboard:actualizado');
+        }
+        res.json({ success: true, deleted: this.changes, message: 'Insumo y sus gastos asociados fueron eliminados y revertidos con éxito' });
       });
     });
   });
@@ -1513,15 +1521,23 @@ app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {
               logAuditoria(usuario, accionAuditoria, detalleAuditoria);
 
               if (tipo === 'entrada') {
-                const precioUnit = parseFloat(req.body.precio_compra) || parseFloat(insumo.precio_compra) || 0;
-                const subtotalGasto = parseFloat(cantidad) * precioUnit;
+                const precioUnit = parseFloat(req.body.precio_compra) || parseFloat(req.body.costo) || parseFloat(insumo.precio_compra) || 0;
+                const subtotalGasto = parseFloat(req.body.costo) > 0 ? parseFloat(req.body.costo) : (parseFloat(cantidad) * precioUnit);
                 if (subtotalGasto > 0) {
                   const formaPago = (req.body.metodo_pago || 'efectivo').toLowerCase();
+                  const grupoLimpio = String(req.body.grupo_afectado || 'comida').toLowerCase();
+                  const fuenteFin = String(req.body.fuente_financiamiento || 'caja_negocio').toLowerCase();
+
                   db.run(`
-                    INSERT INTO gastos (descripcion, monto, categoria, metodo_pago, fecha)
-                    VALUES (?, ?, 'Insumos', ?, ?)
-                  `, [`Entrada insumo: ${insumo.nombre} (${cantidad} ${insumo.unidad})`, subtotalGasto, formaPago, new Date().toISOString()], () => {
-                    if (typeof io !== 'undefined') io.emit('dashboard:actualizado');
+                    INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, fuente_financiamiento, origen_dinero, fecha, usuario)
+                    VALUES ('Ingredientes / Materia Prima', ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?)
+                  `, [`Entrada insumo: ${insumo.nombre} (${cantidad} ${insumo.unidad})`, subtotalGasto, subtotalGasto, formaPago, grupoLimpio, fuenteFin, fuenteFin, usuario || 'Admin'], () => {
+                    if (req.io) {
+                      req.io.emit('caja_actualizada');
+                      req.io.emit('gastos_actualizados');
+                      req.io.emit('caja:estado');
+                      req.io.emit('dashboard:actualizado');
+                    }
                   });
                 }
               }

@@ -12,7 +12,29 @@ const cleanNum = (val) => {
   return String(val).replace(/\./g, '');
 };
 
-const CATEGORIAS = [
+const sugerirEmojiPorCategoria = (categoriaTexto) => {
+  const c = String(categoriaTexto || '').toLowerCase().trim();
+  if (c.includes('hambur')) return '🍔';
+  if (c.includes('perro') || c.includes('hot dog')) return '🌭';
+  if (c.includes('burrito') || c.includes('taco') || c.includes('mexic')) return '🌯';
+  if (c.includes('salch')) return '🍟';
+  if (c.includes('mazor')) return '🌽';
+  if (c.includes('jugo') || c.includes('batid') || c.includes('smooth')) return '🥤';
+  if (c.includes('limonad')) return '🍋';
+  if (c.includes('cerveza') || c.includes('pola')) return '🍺';
+  if (c.includes('caf') || c.includes('tinto') || c.includes('bebida cal')) return '☕';
+  if (c.includes('adic') || c.includes('extra')) return '🍟';
+  if (c.includes('pizza')) return '🍕';
+  if (c.includes('postre') || c.includes('dulce') || c.includes('helad')) return '🍦';
+  if (c.includes('pollo') || c.includes('alita')) return '🍗';
+  if (c.includes('carne') || c.includes('asado') || c.includes('parrill')) return '🥩';
+  if (c.includes('pan') || c.includes('sandwich') || c.includes('sándwich')) return '🥪';
+  if (c.includes('gaseos') || c.includes('refres') || c.includes('soda')) return '🥤';
+  if (c.includes('licor') || c.includes('trago') || c.includes('coctel')) return '🍹';
+  return '🍽️';
+};
+
+const DEFAULT_CATEGORIAS = [
   { id: 1, nombre: "Hamburguesas", emoji: "🍔", color: "var(--cat-green)" },
   { id: 2, nombre: "Perros Calientes", emoji: "🌭", color: "var(--cat-brown)" },
   { id: 3, nombre: "Burritos", emoji: "🌯", color: "var(--cat-grey)" },
@@ -25,8 +47,60 @@ const CATEGORIAS = [
   { id: 10, nombre: "Adicionales", emoji: "🍟", color: "var(--cat-orange)" },
 ];
 
-export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], pedidoEditando, setPedidoEditando, pedidos = [] }) {
+export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], pedidoEditando, setPedidoEditando, pedidos = [], categorias = [] }) {
+  const [catLocales, setCatLocales] = useState([]);
   const [categoriaActiva, setCategoriaActiva] = useState(1);
+
+  useEffect(() => {
+    if ((!categorias || categorias.length === 0) && serverUrl) {
+      axios.get(`${serverUrl}/api/categorias`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+        .then(res => {
+          const raw = Array.isArray(res.data) ? res.data : (res.data?.categorias || []);
+          if (raw.length > 0) setCatLocales(raw);
+        })
+        .catch(err => console.log('Error fetching local categorias', err));
+    }
+  }, [serverUrl, categorias]);
+
+  const listaCategoriasDinamicas = React.useMemo(() => {
+    const map = new Map();
+
+    const addCat = (id, nombre, emoji, color) => {
+      if (!nombre) return;
+      const nomStr = String(nombre).trim();
+      if (!nomStr) return;
+      const key = nomStr.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, {
+          id: id || `cat_${key}`,
+          nombre: nomStr,
+          emoji: emoji || sugerirEmojiPorCategoria(nomStr),
+          color: color || 'var(--cat-green)'
+        });
+      }
+    };
+
+    DEFAULT_CATEGORIAS.forEach(c => addCat(c.id, c.nombre, c.emoji, c.color));
+
+    const catsServidor = [...(categorias || []), ...(catLocales || [])];
+    catsServidor.forEach(c => {
+      const nom = typeof c === 'string' ? c : (c.nombre || c.categoria);
+      const id = typeof c === 'object' && c !== null ? c.id : null;
+      const emoji = typeof c === 'object' && c !== null ? c.emoji : null;
+      const color = typeof c === 'object' && c !== null ? c.color : null;
+      addCat(id, nom, emoji, color);
+    });
+
+    (productos || []).forEach(p => {
+      const rawCat = p.categoria ?? p.categoria_nombre ?? p.cat;
+      const nom = typeof rawCat === 'string' ? rawCat : (rawCat?.nombre || rawCat?.categoria || '');
+      if (nom) addCat(p.categoria_id || p.cat, nom, p.emoji_categoria, null);
+    });
+
+    return Array.from(map.values()).sort((a, b) => 
+      a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
+    );
+  }, [categorias, catLocales, productos]);
   const [carrito, setCarrito] = useState([]);
   const [mesaSeleccionada, setMesaSeleccionada] = useState('');
   const [nombreCliente, setNombreCliente] = useState('');
@@ -88,19 +162,35 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     }
   }, [pedidoEditando, productos]);
 
-  const catObjActivo = CATEGORIAS.find(c => c.id === categoriaActiva);
+  const catObjActivo = listaCategoriasDinamicas.find(c => 
+    String(c.id) === String(categoriaActiva) || 
+    c.nombre.toLowerCase() === String(categoriaActiva).toLowerCase()
+  ) || listaCategoriasDinamicas[0];
+
   const nombreCatActiva = catObjActivo ? catObjActivo.nombre.toLowerCase() : '';
+  const idCatActiva = catObjActivo ? catObjActivo.id : null;
 
   const prodsFromDb = (productos || []).filter(p => {
-    if (p.cat === categoriaActiva) return true;
-    if (p.categoria_id === categoriaActiva) return true;
-    const catName = String(p.categoria || p.categoria_nombre || '').toLowerCase();
-    if (nombreCatActiva && catName.includes(nombreCatActiva)) return true;
-    if (categoriaActiva === 10 && (catName.includes('adicional') || catName.includes('extra'))) return true;
+    if (!catObjActivo) return true;
+
+    if (idCatActiva === 10 || nombreCatActiva.includes('adicional')) {
+      const catName = String(p.categoria || p.categoria_nombre || p.cat || '').toLowerCase();
+      if (catName.includes('adicional') || catName.includes('extra')) return true;
+    }
+
+    const pCatId = p.cat ?? p.categoria_id;
+    if (pCatId !== undefined && pCatId !== null && String(pCatId) === String(idCatActiva)) return true;
+
+    const pCatName = String(p.categoria || p.categoria_nombre || p.cat || '').toLowerCase().trim();
+    if (pCatName && nombreCatActiva) {
+      if (pCatName === nombreCatActiva) return true;
+      if (pCatName.includes(nombreCatActiva) || nombreCatActiva.includes(pCatName)) return true;
+    }
+
     return false;
   });
 
-  const adicionalesMapped = (categoriaActiva === 10 && Array.isArray(adicionales))
+  const adicionalesMapped = ((idCatActiva === 10 || nombreCatActiva.includes('adicional')) && Array.isArray(adicionales))
     ? adicionales.filter(a => a.disponible !== 0).map(a => ({
         id: `adic_${a.id}`,
         original_adic_id: a.id,
@@ -680,24 +770,35 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
           <div style={{ fontWeight: 'bold', fontSize: '18px', color: 'var(--header-bg)', marginBottom: '8px', textAlign: 'center' }}>
             Categorías
           </div>
-          {CATEGORIAS.map(cat => (
-            <button
-              key={cat.id}
-              className="pos-cat-btn"
-              onClick={() => setCategoriaActiva(cat.id)}
-              style={{
-                backgroundColor: categoriaActiva === cat.id ? 'var(--orange)' : 'white',
-                color: categoriaActiva === cat.id ? 'white' : 'var(--text)',
-                border: categoriaActiva === cat.id ? 'none' : '1px solid var(--border)',
-                borderRadius: '50px',
-                padding: '16px 12px',
-                transform: categoriaActiva === cat.id ? 'scale(1.02)' : 'scale(1)',
-                opacity: 1
-              }}
-            >
-              {cat.nombre}
-            </button>
-          ))}
+          {listaCategoriasDinamicas.map(cat => {
+            const isSelected = catObjActivo && (
+              String(cat.id) === String(catObjActivo.id) ||
+              cat.nombre.toLowerCase() === catObjActivo.nombre.toLowerCase()
+            );
+            return (
+              <button
+                key={cat.id}
+                className="pos-cat-btn"
+                onClick={() => setCategoriaActiva(cat.id)}
+                style={{
+                  backgroundColor: isSelected ? 'var(--orange)' : 'white',
+                  color: isSelected ? 'white' : 'var(--text)',
+                  border: isSelected ? 'none' : '1px solid var(--border)',
+                  borderRadius: '50px',
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  cursor: 'pointer',
+                  transform: isSelected ? 'scale(1.02)' : 'scale(1)',
+                  opacity: 1
+                }}
+              >
+                <span>{cat.emoji || sugerirEmojiPorCategoria(cat.nombre)}</span>
+                <span>{cat.nombre}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Grilla de Productos */}

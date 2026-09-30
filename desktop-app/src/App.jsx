@@ -71,6 +71,7 @@ function App() {
     sesionActiva,
     setSesionActiva,
     adicionales,
+    categorias,
     socket
   } = useAppStore();
 
@@ -152,6 +153,7 @@ function App() {
               adicionales={adicionales}
               pedidoEditando={pedidoEditando}
               setPedidoEditando={setPedidoEditando}
+              categorias={categorias}
             />
           )}
           

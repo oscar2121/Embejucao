@@ -486,8 +486,8 @@ export default function App() {
   const [grupoGasto, setGrupoGasto] = useState('comida');
   const [montoGasto, setMontoGasto] = useState('');
   const [metodoGasto, setMetodoGasto] = useState('efectivo');
-  const [formGasto, setFormGasto] = useState({ descripcion: '', categoria: 'Proveedores', valor: '' });
-  const [limpiandoFantasmasMovil, setLimpiandoFantasmasMovil] = useState(false);
+  const [fuenteFinanciamiento, setFuenteFinanciamiento] = useState('caja_negocio');
+
 
   // Estados y refs para Socket.io y alertas sonoras nativas
   const [customSoundUri, setCustomSoundUri] = useState(null);
@@ -783,15 +783,15 @@ export default function App() {
       if (Array.isArray(nuevasMesas) && nuevasMesas.length > 0) {
         setBaseMesas(nuevasMesas);
       }
-      sincronizar();
+      debouncedSincronizar();
     });
 
     socketRef.current.on('credito_actualizado', () => {
-      sincronizar();
+      debouncedSincronizar();
     });
 
     socketRef.current.on('caja_actualizada', () => {
-      sincronizar();
+      debouncedSincronizar();
     });
 
     // SINCRONIZACIÓN GLOBAL DE COMANDAS (emitido por broadcastComandasActivas en server.js)
@@ -804,10 +804,10 @@ export default function App() {
     socketRef.current.on('pedidos:lista', actualizarPedidosGlobal);
     socketRef.current.on('sync_comandas', actualizarPedidosGlobal);
     socketRef.current.on('pedidos_actualizados', () => {
-      sincronizar();
+      debouncedSincronizar();
     });
     socketRef.current.on('actualizar_pedidos', () => {
-      sincronizar();
+      debouncedSincronizar();
     });
     socketRef.current.on('cocina_item_cambiado', (data) => {
       const pId = data.pedidoId || data.id;
@@ -1146,22 +1146,33 @@ export default function App() {
       const data = res.data;
       const cats = Array.isArray(data) ? data : (data?.categorias || []);
       const names = cats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria || '')).filter(Boolean);
-      const uniqueNames = Array.from(new Set(names));
+      const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
       setCategorias(uniqueNames);
       return uniqueNames;
     } catch (e) {
       // Fallback seguro: extraer categorías únicas de los productos si la ruta falla
       if (Array.isArray(productos) && productos.length > 0) {
-        const unicas = [...new Set(productos.map(p => typeof (p.categoria || p.cat) === 'object' ? (p.categoria?.nombre || p.cat?.nombre) : (p.categoria || p.cat || 'Otros')))].filter(Boolean);
+        const unicas = [...new Set(productos.map(p => typeof (p.categoria || p.cat) === 'object' ? (p.categoria?.nombre || p.cat?.nombre) : (p.categoria || p.cat || 'Otros')))].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
         setCategorias(unicas);
         return unicas;
       }
     }
   };
 
+  const syncTimerAppRef = useRef(null);
+  const isSyncingAppRef = useRef(false);
+
+  const debouncedSincronizar = () => {
+    if (syncTimerAppRef.current) clearTimeout(syncTimerAppRef.current);
+    syncTimerAppRef.current = setTimeout(() => {
+      sincronizar();
+    }, 200);
+  };
+
   // Sincronizar pedidos del día, catálogo y sesión de caja
   const sincronizar = async () => {
-    if (!ipConfigured) return;
+    if (!ipConfigured || isSyncingAppRef.current) return;
+    isSyncingAppRef.current = true;
     try {
       let cleanIP = serverIP.trim();
       if (cleanIP.endsWith('/')) cleanIP = cleanIP.slice(0, -1);
@@ -1212,11 +1223,11 @@ export default function App() {
         if (catRes.data) {
           const cats = Array.isArray(catRes.data) ? catRes.data : (catRes.data.categorias || []);
           const names = cats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria || '')).filter(Boolean);
-          setCategorias(Array.from(new Set(names)));
+          setCategorias(Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' })));
         }
       } catch (errCat) {
         if (prodRes.data && Array.isArray(prodRes.data.productos)) {
-          const unicas = [...new Set(prodRes.data.productos.map(p => typeof (p.categoria || p.cat) === 'object' ? (p.categoria?.nombre || p.cat?.nombre) : (p.categoria || p.cat || 'Otros')))].filter(Boolean);
+          const unicas = [...new Set(prodRes.data.productos.map(p => typeof (p.categoria || p.cat) === 'object' ? (p.categoria?.nombre || p.cat?.nombre) : (p.categoria || p.cat || 'Otros')))].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
           setCategorias(unicas);
         }
       }
@@ -1263,6 +1274,8 @@ export default function App() {
       } catch (storageErr) {
         console.log('Sin datos en caché local');
       }
+    } finally {
+      isSyncingAppRef.current = false;
     }
   };
 
@@ -2977,7 +2990,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
         valor: montoLimpio,
         metodo_pago: metodoGasto || 'efectivo',
         grupo_afectado: grupoGasto || 'comida',
-        categoria: 'Insumos',
+        fuente_financiamiento: fuenteFinanciamiento || 'caja_negocio',
+        categoria: 'Ingredientes / Materia Prima',
         sesion_id: sesionActiva?.id || null,
         caja_sesion_id: sesionActiva?.id || null
       };
@@ -3011,6 +3025,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
       setMontoGasto('');
       setGrupoGasto('comida');
       setMetodoGasto('efectivo');
+      setFuenteFinanciamiento('caja_negocio');
       setModalGastoVisible(false);
 
       cargarResumenProductividad();
@@ -3023,24 +3038,6 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     }
   };
 
-  const handleLimpiarFantasmasMovil = async () => {
-    try {
-      setLimpiandoFantasmasMovil(true);
-      const API_URL = getApiUrl();
-      const res = await axios.post(`${API_URL}/sistema/limpiar-fantasmas`, {}, { timeout: 15000 });
-      if (res.data?.success) {
-        if (typeof showToast === 'function') showToast(`✅ ${res.data.message || 'Fantasmas eliminados y mesas sincronizadas'}`);
-        else Alert.alert('Éxito', res.data.message || 'Limpieza ejecutada');
-        if (typeof sincronizar === 'function') sincronizar();
-        if (typeof cargarResumenProductividad === 'function') cargarResumenProductividad();
-      }
-    } catch (err) {
-      console.error('Error al limpiar fantasmas móvil:', err);
-      Alert.alert('Error', 'No se pudo conectar al servidor para limpiar fantasmas');
-    } finally {
-      setLimpiandoFantasmasMovil(false);
-    }
-  };
 
   const renderBotonRegistrarGasto = () => (
     <TouchableOpacity
@@ -3075,31 +3072,6 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
     </TouchableOpacity>
   );
 
-  const renderBotonLimpiarFantasmas = () => (
-    <TouchableOpacity
-      onPress={handleLimpiarFantasmasMovil}
-      disabled={limpiandoFantasmasMovil}
-      style={{
-        backgroundColor: '#fef2f2',
-        borderWidth: 1.5,
-        borderColor: '#f87171',
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        borderRadius: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        marginVertical: 6,
-        elevation: 2
-      }}
-    >
-      <Ionicons name="trash-bin" size={18} color="#dc2626" />
-      <Text style={{ color: '#dc2626', fontWeight: '800', fontSize: 13 }}>
-        {limpiandoFantasmasMovil ? '⏳ Limpiando...' : '🧹 Limpiar Pedidos Fantasmas / Destrabar Mesas'}
-      </Text>
-    </TouchableOpacity>
-  );
 
   const renderTarjetasSaldosNetos = () => {
     const totalVendido = Number(ventasPorGrupo?.total_turno) || 0;
@@ -3974,6 +3946,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
               if (res.data && res.data.success) {
                 showToast('🗑️ Insumo eliminado con éxito');
                 cargarInventario();
+                if (typeof cargarDashboardFinanciero === 'function') cargarDashboardFinanciero();
               } else {
                 showToast('⚠️ Error al eliminar insumo');
               }
@@ -4096,7 +4069,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
           {/* Carrusel Horizontal de Saldos Netos y Botones de Acción */}
           {renderTarjetasSaldosNetos()}
           {renderBotonRegistrarGasto()}
-          {renderBotonLimpiarFantasmas()}
+
 
           {/* Grid de submódulos */}
           <Text style={{ fontSize: 13, fontWeight: '800', color: C.cream, marginBottom: 10 }}>
@@ -6165,6 +6138,43 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                       Transferencia
                     </Text>
                   </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* 5. Fuente de Financiamiento / Origen del Dinero */}
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text2, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                  Fuente de Financiamiento:
+                </Text>
+                <View style={{ gap: 6 }}>
+                  {[
+                    { id: 'caja_negocio', label: '🏪 Caja del Negocio (Ventas)', color: C.orange },
+                    { id: 'aporte_capital', label: '💼 Aporte de Capital (Inyección)', color: '#8b5cf6' },
+                    { id: 'prestamo', label: '🤝 Préstamo / Pasivo (Por devolver)', color: '#ec4899' },
+                    { id: 'ingreso_no_operacional', label: '📈 Ingreso No Operacional', color: '#10b981' }
+                  ].map(f => {
+                    const isSelected = fuenteFinanciamiento === f.id;
+                    return (
+                      <TouchableOpacity
+                        key={f.id}
+                        onPress={() => setFuenteFinanciamiento(f.id)}
+                        style={{
+                          paddingVertical: 9,
+                          paddingHorizontal: 12,
+                          borderRadius: 10,
+                          backgroundColor: isSelected ? f.color : C.surf2,
+                          borderWidth: 1.5,
+                          borderColor: isSelected ? f.color : C.border,
+                          flexDirection: 'row',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, fontWeight: isSelected ? '800' : '600', color: isSelected ? '#fff' : C.text }}>
+                          {f.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               </View>
 

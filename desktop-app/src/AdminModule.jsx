@@ -102,14 +102,23 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       setListaProductos(prodsCargados);
 
       const rawCats = Array.isArray(resCat.data) ? resCat.data : (resCat.data?.categorias || []);
-      setCategoriasFull(rawCats);
-      const catNames = rawCats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria)).filter(Boolean);
+      const sortedRawCats = [...rawCats].sort((a, b) => {
+        const nomA = typeof a === 'string' ? a : (a.nombre || a.categoria || '');
+        const nomB = typeof b === 'string' ? b : (b.nombre || b.categoria || '');
+        return nomA.localeCompare(nomB, 'es', { sensitivity: 'base' });
+      });
+      setCategoriasFull(sortedRawCats);
+
+      const catNames = sortedRawCats.map(c => typeof c === 'string' ? c : (c.nombre || c.categoria)).filter(Boolean);
       const prodsCats = prodsCargados.map(p => {
         const c = p?.categoria ?? p?.cat;
         return typeof c === 'string' ? c : (c?.nombre || c?.categoria || '');
       }).filter(Boolean);
-      const uniqueCats = ['Todos', ...new Set([...catNames, ...prodsCats, 'Otros'])];
-      setCategoriasDinamicas(uniqueCats);
+
+      const sortedNames = [...new Set([...catNames, ...prodsCats, 'Otros'])].sort((a, b) =>
+        a.localeCompare(b, 'es', { sensitivity: 'base' })
+      );
+      setCategoriasDinamicas(['Todos', ...sortedNames]);
     } catch (e) {
       console.error("Error cargando catalogo", e);
     }
@@ -150,6 +159,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     if (typeof raw === 'object' && raw !== null) return (raw.nombre || raw.categoria || 'Otros').trim();
     return raw ? String(raw).trim() : 'Otros';
   };
+
+  const productosFiltradosVista = useMemo(() => {
+    const prods = listaProductos || [];
+    const conCat = prods.map(p => ({ ...p, _catReal: obtenerCategoriaReal(p) }));
+    if (catFiltro === 'Todos') return conCat;
+    const catFiltroLower = String(catFiltro || '').toLowerCase().trim();
+    return conCat.filter(p => p._catReal.toLowerCase() === catFiltroLower);
+  }, [listaProductos, catFiltro]);
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
   const fileInputRef = useRef(null);
@@ -221,12 +238,12 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     try {
       const targetUrl = serverUrl || 'http://localhost:3001';
       const [resIns, resMov] = await Promise.all([
-        fetch(`${targetUrl}/api/inventario/insumos`, { headers: { 'ngrok-skip-browser-warning': 'true' } }).then(r => r.json()),
-        fetch(`${targetUrl}/api/inventario/movimientos`, { headers: { 'ngrok-skip-browser-warning': 'true' } }).then(r => r.json())
+        axios.get(`${targetUrl}/api/inventario/insumos`, { headers: { 'ngrok-skip-browser-warning': 'true' } }).catch(() => ({ data: { insumos: [] } })),
+        axios.get(`${targetUrl}/api/inventario/movimientos`, { headers: { 'ngrok-skip-browser-warning': 'true' } }).catch(() => ({ data: { movimientos: [] } }))
       ]);
 
-      if (resIns?.insumos) setInsumos(resIns.insumos);
-      if (resMov?.movimientos) setMovimientos(resMov.movimientos);
+      setInsumos(resIns.data?.insumos || []);
+      setMovimientos(resMov.data?.movimientos || []);
     } catch (err) {
       console.error("Error al cargar insumos/kardex:", err);
     }
@@ -249,6 +266,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
           alert("Insumo eliminado correctamente");
         }
         cargarInventarioDesktop();
+        if (typeof cargarGastos === 'function') cargarGastos(filtroGastosInicio, filtroGastosFin);
+        if (typeof cargarGastosPorGrupo === 'function') cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
       } else {
         alert("⚠️ Error al eliminar el insumo");
       }
@@ -322,11 +341,12 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [filtroGastosFin, setFiltroGastosFin] = useState(getHoyStr());
   const [modalGastoVisible, setModalGastoVisible] = useState(false);
   const [formGasto, setFormGasto] = useState({
-    categoria: 'Insumos / Ingredientes',
+    categoria: 'Ingredientes / Materia Prima',
     descripcion: '',
     monto: '',
     metodo_pago: 'efectivo',
-    grupo_afectado: 'comida'
+    grupo_afectado: 'comida',
+    fuente_financiamiento: 'caja_negocio'
   });
   const [guardandoGasto, setGuardandoGasto] = useState(false);
 
@@ -478,6 +498,29 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   };
 
+  const handleEliminarGasto = async (gastoId, descripcion) => {
+    if (!window.confirm(`¿Estás seguro de que deseas eliminar este gasto?\n"${descripcion || 'Gasto'}"\n\nEl dinero será restaurado a los reportes y liquidez.`)) {
+      return;
+    }
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      const res = await axios.delete(`${targetUrl}/api/gastos/${gastoId}`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (res.data?.success) {
+        toast.success("Gasto eliminado exitosamente. Dinero restaurado.");
+        cargarGastos();
+        cargarGastosPorGrupo();
+        if (typeof cargarConsolidado === 'function') cargarConsolidado();
+      } else {
+        toast.error("No se pudo eliminar el gasto");
+      }
+    } catch (err) {
+      console.error("Error al eliminar gasto:", err);
+      toast.error("Error al eliminar el gasto: " + (err.response?.data?.error || err.message));
+    }
+  };
+
   const handleCrearGasto = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     const montoLimpio = Number(cleanNum(formGasto.monto));
@@ -500,6 +543,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         monto: montoLimpio,
         metodo_pago: formGasto.metodo_pago,
         grupo_afectado: formGasto.grupo_afectado || 'comida',
+        fuente_financiamiento: formGasto.fuente_financiamiento || 'caja_negocio',
         caja_sesion_id: sesionActivaInfo?.id || null
       };
 
@@ -507,14 +551,15 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
         headers: { 'ngrok-skip-browser-warning': 'true' }
       });
 
-      toast.success("✅ Gasto registrado y descontado exitosamente");
+      toast.success("✅ Gasto registrado exitosamente");
       setModalGastoVisible(false);
       setFormGasto({
-        categoria: 'Insumos / Ingredientes',
+        categoria: 'Ingredientes / Materia Prima',
         descripcion: '',
         monto: '',
         metodo_pago: 'efectivo',
-        grupo_afectado: 'comida'
+        grupo_afectado: 'comida',
+        fuente_financiamiento: 'caja_negocio'
       });
       cargarGastos(filtroGastosInicio, filtroGastosFin);
       cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
@@ -587,37 +632,24 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     cargarGastosPorGrupo('', '');
   };
 
-  const [limpiandoFantasmas, setLimpiandoFantasmas] = useState(false);
 
-  const handleLimpiarFantasmas = async () => {
-    try {
-      setLimpiandoFantasmas(true);
-      const targetUrl = serverUrl || 'http://localhost:3001';
-      const res = await axios.post(`${targetUrl}/api/sistema/limpiar-fantasmas`, {}, {
-        headers: { 'ngrok-skip-browser-warning': 'true' }
-      });
-      if (res.data?.success) {
-        toast.success(`✅ ${res.data.message || 'Pedidos fantasmas eliminados y mesas sincronizadas.'}`);
-        if (typeof cargarHistorialProd === 'function') cargarHistorialProd();
-        if (typeof cargarGastos === 'function') cargarGastos();
-      }
-    } catch (err) {
-      console.error("Error al limpiar fantasmas:", err);
-      toast.error("⚠️ Error al ejecutar la limpieza de fantasmas");
-    } finally {
-      setLimpiandoFantasmas(false);
-    }
-  };
 
   const formatFechaTabla = (dateStr) => {
     if (!dateStr) return '-';
     try {
-      const parts = String(dateStr).split('-');
-      if (parts.length === 3) {
-        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      const cleanRaw = String(dateStr).replace('T', ' ').trim();
+      const parts = cleanRaw.split(' ');
+      const datePart = parts[0];
+      const timePart = parts[1] ? parts[1].substring(0, 5) : '';
+
+      let formattedDate = datePart;
+      if (datePart.includes('-')) {
+        const dParts = datePart.split('-');
+        if (dParts.length === 3) {
+          formattedDate = `${dParts[2]}/${dParts[1]}/${dParts[0]}`;
+        }
       }
-      const d = new Date(dateStr);
-      return isNaN(d.getTime()) ? dateStr : d.toLocaleDateString('es-CO');
+      return timePart ? `${formattedDate} ${timePart}` : formattedDate;
     } catch (e) {
       return dateStr;
     }
@@ -634,6 +666,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   }, [adminTab]);
 
+  const recargarTimerRef = useRef(null);
+
   // Listener seguro contra fallos de referencia
   useEffect(() => {
     // Detectar socket si fue inyectado por props o window
@@ -641,16 +675,21 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     if (!s) return;
 
     const recargarEnVivo = () => {
-      if (typeof cargarDashboardFinanciero === 'function') {
-        cargarDashboardFinanciero();
-      }
-      if (typeof cargarInsumos === 'function') {
-        cargarInsumos();
-      }
-      cargarProductividadEnVivo();
-      cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
-      cargarGastos(filtroGastosInicio, filtroGastosFin);
-      cargarHistorialProd(filtroProdInicio, filtroProdFin);
+      if (recargarTimerRef.current) clearTimeout(recargarTimerRef.current);
+      recargarTimerRef.current = setTimeout(() => {
+        if (adminTab === 'dashboard' && typeof cargarDashboardFinanciero === 'function') {
+          cargarDashboardFinanciero();
+        }
+        if (adminTab === 'insumos' && typeof cargarInventarioDesktop === 'function') {
+          cargarInventarioDesktop();
+        }
+        if (adminTab === 'productividad' || adminTab === 'gastos') {
+          cargarProductividadEnVivo();
+          cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
+          cargarGastos(filtroGastosInicio, filtroGastosFin);
+          cargarHistorialProd(filtroProdInicio, filtroProdFin);
+        }
+      }, 250);
     };
 
     s.on('dashboard:actualizado', recargarEnVivo);
@@ -660,13 +699,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     s.on('inventario:actualizado', recargarEnVivo);
 
     return () => {
+      if (recargarTimerRef.current) clearTimeout(recargarTimerRef.current);
       s.off('dashboard:actualizado', recargarEnVivo);
       s.off('caja:estado', recargarEnVivo);
       s.off('caja_actualizada', recargarEnVivo);
       s.off('gastos_actualizados', recargarEnVivo);
       s.off('inventario:actualizado', recargarEnVivo);
     };
-  }, [typeof socket !== 'undefined' ? socket : null]);
+  }, [typeof socket !== 'undefined' ? socket : null, adminTab, filtroProdInicio, filtroProdFin, filtroGastosInicio, filtroGastosFin]);
 
   const ROLES_DISPONIBLES = [
     { id: 'admin', label: 'Admin' },
@@ -1026,7 +1066,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const listaCategorias = useMemo(() => {
     const sinTodos = categoriasDinamicas.filter(c => c !== 'Todos');
     if (!sinTodos.includes('Otros')) sinTodos.push('Otros');
-    return sinTodos;
+    return sinTodos.sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
   }, [categoriasDinamicas]);
 
   const resetFormProducto = () => {
@@ -1182,29 +1222,6 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
           <button onClick={() => setAdminTab('auditoria')} style={navBtnStyle(adminTab === 'auditoria')}>📋 Log de Auditoría</button>
           <button onClick={() => setAdminTab('mesas')} style={navBtnStyle(adminTab === 'mesas')}>🪑 Gestión de Mesas</button>
           <button onClick={() => setAdminTab('impresora')} style={navBtnStyle(adminTab === 'impresora')}>🖨️ Impresora Térmica</button>
-          <button
-            type="button"
-            onClick={handleLimpiarFantasmas}
-            disabled={limpiandoFantasmas}
-            style={{
-              padding: '12px 14px',
-              borderRadius: '8px',
-              fontSize: '13px',
-              fontWeight: 'bold',
-              border: '1px solid #f87171',
-              backgroundColor: '#fef2f2',
-              color: '#dc2626',
-              cursor: 'pointer',
-              marginTop: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '6px',
-              boxShadow: 'var(--shadow-sm)'
-            }}
-          >
-            {limpiandoFantasmas ? '⏳ Limpiando...' : '🧹 Limpiar Pedidos Fantasmas / Destrabar Mesas'}
-          </button>
         </div>
       </div>
 
@@ -2162,13 +2179,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         <th style={{ ...thStyle, textAlign: 'center' }}>Método de Pago</th>
                         <th style={{ ...thStyle, textAlign: 'right' }}>Monto</th>
                         <th style={thStyle}>Responsable</th>
+                        <th style={{ ...thStyle, textAlign: 'center' }}>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
                       {gastosData.map((g, idx) => (
                         <tr key={g.id || idx} style={{ borderBottom: '1px solid var(--border)', backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa' }}>
                           <td style={{ ...tdStyle, fontWeight: '600' }}>
-                            {formatFechaTabla(g.fecha ? g.fecha.split('T')[0] : '')} {g.created_at ? g.created_at.split(' ')[1] || '' : ''}
+                            {formatFechaTabla(g.fecha || g.created_at)}
                           </td>
                           <td style={tdStyle}>
                             <span style={{ backgroundColor: '#e2e8f0', color: '#334155', padding: '3px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
@@ -2219,6 +2237,28 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                           <td style={{ ...tdStyle, color: 'var(--text2)', fontSize: '13px' }}>
                             {g.usuario || 'Admin'}
                           </td>
+                          <td style={{ ...tdStyle, textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleEliminarGasto(g.id, g.descripcion)}
+                              title="Eliminar este gasto y restaurar dinero"
+                              style={{
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                border: '1px solid #fca5a5',
+                                backgroundColor: '#fef2f2',
+                                color: '#dc2626',
+                                fontWeight: 'bold',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
+                              }}
+                            >
+                              🗑️ Eliminar
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -2230,7 +2270,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         <td style={{ ...tdStyle, textAlign: 'right', color: '#dc2626', fontSize: '16px', fontWeight: '900' }}>
                           $ {Number(gastosResumen.total_gastos || 0).toLocaleString('es-CO')}
                         </td>
-                        <td style={tdStyle}></td>
+                        <td colSpan={2} style={tdStyle}></td>
                       </tr>
                     </tfoot>
                   </table>
@@ -2349,13 +2389,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
               gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
               gap: '16px'
             }}>
-              {listaProductos
-                .filter((prod) => {
-                  if (catFiltro === 'Todos') return true;
-                  const catProd = obtenerCategoriaReal(prod);
-                  return catProd.toLowerCase() === String(catFiltro || '').toLowerCase();
-                })
-                .map((prod) => {
+              {productosFiltradosVista.map((prod) => {
                   const disponible = prod.disponible !== 0 && prod.disponible !== false;
                   return (
                     <div
@@ -2391,7 +2425,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                             {prod.nombre}
                           </div>
                           <div style={{ fontSize: '12px', color: 'var(--text3)' }}>
-                            {obtenerCategoriaReal(prod)}
+                            {prod._catReal}
                           </div>
                           <div style={{ fontWeight: '700', color: '#16A34A', fontSize: '15px', marginTop: '2px' }}>
                             ${Number(prod.precio || 0).toLocaleString()}
@@ -2729,8 +2763,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
             {modalInsumoOpen && (
               <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-                <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '16px', width: '420px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
-                  <h3 style={{ margin: '0 0 16px 0', color: 'var(--brand, #144c3c)' }}>Nuevo Insumo</h3>
+                <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '16px', width: '480px', maxWidth: '92%', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', maxHeight: '90vh', overflowY: 'auto' }}>
+                  <h3 style={{ margin: '0 0 16px 0', color: 'var(--brand, #144c3c)', fontSize: '20px', fontWeight: 'bold' }}>📦 + Nuevo Insumo / Materia Prima</h3>
 
                   <form onSubmit={async (e) => {
                     e.preventDefault();
@@ -2740,21 +2774,56 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
                     try {
                       const targetUrl = serverUrl || 'http://localhost:3001';
+                      const nombreInsumo = f.nombre.value.trim();
+                      const unidadInsumo = f.unidad.value;
+                      const stockMinimo = Number(f.stock_minimo.value) || 0;
+                      const stockInicial = Number(f.cantidad_actual.value) || 0;
+                      const precioCompra = Number(f.precio_compra.value) || 0;
+                      const registrarGastoBool = f.registrar_gasto.checked;
+                      const metodoPago = f.metodo_pago.value;
+                      const grupoAfectado = f.grupo_afectado.value;
+                      const fuenteFin = f.fuente_financiamiento.value;
+
+                      // 1. Guardar Insumo
                       await axios.post(`${targetUrl}/api/inventario/insumos`, {
-                        nombre: f.nombre.value.trim(),
-                        unidad: f.unidad.value,
-                        stock_minimo: Number(f.stock_minimo.value) || 0,
-                        cantidad_actual: Number(f.cantidad_actual.value) || 0,
-                        precio_compra: Number(f.precio_compra.value) || 0
+                        nombre: nombreInsumo,
+                        unidad: unidadInsumo,
+                        stock_minimo: stockMinimo,
+                        cantidad_actual: stockInicial,
+                        precio_compra: precioCompra
                       }, { 
                         headers: { 'ngrok-skip-browser-warning': 'true' },
                         timeout: 8000
                       });
 
+                      // 2. Registrar egreso en finanzas si está activado y tiene costo
+                      const costoTotalCalculado = precioCompra > 0 ? (stockInicial > 0 ? precioCompra * stockInicial : precioCompra) : 0;
+                      if (registrarGastoBool && costoTotalCalculado > 0) {
+                        try {
+                          await axios.post(`${targetUrl}/api/gastos`, {
+                            categoria: 'Ingredientes / Materia Prima',
+                            descripcion: `Compra Insumo: ${nombreInsumo} (${stockInicial > 0 ? stockInicial : 1} ${unidadInsumo})`,
+                            monto: costoTotalCalculado,
+                            metodo_pago: metodoPago,
+                            grupo_afectado: grupoAfectado,
+                            fuente_financiamiento: fuenteFin,
+                            caja_sesion_id: sesionActivaInfo?.id || null
+                          }, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                          });
+                        } catch (errG) {
+                          console.error('Error registrando egreso automático:', errG);
+                        }
+                      }
+
                       f.reset();
                       setModalInsumoOpen(false);
                       if (typeof cargarInventarioDesktop === 'function') cargarInventarioDesktop();
-                      toast.success("Insumo registrado correctamente");
+                      if (typeof cargarGastos === 'function') cargarGastos();
+                      if (typeof cargarGastosPorGrupo === 'function') cargarGastosPorGrupo();
+                      toast.success(registrarGastoBool && costoTotalCalculado > 0 
+                        ? `✅ Insumo guardado y gasto de $${costoTotalCalculado.toLocaleString()} registrado` 
+                        : "Insumo registrado correctamente");
                     } catch (err) {
                       console.error('Error creando insumo:', err);
                       alert('Error al guardar el insumo');
@@ -2764,13 +2833,13 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
                     <div>
-                      <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Nombre</label>
-                      <input name="nombre" required placeholder="Ej: Queso Mozzarella" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                      <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Nombre del Insumo</label>
+                      <input name="nombre" required placeholder="Ej: Queso Mozzarella, Carne, Papa..." style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
                     </div>
 
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Unidad</label>
+                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Unidad de Medida</label>
                         <select name="unidad" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
                           <option value="Kg">Kg</option>
                           <option value="Gr">Gramos</option>
@@ -2780,7 +2849,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         </select>
                       </div>
                       <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Precio Compra</label>
+                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Precio Compra (x Unidad)</label>
                         <input name="precio_compra" type="number" placeholder="0" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
                       </div>
                     </div>
@@ -2796,12 +2865,57 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                       </div>
                     </div>
 
+                    {/* Bloque Financiero / Opciones de Registrar Gasto */}
+                    <div style={{ borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', color: '#dc2626' }}>
+                        <input type="checkbox" name="registrar_gasto" defaultChecked style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
+                        💸 Registrar también la compra como Gasto / Egreso en Finanzas
+                      </label>
+
+                      <div>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
+                          ¿A qué grupo pertenece? (Descontar de):
+                        </label>
+                        <select name="grupo_afectado" defaultValue="comida" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
+                          <option value="comida">🍔 Comida (Pan, carnes, verduras, salsas, quesos)</option>
+                          <option value="jugos_naturales">🥤 Jugos Naturales (Frutas, pulpas, leche, azúcar)</option>
+                          <option value="cervezas">🍺 Cervezas (Canastas y barriles)</option>
+                          <option value="gaseosas_embotellados">🍾 Embotellados (Gaseosas, aguas, jugos)</option>
+                          <option value="bebidas_calientes">☕ Bebidas Calientes (Café, té, aromáticas)</option>
+                          <option value="gastos_generales">🏢 Gastos Generales (Servicios, aseo)</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
+                            Método de Pago:
+                          </label>
+                          <select name="metodo_pago" defaultValue="efectivo" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
+                            <option value="efectivo">💵 Efectivo (Caja)</option>
+                            <option value="transferencia">💳 Transferencia (Nequi / Daviplata / Banco)</option>
+                          </select>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
+                            Fuente de Financiamiento:
+                          </label>
+                          <select name="fuente_financiamiento" defaultValue="caja_negocio" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
+                            <option value="caja_negocio">🏪 Caja del Negocio (Ventas)</option>
+                            <option value="aporte_capital">💼 Aporte de Capital (Inyección)</option>
+                            <option value="prestamo">🤝 Préstamo / Pasivo (A devolver)</option>
+                            <option value="ingreso_no_operacional">📈 Ingreso No Operacional</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>
                       <button type="button" onClick={() => setModalInsumoOpen(false)} style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer' }}>
                         Cancelar
                       </button>
                       <button type="submit" style={{ padding: '8px 18px', borderRadius: '6px', border: 'none', background: 'var(--brand, #144c3c)', color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}>
-                        Guardar Insumo
+                        💾 Guardar Insumo y Gasto
                       </button>
                     </div>
                   </form>
@@ -3681,14 +3795,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   onChange={(e) => {
                     const g = e.target.value;
                     const catMap = {
-                      comida: 'Insumos / Ingredientes',
-                      jugos_naturales: 'Insumos / Ingredientes',
+                      comida: 'Ingredientes / Materia Prima',
+                      jugos_naturales: 'Ingredientes / Materia Prima',
                       cervezas: 'Bebidas / Licores',
                       gaseosas_embotellados: 'Bebidas / Licores',
-                      bebidas_calientes: 'Insumos / Ingredientes',
+                      bebidas_calientes: 'Ingredientes / Materia Prima',
                       gastos_generales: 'Servicios / Generales'
                     };
-                    setFormGasto({ ...formGasto, grupo_afectado: g, categoria: catMap[g] || 'Insumos' });
+                    setFormGasto({ ...formGasto, grupo_afectado: g, categoria: catMap[g] || 'Gastos' });
                   }}
                   style={{
                     width: '100%',
@@ -3806,6 +3920,32 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                 <p style={{ margin: '4px 0 0 0', fontSize: '11px', color: 'var(--text3)' }}>
                   Transferencia incluye: Nequi, Daviplata, Bancolombia u otros bancos.
                 </p>
+              </div>
+
+              {/* Fuente de Financiamiento / Origen del Dinero */}
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: 'var(--text)', marginBottom: '6px' }}>
+                  Fuente de Financiamiento / Origen del Dinero:
+                </label>
+                <select
+                  value={formGasto.fuente_financiamiento || 'caja_negocio'}
+                  onChange={(e) => setFormGasto({ ...formGasto, fuente_financiamiento: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    fontSize: '13.5px',
+                    backgroundColor: 'white',
+                    fontWeight: '600',
+                    color: 'var(--text)'
+                  }}
+                >
+                  <option value="caja_negocio">🏪 Caja del Negocio (Ventas del Turno)</option>
+                  <option value="aporte_capital">💼 Aporte de Capital / Inyección de Capital (Ahorros o socio)</option>
+                  <option value="prestamo">🤝 Préstamo / Pasivo (Banco, prestamista o familiar a devolver)</option>
+                  <option value="ingreso_no_operacional">📈 Ingreso No Operacional (Entrada externa no proveniente de comida)</option>
+                </select>
               </div>
 
               {/* Acciones */}
