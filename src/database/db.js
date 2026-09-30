@@ -190,6 +190,7 @@ db.serialize(() => {
     db.run(`UPDATE gastos SET metodo_pago = 'efectivo' WHERE metodo_pago IS NULL OR TRIM(metodo_pago) = ''`, () => {});
     db.run(`UPDATE gastos SET grupo_afectado = 'comida' WHERE grupo_afectado IS NULL OR TRIM(grupo_afectado) = ''`, () => {});
     db.run(`UPDATE gastos SET fecha = datetime('now', 'localtime') WHERE fecha IS NULL OR TRIM(fecha) = ''`, () => {});
+    db.run(`UPDATE gastos SET fecha = date('now', 'localtime') || ' ' || time(fecha) WHERE date(fecha) > date('now', 'localtime')`, () => {});
   });
 
   // 4. Insumos (Inventario)

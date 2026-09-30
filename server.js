@@ -48,6 +48,18 @@ const { setIO, getIO, broadcastComandasActivas, emitirSincronizacionCompleta, pa
 // Vincular instancia Socket.io
 setIO(io);
 
+const getFechaHoyCO = () => {
+  const now = new Date();
+  const coTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Bogota" }));
+  const yyyy = coTime.getFullYear();
+  const mm = String(coTime.getMonth() + 1).padStart(2, '0');
+  const dd = String(coTime.getDate()).padStart(2, '0');
+  const hh = String(coTime.getHours()).padStart(2, '0');
+  const min = String(coTime.getMinutes()).padStart(2, '0');
+  const ss = String(coTime.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+};
+
 // Middleware para disponibilizar io en cada request
 app.use((req, res, next) => {
   req.io = io;
@@ -952,11 +964,12 @@ app.post('/api/gastos', async (req, res) => {
 
     const usuarioResp = req.user ? req.user.nombre : 'Administrador';
     const categoriaFinal = categoria || 'Gastos Generales';
+    const fechaActualLocal = getFechaHoyCO();
 
     const insertResult = await dbRun(
-      `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero, insumo_id) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp, fuenteFinLimpia, fuenteFinLimpia, insumo_id || null]
+      `INSERT INTO gastos (fecha, categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero, insumo_id) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [fechaActualLocal, categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp, fuenteFinLimpia, fuenteFinLimpia, insumo_id || null]
     );
 
     logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${montoNum} - ${metodoPagoLimpio} - ${grupoLimpio} - Fuente: ${fuenteFinLimpia}) en cat. ${categoriaFinal}`);
@@ -1403,10 +1416,13 @@ app.post('/api/inventario/insumos', async (req, res) => {
           if (sesionAbierta) sesionId = sesionAbierta.id;
         } catch (e) {}
 
+        const fechaActualLocal = getFechaHoyCO();
+
         db.run(
-          `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero, insumo_id) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO gastos (fecha, categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero, insumo_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
+            fechaActualLocal,
             'Ingredientes / Materia Prima',
             `Compra Insumo: ${String(nombre || '').trim()} (${cantNum > 0 ? cantNum : 1} ${unidad})`,
             costoTotalCompra,
