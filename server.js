@@ -1389,7 +1389,7 @@ app.post('/api/inventario/insumos', async (req, res) => {
       const insumoId = this.lastID;
       logAuditoria(usuarioResp, 'insumo_creado', `Insumo registrado: ${nombre} (${cantNum} ${unidad})`);
 
-      const registrarGastoBool = registrar_gasto !== false;
+      const registrarGastoBool = String(registrar_gasto) === 'true' || registrar_gasto === true;
       const costoTotalCompra = precioNum > 0 ? (cantNum > 0 ? cantNum * precioNum : precioNum) : 0;
 
       if (registrarGastoBool && costoTotalCompra > 0) {
@@ -1420,22 +1420,24 @@ app.post('/api/inventario/insumos', async (req, res) => {
             fuenteFinLimpia,
             insumoId
           ],
-          () => {
+          (errGasto) => {
+            if (errGasto) console.error("Error al registrar gasto de insumo:", errGasto);
             if (req.io) {
+              req.io.emit('inventario:actualizado');
               req.io.emit('caja_actualizada');
               req.io.emit('gastos_actualizados');
               req.io.emit('caja:estado');
               req.io.emit('dashboard:actualizado');
             }
+            return res.json({ success: true, id: insumoId, gastoRegistrado: true });
           }
         );
+      } else {
+        if (req.io) {
+          req.io.emit('inventario:actualizado');
+        }
+        return res.json({ success: true, id: insumoId, gastoRegistrado: false });
       }
-
-      if (req.io) {
-        req.io.emit('inventario:actualizado');
-      }
-
-      res.json({ success: true, id: insumoId });
     }
   );
 });

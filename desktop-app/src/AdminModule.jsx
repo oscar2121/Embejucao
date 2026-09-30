@@ -2785,49 +2785,35 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                       const grupoAfectado = f.grupo_afectado.value;
                       const fuenteFin = f.fuente_financiamiento.value;
 
-                      // 1. Guardar Insumo
-                      await axios.post(`${targetUrl}/api/inventario/insumos`, {
+                      const res = await axios.post(`${targetUrl}/api/inventario/insumos`, {
                         nombre: nombreInsumo,
                         unidad: unidadInsumo,
                         stock_minimo: stockMinimo,
                         cantidad_actual: stockInicial,
-                        precio_compra: precioCompra
+                        precio_compra: precioCompra,
+                        metodo_pago: metodoPago,
+                        grupo_afectado: grupoAfectado,
+                        fuente_financiamiento: fuenteFin,
+                        registrar_gasto: registrarGastoBool
                       }, { 
                         headers: { 'ngrok-skip-browser-warning': 'true' },
                         timeout: 8000
                       });
 
-                      // 2. Registrar egreso en finanzas si está activado y tiene costo
                       const costoTotalCalculado = precioCompra > 0 ? (stockInicial > 0 ? precioCompra * stockInicial : precioCompra) : 0;
-                      if (registrarGastoBool && costoTotalCalculado > 0) {
-                        try {
-                          await axios.post(`${targetUrl}/api/gastos`, {
-                            categoria: 'Ingredientes / Materia Prima',
-                            descripcion: `Compra Insumo: ${nombreInsumo} (${stockInicial > 0 ? stockInicial : 1} ${unidadInsumo})`,
-                            monto: costoTotalCalculado,
-                            metodo_pago: metodoPago,
-                            grupo_afectado: grupoAfectado,
-                            fuente_financiamiento: fuenteFin,
-                            caja_sesion_id: sesionActivaInfo?.id || null
-                          }, {
-                            headers: { 'ngrok-skip-browser-warning': 'true' }
-                          });
-                        } catch (errG) {
-                          console.error('Error registrando egreso automático:', errG);
-                        }
-                      }
 
-                      f.reset();
                       setModalInsumoOpen(false);
                       if (typeof cargarInventarioDesktop === 'function') cargarInventarioDesktop();
                       if (typeof cargarGastos === 'function') cargarGastos();
                       if (typeof cargarGastosPorGrupo === 'function') cargarGastosPorGrupo();
+                      if (typeof cargarConsolidado === 'function') cargarConsolidado();
+
                       toast.success(registrarGastoBool && costoTotalCalculado > 0 
                         ? `✅ Insumo guardado y gasto de $${costoTotalCalculado.toLocaleString()} registrado` 
                         : "Insumo registrado correctamente");
                     } catch (err) {
                       console.error('Error creando insumo:', err);
-                      alert('Error al guardar el insumo');
+                      toast.error('Error al guardar el insumo: ' + (err.response?.data?.error || err.message));
                     } finally {
                       if (btnSubmit) btnSubmit.disabled = false;
                     }
