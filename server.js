@@ -933,7 +933,7 @@ app.delete('/api/categorias/:nombre', (req, res) => {
 // ─── GASTOS ───
 // Registrar un nuevo gasto
 app.post('/api/gastos', async (req, res) => {
-  const { categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, fuente_financiamiento, origen_dinero } = req.body;
+  const { categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, fuente_financiamiento, origen_dinero, insumo_id } = req.body;
   const montoNum = Number(monto !== undefined ? monto : valor);
   const metodoPagoLimpio = String(metodo_pago || 'efectivo').toLowerCase().trim();
   const grupoLimpio = String(grupo_afectado || 'comida').toLowerCase().trim();
@@ -954,9 +954,9 @@ app.post('/api/gastos', async (req, res) => {
     const categoriaFinal = categoria || 'Gastos Generales';
 
     const insertResult = await dbRun(
-      `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp, fuenteFinLimpia, fuenteFinLimpia]
+      `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero, insumo_id) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [categoriaFinal, descripcion.trim(), montoNum, montoNum, metodoPagoLimpio, grupoLimpio, finalSesionId, finalSesionId, usuarioResp, fuenteFinLimpia, fuenteFinLimpia, insumo_id || null]
     );
 
     logAuditoria(usuarioResp, 'gasto_registrado', `Gasto registrado: ${descripcion} ($${montoNum} - ${metodoPagoLimpio} - ${grupoLimpio} - Fuente: ${fuenteFinLimpia}) en cat. ${categoriaFinal}`);
@@ -1404,8 +1404,8 @@ app.post('/api/inventario/insumos', async (req, res) => {
         } catch (e) {}
 
         db.run(
-          `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, caja_sesion_id, sesion_id, usuario, fuente_financiamiento, origen_dinero, insumo_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             'Ingredientes / Materia Prima',
             `Compra Insumo: ${String(nombre || '').trim()} (${cantNum > 0 ? cantNum : 1} ${unidad})`,
@@ -1417,7 +1417,8 @@ app.post('/api/inventario/insumos', async (req, res) => {
             sesionId,
             usuarioResp,
             fuenteFinLimpia,
-            fuenteFinLimpia
+            fuenteFinLimpia,
+            insumoId
           ],
           () => {
             if (req.io) {
@@ -1453,8 +1454,8 @@ app.delete('/api/inventario/insumos/:id', (req, res) => {
       db.run(`DELETE FROM movimientos_inventario WHERE insumo_id = ?`, [id]);
       db.run(`DELETE FROM producto_insumos WHERE insumo_id = ?`, [id]);
       db.run(
-        `DELETE FROM gastos WHERE LOWER(descripcion) LIKE LOWER(?)`,
-        [`%${insNombre.toLowerCase()}%`]
+        `DELETE FROM gastos WHERE insumo_id = ? OR LOWER(descripcion) LIKE LOWER(?)`,
+        [id, `%${insNombre.toLowerCase()}%`]
       );
       db.run(`DELETE FROM insumos WHERE id = ?`, [id], function (err) {
         if (err) return res.status(500).json({ error: err.message });

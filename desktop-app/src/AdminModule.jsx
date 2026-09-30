@@ -28,7 +28,7 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
   return '🍽️';
 };
 
-export const sugerirEmojiPorNombre = (nombre) => {
+const sugerirEmojiPorNombre = (nombre) => {
   if (!nombre) return '🍔';
   const n = String(nombre).toLowerCase().trim();
   if (n.includes('pizza')) return '🍕';
@@ -251,7 +251,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const eliminarInsumoDesktop = async (ins) => {
     if (!ins || !ins.id) return;
-    if (!window.confirm(`¿Estás seguro de eliminar el insumo "${ins.nombre}"?\n\nEsta acción no se puede deshacer y borrará también sus registros de movimiento e ingredientes.`)) {
+    if (!window.confirm(`¿Estás seguro de eliminar el insumo "${ins.nombre}"?\n\nEsta acción no se puede deshacer. Se eliminarán sus registros y se revertirá cualquier gasto asociado devolviendo el dinero.`)) {
       return;
     }
     try {
@@ -261,13 +261,14 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
       });
       if (res.data && res.data.success) {
         if (typeof toast !== 'undefined' && toast.success) {
-          toast.success("Insumo eliminado correctamente");
+          toast.success("Insumo y sus gastos asociados eliminados correctamente. Dinero restaurado.");
         } else {
-          alert("Insumo eliminado correctamente");
+          alert("Insumo y gastos asociados eliminados correctamente.");
         }
         cargarInventarioDesktop();
         if (typeof cargarGastos === 'function') cargarGastos(filtroGastosInicio, filtroGastosFin);
         if (typeof cargarGastosPorGrupo === 'function') cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
+        if (typeof cargarConsolidado === 'function') cargarConsolidado();
       } else {
         alert("⚠️ Error al eliminar el insumo");
       }

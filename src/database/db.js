@@ -179,6 +179,7 @@ db.serialize(() => {
     db.run(`ALTER TABLE gastos ADD COLUMN grupo_afectado TEXT DEFAULT 'comida'`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN fuente_financiamiento TEXT DEFAULT 'caja_negocio'`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN origen_dinero TEXT DEFAULT 'caja_negocio'`, () => {});
+    db.run(`ALTER TABLE gastos ADD COLUMN insumo_id INTEGER`, () => {});
     db.run(`ALTER TABLE gastos ADD COLUMN uuid TEXT UNIQUE`, () => {});
     db.run(`UPDATE gastos SET fuente_financiamiento = 'caja_negocio' WHERE fuente_financiamiento IS NULL`, () => {});
     db.run(`UPDATE gastos SET origen_dinero = 'caja_negocio' WHERE origen_dinero IS NULL`, () => {});
