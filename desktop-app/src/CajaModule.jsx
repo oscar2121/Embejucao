@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import ModalDividirCuenta from './ModalDividirCuenta';
 
 const formatNumberInput = (text) => {
   if (!text) return '';
@@ -350,6 +351,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
   };
 
   const [modalPagoVisible, setModalPagoVisible] = useState(false);
+  const [modalDividirVisible, setModalDividirVisible] = useState(false);
   const [pedidoACobrar, setPedidoACobrar] = useState(null);
   const [isCreditoMode, setIsCreditoMode] = useState(false);
   const [isMixtoMode, setIsMixtoMode] = useState(false);
@@ -1366,6 +1368,22 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                     💵 Abonar
                   </button>
                 )}
+                {activeTab !== 'creditos' && !pedidoActivoDisplay?.deudor && (
+                  <button 
+                    onClick={() => {
+                      setPedidoACobrar(pedidoActivoDisplay);
+                      setModalDividirVisible(true);
+                    }}
+                    style={{
+                      flex: 1.1, minWidth: '135px', padding: '16px',
+                      backgroundColor: '#FEF3C7', color: '#92400E',
+                      border: '2px solid #FDE68A', borderRadius: '12px', fontSize: '16px', fontWeight: 'bold',
+                      cursor: 'pointer', transition: 'all 0.2s'
+                    }}
+                  >
+                    ✂️ Dividir Cuenta
+                  </button>
+                )}
                 <button 
                   onClick={() => handleCobrarClick(pedidoActivoDisplay)}
                   style={{
@@ -1479,6 +1497,18 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                 >
                   💵 + 📲 Cobro Mixto
                 </button>
+
+                {!(activeTab === 'creditos' || pedidoACobrar?.deudor || pedidoACobrar?.uuids) && (
+                  <button 
+                    onClick={() => {
+                      setModalPagoVisible(false);
+                      setModalDividirVisible(true);
+                    }}
+                    style={{ padding: '16px', backgroundColor: '#FEF3C7', color: '#92400E', border: '1.5px solid #FDE68A', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    ✂️ Dividir Cuenta (Por Ítems / Montos)
+                  </button>
+                )}
                 
                 <button 
                   onClick={() => {
@@ -1962,6 +1992,23 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
           </div>
         </div>
       )}
+
+      {/* Modal de División de Cuentas */}
+      <ModalDividirCuenta
+        visible={modalDividirVisible}
+        onClose={() => setModalDividirVisible(false)}
+        pedido={pedidoACobrar || selectedPedido || pedidoActivoDisplay}
+        sesionId={sesionActiva ? sesionActiva.id : null}
+        serverUrl={serverUrl}
+        onPagoCompletado={(resultado) => {
+          if (resultado?.comanda_saldada) {
+            setModalDividirVisible(false);
+            setPedidoACobrar(null);
+            setSelectedPedido(null);
+            setMesaSeleccionada(null);
+          }
+        }}
+      />
     </div>
   );
 }
