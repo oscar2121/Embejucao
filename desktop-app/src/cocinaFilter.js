@@ -97,3 +97,46 @@ export const esPedidoSalidoCocina = (p) => {
   }
   return false;
 };
+
+export const formatearHoraSegura = (val) => {
+  if (!val) return '';
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed.includes('-') && !trimmed.includes('/') && !trimmed.includes('T') && /^\d{1,2}:\d{2}/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  let dateStr = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}(:\d{2})?/.test(dateStr)) {
+    dateStr = dateStr.replace(' ', 'T') + 'Z';
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(dateStr)) {
+    dateStr = dateStr + 'Z';
+  }
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('es-CO', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'America/Bogota'
+  });
+};
+
+export const formatearFechaSegura = (val) => {
+  if (!val) return '';
+  let dateStr = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}(:\d{2})?/.test(dateStr)) {
+    dateStr = dateStr.replace(' ', 'T') + 'Z';
+  } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(dateStr)) {
+    dateStr = dateStr + 'Z';
+  }
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return String(val);
+  return d.toLocaleDateString('es-CO', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'America/Bogota'
+  });
+};

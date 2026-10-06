@@ -1,4 +1,5 @@
 import { StyleSheet } from 'react-native';
+import { formatearHoraSegura, formatearFechaSegura } from '../utils/cocinaFilter';
 
 export const C = {
   brand: "#3D1A0A",
@@ -210,18 +211,9 @@ export const calcularTotalPedido = (items = []) => {
 export const obtenerTotalSeguro = (pedido) => calcularTotalPedido(pedido?.items);
 
 export const formatearHoraPedido = (orden) => {
-  if (orden?.hora) return orden.hora;
-  const fechaStr = orden?.created_at || orden?.fecha;
-  if (fechaStr) {
-    try {
-      const d = new Date(fechaStr);
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
-      }
-    } catch (e) {
-      return '';
-    }
-  }
-  return '';
+  if (!orden) return '';
+  return formatearHoraSegura(orden.hora || orden.fecha || orden.created_at);
 };
+
+export { formatearHoraSegura, formatearFechaSegura };
 

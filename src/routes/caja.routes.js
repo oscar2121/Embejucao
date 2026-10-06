@@ -847,8 +847,14 @@ router.put('/pedidos/:uuid/fiado', (req, res) => {
       return res.status(400).json({ error: 'Debes indicar el nombre del deudor para registrar el crédito.' });
     }
 
-    let query = `UPDATE pedidos SET estado = 'fiado', deudor = ?, fecha_fiado = ?, total = ?, mesa = NULL`;
-    const params = [deudorNombre, fechaHoy, totalReal];
+    const horaVal = row.hora || req.body.hora || new Date().toLocaleTimeString('es-CO', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'America/Bogota'
+    });
+    let query = `UPDATE pedidos SET estado = 'fiado', deudor = ?, fecha_fiado = ?, total = ?, hora = ?, mesa = NULL`;
+    const params = [deudorNombre, fechaHoy, totalReal, horaVal];
 
     if (items) {
       query += `, items = ?`;

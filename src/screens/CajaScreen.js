@@ -13,7 +13,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import Ionicons from 'react-native-vector-icons/Ionicons';
-import { C, s, cleanNum, formatMoneyInput, calcularTotalPedido, formatearHoraPedido } from '../constants/theme';
+import { C, s, cleanNum, formatMoneyInput, calcularTotalPedido, formatearHoraPedido, formatearFechaSegura } from '../constants/theme';
 import ModalCobroMixto from '../components/ModalCobroMixto';
 
 export default function CajaScreen({
@@ -694,7 +694,7 @@ export default function CajaScreen({
                             }}>
                               <Text style={{ fontSize: 13, fontWeight: '600', color: '#64748b', marginVertical: 4 }}>
                                 {orden.mesa ? `Mesa ${orden.mesa} - ` : ''}
-                                {orden.fecha ? (orden.fecha.includes('T') ? new Date(orden.fecha).toLocaleDateString('es-CO') : orden.fecha) : ''}
+                                {formatearFechaSegura(orden.fecha || orden.created_at)}
                                 {Boolean(formatearHoraPedido(orden)) && ` • ${formatearHoraPedido(orden)}`}
                               </Text>
                               {orden.items && orden.items.map((it, itIdx) => (

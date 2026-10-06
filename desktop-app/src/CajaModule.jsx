@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import ModalDividirCuenta from './ModalDividirCuenta';
-import { esPedidoSalidoCocina } from './cocinaFilter';
+import { esPedidoSalidoCocina, formatearHoraSegura, formatearFechaSegura } from './cocinaFilter';
 
 const formatNumberInput = (text) => {
   if (!text) return '';
@@ -303,20 +303,22 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
         history = f.ordenes_historial.map(o => ({
           ...o,
           items: obtenerItemsSeguros(o),
-          hora: o.hora || f.hora || '',
+          fecha: o.fecha || f.fecha || o.created_at || f.created_at || '',
+          hora: o.hora || f.hora || formatearHoraSegura(o.fecha || f.fecha || o.created_at || f.created_at),
           created_at: o.created_at || f.created_at || ''
         }));
       } else if (fItems && fItems.length > 0 && (fItems[0].fecha || fItems[0].items)) {
         history = fItems.map(o => ({
           ...o,
           items: obtenerItemsSeguros(o),
-          hora: o.hora || f.hora || '',
+          fecha: o.fecha || f.fecha || o.created_at || f.created_at || '',
+          hora: o.hora || f.hora || formatearHoraSegura(o.fecha || f.fecha || o.created_at || f.created_at),
           created_at: o.created_at || f.created_at || ''
         }));
       } else if (fItems && fItems.length > 0) {
         history = [{
-          fecha: f.fecha_fiado || f.fecha || new Date().toISOString(),
-          hora: f.hora || '',
+          fecha: f.fecha_fiado || f.fecha || f.created_at || new Date().toISOString(),
+          hora: f.hora || formatearHoraSegura(f.fecha_fiado || f.fecha || f.created_at),
           created_at: f.created_at || '',
           mesa: String(f.mesa || ''),
           items: fItems
@@ -1193,7 +1195,9 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
               </h2>
               <p style={{ color: 'var(--text2)' }}>
                 Pedido #{pedidoActivoDisplay.id || pedidoActivoDisplay.uuid?.substring(0, 8) || 'S/N'}
-                {pedidoActivoDisplay.hora ? ` • ${pedidoActivoDisplay.hora}` : ''}
+                {Boolean(pedidoActivoDisplay.hora || pedidoActivoDisplay.fecha || pedidoActivoDisplay.created_at) && (
+                  ` • ${formatearHoraSegura(pedidoActivoDisplay.hora || pedidoActivoDisplay.fecha || pedidoActivoDisplay.created_at)}`
+                )}
               </p>
             </div>
 
@@ -1204,15 +1208,11 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                     {/* Encabezado de orden en historial de créditos con Hora */}
                     <div style={{ fontSize: '13px', color: '#64748b', fontWeight: '600', margin: '8px 0 4px 0', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>
                       {orden.mesa ? `Mesa ${orden.mesa} - ` : ''}
-                      {orden.fecha ? (orden.fecha.includes('T') ? new Date(orden.fecha).toLocaleDateString('es-CO') : orden.fecha) : ''}
-                      {Boolean(orden.hora || orden.created_at || orden.fecha) && (
+                      {formatearFechaSegura(orden.fecha || orden.created_at)}
+                      {Boolean(orden.hora || orden.fecha || orden.created_at) && (
                         <span>
                           {' • '}
-                          {orden.hora 
-                            ? orden.hora 
-                            : (orden.created_at || orden.fecha 
-                                ? new Date(orden.created_at || orden.fecha).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true }) 
-                                : '')}
+                          {formatearHoraSegura(orden.hora || orden.fecha || orden.created_at)}
                         </span>
                       )}
                     </div>

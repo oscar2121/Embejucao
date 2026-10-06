@@ -166,10 +166,16 @@ const recibirPedidoHandler = async (req, res) => {
 
     // Inserción parametrizada limpia con estado activo
     const estadoPedido = b.estado || 'activo';
+    const horaActual = b.hora || new Date().toLocaleTimeString('es-CO', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'America/Bogota'
+    });
     await runQuery(
-      `INSERT OR REPLACE INTO pedidos (uuid, mesa, tipo, items, total, notas, estado, pagado, fecha)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-      [uuid, mesa, tipo, itemsData, total, notas, estadoPedido, fecha]
+      `INSERT OR REPLACE INTO pedidos (uuid, mesa, tipo, items, total, notas, estado, pagado, fecha, hora)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [uuid, mesa, tipo, itemsData, total, notas, estadoPedido, fecha, horaActual]
     );
 
     // Marcar la mesa como ocupada automáticamente para nuevo pedido

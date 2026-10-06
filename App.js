@@ -92,7 +92,7 @@ import DocumentPicker from 'react-native-document-picker';
 import RNFS from 'react-native-fs';
 import io from 'socket.io-client';
 import CocinaScreen, { CocinaView } from './src/screens/CocinaScreen';
-import { esItemDeCocina, esPedidoSalidoCocina } from './src/utils/cocinaFilter';
+import { esItemDeCocina, esPedidoSalidoCocina, formatearHoraSegura, formatearFechaSegura } from './src/utils/cocinaFilter';
 import TomarPedidoScreen, { PedidoView } from './src/screens/TomarPedidoScreen';
 import CajaScreen, { CajaView } from './src/screens/CajaScreen';
 
@@ -306,22 +306,22 @@ const mapFiados = (fiadosList) => {
     if (f.ordenes_historial) {
       history = f.ordenes_historial.map(o => ({
         ...o,
-        hora: o.hora || f.hora || '',
-        created_at: o.created_at || f.created_at || '',
-        fecha: o.fecha || f.fecha || ''
+        fecha: o.fecha || f.fecha || o.created_at || f.created_at || '',
+        hora: o.hora || f.hora || formatearHoraSegura(o.fecha || f.fecha || o.created_at || f.created_at),
+        created_at: o.created_at || f.created_at || ''
       }));
     } else if (f.items && f.items.length > 0 && (f.items[0].fecha || f.items[0].items)) {
       history = f.items.map(o => ({
         ...o,
-        hora: o.hora || f.hora || '',
-        created_at: o.created_at || f.created_at || '',
-        fecha: o.fecha || f.fecha || ''
+        fecha: o.fecha || f.fecha || o.created_at || f.created_at || '',
+        hora: o.hora || f.hora || formatearHoraSegura(o.fecha || f.fecha || o.created_at || f.created_at),
+        created_at: o.created_at || f.created_at || ''
       }));
     } else if (f.items) {
       // Legacy flat items array -> convert to a single history order entry
       history = [{
-        fecha: f.fecha_fiado || f.fecha || new Date().toISOString(),
-        hora: f.hora || '',
+        fecha: f.fecha_fiado || f.fecha || f.created_at || new Date().toISOString(),
+        hora: f.hora || formatearHoraSegura(f.fecha_fiado || f.fecha || f.created_at),
         created_at: f.created_at || '',
         mesa: String(f.mesa || ''),
         items: f.items
@@ -358,19 +358,8 @@ const mapFiados = (fiadosList) => {
 };
 
 const formatearHoraPedido = (orden) => {
-  if (orden?.hora) return orden.hora;
-  const fechaStr = orden?.created_at || orden?.fecha;
-  if (fechaStr) {
-    try {
-      const d = new Date(fechaStr);
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
-      }
-    } catch (e) {
-      return '';
-    }
-  }
-  return '';
+  if (!orden) return '';
+  return formatearHoraSegura(orden.hora || orden.fecha || orden.created_at);
 };
 
 // ============================================================
