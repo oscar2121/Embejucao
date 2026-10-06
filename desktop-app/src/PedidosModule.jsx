@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { esPedidoSalidoCocina } from './cocinaFilter';
 
 const formatNumberInput = (text) => {
   if (!text) return '';
@@ -174,6 +175,12 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
 
   useEffect(() => {
     if (pedidoEditando) {
+      if (esPedidoSalidoCocina(pedidoEditando)) {
+        toast.error('🚫 No se puede editar: Este pedido ya salió o fue despachado de cocina.');
+        if (setPedidoEditando) setPedidoEditando(null);
+        setCarrito([]);
+        return;
+      }
       setMesaSeleccionada(pedidoEditando.mesa);
       setParaLlevar(pedidoEditando.mesa === 'Llevar');
       
@@ -418,6 +425,12 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
 
     try {
       if (pedidoEditando) {
+        if (esPedidoSalidoCocina(pedidoEditando)) {
+          toast.error("🚫 No se puede editar: el pedido ya fue despachado de cocina");
+          if (setPedidoEditando) setPedidoEditando(null);
+          setCarrito([]);
+          return;
+        }
         // Enviar edición
         const url = `${serverUrl}/api/pedidos/${pedidoEditando.uuid}`;
         await axios.put(url, {

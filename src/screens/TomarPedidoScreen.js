@@ -12,6 +12,7 @@ import {
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import { C, s, CATEGORIAS } from '../constants/theme';
 import ModalAdicionales from '../components/ModalAdicionales';
+import { esPedidoSalidoCocina } from '../utils/cocinaFilter';
 
 export default function TomarPedidoScreen({
   mesas = [],
@@ -746,11 +747,38 @@ export default function TomarPedidoScreen({
                         );
                       }
 
+                      const pedidoYaDespachado = esPedidoSalidoCocina(activeOrder) || mesaActivaSelected?.estado === 'cuenta';
+
+                      if (pedidoYaDespachado) {
+                        return (
+                          <View
+                            style={{
+                              flex: 1,
+                              padding: 12,
+                              borderRadius: 8,
+                              backgroundColor: '#F3F4F6',
+                              borderWidth: 1,
+                              borderColor: '#E5E7EB',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <Text style={{ color: '#9CA3AF', fontWeight: '700', fontSize: 13, textAlign: 'center' }}>
+                              🔒 Comida despachada (No editable)
+                            </Text>
+                          </View>
+                        );
+                      }
+
                       return (
                         <TouchableOpacity
                           onPress={() => {
                             if (activeOrder) {
                               const loadAndEdit = () => {
+                                if (esPedidoSalidoCocina(activeOrder) || mesaActivaSelected?.estado === 'cuenta') {
+                                  Alert.alert("Acción no permitida", "La comida de esta mesa ya fue despachada de cocina. No se puede editar el pedido.");
+                                  return;
+                                }
                                 setPedidoEditando(activeOrder);
                                 const itemsForCart = (activeOrder.items || []).map(item => {
                                   const prod = productos.find(p => p.nombre === item.nombre) || {};

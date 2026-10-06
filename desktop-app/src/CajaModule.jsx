@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import ModalDividirCuenta from './ModalDividirCuenta';
+import { esPedidoSalidoCocina } from './cocinaFilter';
 
 const formatNumberInput = (text) => {
   if (!text) return '';
@@ -1319,8 +1320,23 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                 </button>
                 {activeTab !== 'creditos' && !pedidoActivoDisplay?.deudor && (
                   <button 
-                    onClick={() => onEditPedido && onEditPedido(pedidoActivoDisplay)}
-                    style={{ flex: 1, minWidth: '120px', padding: '16px', backgroundColor: 'var(--surf3)', color: 'var(--brand)', border: '2px solid var(--border)', borderRadius: '12px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                    onClick={() => {
+                      if (esPedidoSalidoCocina(pedidoActivoDisplay)) {
+                        toast.error("No se puede editar: el pedido ya salió de cocina");
+                        return;
+                      }
+                      onEditPedido && onEditPedido(pedidoActivoDisplay);
+                    }}
+                    disabled={esPedidoSalidoCocina(pedidoActivoDisplay)}
+                    title={esPedidoSalidoCocina(pedidoActivoDisplay) ? "No se puede editar: El pedido ya salió de cocina" : "Editar este pedido"}
+                    style={{
+                      flex: 1, minWidth: '120px', padding: '16px',
+                      backgroundColor: esPedidoSalidoCocina(pedidoActivoDisplay) ? '#f3f4f6' : 'var(--surf3)',
+                      color: esPedidoSalidoCocina(pedidoActivoDisplay) ? '#9ca3af' : 'var(--brand)',
+                      border: esPedidoSalidoCocina(pedidoActivoDisplay) ? '1px solid #e5e7eb' : '2px solid var(--border)',
+                      borderRadius: '12px', fontSize: '16px', fontWeight: 'bold',
+                      cursor: esPedidoSalidoCocina(pedidoActivoDisplay) ? 'not-allowed' : 'pointer'
+                    }}
                   >
                     ✏️ Editar
                   </button>

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { db, dbGet, dbAll } = require('../database/db');
-const { logAuditoria } = require('../utils/helpers');
+const { logAuditoria, esPedidoSalidoCocina } = require('../utils/helpers');
 const { getIO, broadcastComandasActivas, emitirSincronizacionCompleta } = require('../utils/socket');
 
 // ─── HANDLER PRINCIPAL DE CREACIÓN DE PEDIDOS ───
@@ -691,7 +691,17 @@ router.put('/pedidos/:uuid', (req, res) => {
   const { uuid } = req.params;
   const { items, usuario } = req.body;
 
-  db.get(`SELECT mesa, estado FROM pedidos WHERE uuid = ?`, [uuid], (errGet, pRow) => {
+  db.get(`SELECT mesa, estado, items FROM pedidos WHERE uuid = ?`, [uuid], (errGet, pRow) => {
+    if (errGet || !pRow) {
+      return res.status(404).json({ error: 'Pedido no encontrado' });
+    }
+
+    if (esPedidoSalidoCocina(pRow)) {
+      return res.status(400).json({ 
+        error: 'No se puede editar: la comida de este pedido ya fue despachada o salió de cocina' 
+      });
+    }
+
     const mesaLabel = pRow ? pRow.mesa : 'desconocida';
     const estadoActual = pRow ? pRow.estado : 'activo';
     db.run(

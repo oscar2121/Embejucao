@@ -76,3 +76,24 @@ export const esItemDeCocina = (item) => {
   // 3. Comidas y platos preparados siempre entran a cocina
   return true;
 };
+
+export const esPedidoSalidoCocina = (p) => {
+  if (!p) return false;
+  const estadoLower = String(p.estado || '').toLowerCase().trim();
+  if (['completado', 'despachado', 'cuenta', 'cobrado', 'entregado', 'listo'].includes(estadoLower)) {
+    return true;
+  }
+  const items = Array.isArray(p.items) ? p.items : (typeof p.items === 'string' ? JSON.parse(p.items || '[]') : []);
+  if (!Array.isArray(items) || items.length === 0) return false;
+
+  // Si tiene ítems de cocina y todos están listos/despachados
+  const itemsCocina = items.filter(esItemDeCocina);
+  if (itemsCocina.length > 0 && itemsCocina.every(i => ['listo', 'despachado', 'entregado'].includes(String(i?.estado || '').toLowerCase()))) {
+    return true;
+  }
+  // Si algún ítem individual ya fue despachado/marcado listo en cocina
+  if (items.some(i => i && String(i.estado || '').toLowerCase() === 'listo')) {
+    return true;
+  }
+  return false;
+};

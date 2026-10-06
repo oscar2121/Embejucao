@@ -90,8 +90,88 @@ async function obtenerBalanceTurnoActivo() {
   }
 }
 
+const normalizarTexto = (txt = '') => {
+  return String(txt || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+};
+
+const esBebidaCocina = (item) => {
+  if (!item) return false;
+  const nombre = normalizarTexto(item.nombre || item.nombre_producto || '');
+  const catTexto = normalizarTexto(item.categoria || item.categoria_nombre || item.cat || '');
+  const catNum = Number(item.cat);
+
+  const esJugoNatural = (nombre.includes('jugo') && !nombre.includes('hit')) ||
+                        nombre.includes('limonada') ||
+                        nombre.includes('batido') ||
+                        nombre.includes('smoothie') ||
+                        catNum === 6 || catNum === 7;
+
+  const esBebidaCaliente = !nombre.includes('perro') && (
+    nombre.includes('caliente') ||
+    catTexto.includes('caliente') ||
+    nombre.includes('cafe') ||
+    nombre.includes('tinto') ||
+    nombre.includes('chocolate') ||
+    nombre.includes('aromatica') ||
+    nombre.includes('capuchino') ||
+    catNum === 9
+  );
+
+  return Boolean(esJugoNatural || esBebidaCaliente);
+};
+
+const esItemDeCocina = (item) => {
+  if (!item) return false;
+  const nombre = normalizarTexto(item.nombre || item.nombre_producto || '');
+  const catTexto = normalizarTexto(item.categoria || item.categoria_nombre || item.cat || '');
+  const catNum = Number(item.cat);
+
+  if (esBebidaCocina(item)) return true;
+
+  const terminosExcluidos = [
+    'cerveza', 'corona', 'club colombia', 'poker', 'aguila', 'costena', 'heineken', 'stella', 'pola',
+    'gaseosa', 'coca', 'postobon', 'colombiana', 'manzana', 'cuatro', 'quatro', 'sprite', 'pepsi',
+    'hit', 'mr tea', 'soda', 'h2oh', 'red bull', 'energizante',
+    'mojito', 'margarita', 'coctel', 'licor', 'aguardiente', 'ron', 'whisky', 'tequila', 'vodka', 'trago',
+    'cervezas', 'licores', 'cocteles', 'bebidas frias'
+  ];
+
+  if (terminosExcluidos.some(t => nombre.includes(t) || catTexto.includes(t))) return false;
+  if (nombre.includes('agua') || nombre.includes('botella') || nombre.includes('lata')) return false;
+  if (catNum === 8) return false;
+  if (catTexto === 'bebidas' || catTexto === 'bebida' || catTexto === 'bar' || catTexto === 'licores') return false;
+
+  return true;
+};
+
+const esPedidoSalidoCocina = (p) => {
+  if (!p) return false;
+  const estadoLower = String(p.estado || '').toLowerCase().trim();
+  if (['completado', 'despachado', 'cuenta', 'cobrado', 'entregado', 'listo'].includes(estadoLower)) {
+    return true;
+  }
+  const items = Array.isArray(p.items) ? p.items : (typeof p.items === 'string' ? JSON.parse(p.items || '[]') : []);
+  if (!Array.isArray(items) || items.length === 0) return false;
+
+  const itemsCocina = items.filter(esItemDeCocina);
+  if (itemsCocina.length > 0 && itemsCocina.every(i => ['listo', 'despachado', 'entregado'].includes(String(i?.estado || '').toLowerCase()))) {
+    return true;
+  }
+  if (items.some(i => i && String(i.estado || '').toLowerCase() === 'listo')) {
+    return true;
+  }
+  return false;
+};
+
 module.exports = {
   hashPin,
   logAuditoria,
-  obtenerBalanceTurnoActivo
+  obtenerBalanceTurnoActivo,
+  esItemDeCocina,
+  esBebidaCocina,
+  esPedidoSalidoCocina
 };

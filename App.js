@@ -92,7 +92,7 @@ import DocumentPicker from 'react-native-document-picker';
 import RNFS from 'react-native-fs';
 import io from 'socket.io-client';
 import CocinaScreen, { CocinaView } from './src/screens/CocinaScreen';
-import { esItemDeCocina } from './src/utils/cocinaFilter';
+import { esItemDeCocina, esPedidoSalidoCocina } from './src/utils/cocinaFilter';
 import TomarPedidoScreen, { PedidoView } from './src/screens/TomarPedidoScreen';
 import CajaScreen, { CajaView } from './src/screens/CajaScreen';
 
@@ -1619,6 +1619,16 @@ export default function App() {
   const enviarPedido = async (mesaNum, items, isEditing, editUuid) => {
     try {
       if (isEditing && editUuid) {
+        // Verificar si el pedido ya salió de cocina
+        const pedidoExistente = (pedidos || []).find(p => (p.uuid && p.uuid === editUuid) || (p.id && (p.id === editUuid || String(p.id) === String(editUuid))));
+        if (pedidoExistente && esPedidoSalidoCocina(pedidoExistente)) {
+          showToast("🚫 No se puede editar: el pedido ya fue despachado de cocina");
+          Alert.alert("Acción no permitida", "La comida de esta mesa ya fue despachada o salió de cocina. No se puede editar el pedido.");
+          eliminarBorrador(mesaNum);
+          if (setPedidoEditando) setPedidoEditando(null);
+          return;
+        }
+
         // Local optimistic update
         setPedidos(prev => prev.map(p => p.uuid === editUuid ? { ...p, items } : p));
 

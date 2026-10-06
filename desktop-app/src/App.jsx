@@ -6,6 +6,8 @@ import { CocinaModuleV2 } from './CocinaModule';
 import { AdminModule } from './AdminModule';
 import './index.css';
 import axios from 'axios';
+import toast from 'react-hot-toast';
+import { esPedidoSalidoCocina } from './cocinaFilter';
 
 // Interceptor global para añadir JWT a todas las peticiones
 axios.interceptors.request.use(
@@ -137,6 +139,10 @@ function App() {
                 sesionActiva={sesionActiva} 
                 setSesionActiva={setSesionActiva} 
                 onEditPedido={(pedido) => {
+                  if (esPedidoSalidoCocina(pedido)) {
+                    toast.error("No se puede editar: El pedido ya fue despachado de cocina");
+                    return;
+                  }
                   setPedidoEditando(pedido);
                   setActiveTab('pedidos');
                 }}
