@@ -26,11 +26,16 @@ router.get('/caja/estado-actual', async (req, res) => {
 // GET /api/pedidos/mesa/:mesa - Buscar el pedido activo de una mesa específica
 router.get('/pedidos/mesa/:mesa', async (req, res) => {
   try {
-    const mesaNum = req.params.mesa;
-    // Buscar el pedido activo usando columna 'mesa' y estado 'activo'
+    const mesaNum = String(req.params.mesa).replace(/\D/g, '');
+    const mesaParam = req.params.mesa;
     const pedido = await dbGet(
-      "SELECT * FROM pedidos WHERE mesa = ? AND estado = 'activo' ORDER BY id DESC LIMIT 1",
-      [mesaNum]
+      `SELECT * FROM pedidos 
+       WHERE (mesa = ? OR mesa = ? OR mesa = ?) 
+         AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') 
+         AND deudor IS NULL
+         AND (pagado = 0 OR pagado IS NULL) 
+       ORDER BY id DESC LIMIT 1`,
+      [mesaParam, `Mesa ${mesaParam}`, mesaNum || mesaParam]
     );
 
     if (!pedido) {
@@ -383,6 +388,9 @@ router.get('/caja/resumen-cierre/:sesion_id', async (req, res) => {
     const rTransf = await dbGet(`SELECT SUM(total) as total FROM ventas WHERE sesion_id = ? AND metodo_pago = 'Transferencia'`, [sesion_id]);
     const transferencia = rTransf ? rTransf.total || 0 : 0;
 
+    const rCortesia = await dbGet(`SELECT SUM(total) as total FROM ventas WHERE sesion_id = ? AND (metodo_pago = 'Cortesía' OR metodo_pago = 'cortesia' OR metodo_pago = 'Cortesia')`, [sesion_id]);
+    const cortesia = rCortesia ? rCortesia.total || 0 : 0;
+
     const rGastos = await dbGet(`SELECT SUM(valor) as total FROM gastos WHERE sesion_id = ?`, [sesion_id]);
     const gastos = rGastos ? rGastos.total || 0 : 0;
 
@@ -439,6 +447,7 @@ router.get('/caja/resumen-cierre/:sesion_id', async (req, res) => {
       base_inicial: sesion.base_inicial,
       ingresos_efectivo: efectivo,
       ingresos_transferencia: transferencia,
+      ingresos_cortesia: cortesia,
       gastos: gastos,
       saldo_final_esperado: esperado,
       productividad: mapaProductividad,
@@ -504,7 +513,8 @@ router.get('/caja/pendientes', (req, res) => {
   db.all(
     `SELECT * FROM pedidos 
      WHERE LOWER(estado) IN ('cuenta', 'por_cobrar', 'pendiente_pago', 'entregado', 'completado', 'activo', 'listo', 'en_cocina', 'preparando', 'pendiente') 
-       AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') 
+       AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') 
+       AND deudor IS NULL
        AND (pagado = 0 OR pagado IS NULL) 
      ORDER BY id DESC`,
     [],
@@ -520,27 +530,32 @@ router.get('/caja/pendientes', (req, res) => {
 
 // GET - Obtener pedidos fiados / créditos
 router.get('/pedidos/fiado', (req, res) => {
-  db.all(
-    `SELECT * FROM pedidos WHERE estado IN ('fiado', 'credito') ORDER BY id DESC`,
-    [],
-    (err, rows) => {
-      if (err) {
-        console.error('Error fetching fiados:', err);
-        return res.status(400).json({ error: err.message });
-      }
-      const fiados = (rows || []).map(p => {
-        let parsedItems = [];
-        try {
-          parsedItems = typeof p.items === 'string' ? JSON.parse(p.items) : (p.items || []);
-        } catch(e) {
-          parsedItems = [];
+  db.run(
+    `UPDATE pedidos SET estado = 'cobrado', pagado = 1 WHERE LOWER(estado) IN ('fiado', 'credito') AND (total = 0 OR items IS NULL OR items = '' OR items = '[]' OR (total > 0 AND abono_parcial >= total))`,
+    () => {
+      db.all(
+        `SELECT * FROM pedidos WHERE LOWER(estado) IN ('fiado', 'credito') AND total > 0 ORDER BY id DESC`,
+        [],
+        (err, rows) => {
+          if (err) {
+            console.error('Error fetching fiados:', err);
+            return res.status(400).json({ error: err.message });
+          }
+          const fiados = (rows || []).map(p => {
+            let parsedItems = [];
+            try {
+              parsedItems = typeof p.items === 'string' ? JSON.parse(p.items) : (p.items || []);
+            } catch(e) {
+              parsedItems = [];
+            }
+            return {
+              ...p,
+              items: parsedItems
+            };
+          }).filter(p => p.items && p.items.length > 0);
+          res.json({ fiados });
         }
-        return {
-          ...p,
-          items: parsedItems
-        };
-      });
-      res.json({ fiados });
+      );
     }
   );
 });
@@ -583,6 +598,10 @@ router.post('/creditos/abono', async (req, res) => {
 
   if (!targetCliente || isNaN(montoAbono) || montoAbono <= 0) {
     return res.status(400).json({ error: 'Cliente y monto válido son requeridos.' });
+  }
+
+  if (metodo_pago && (metodo_pago.toLowerCase() === 'cortesía' || metodo_pago.toLowerCase() === 'cortesia')) {
+    return res.status(400).json({ error: 'No se permite usar cortesía como método de pago para abonar o pagar créditos.' });
   }
 
   const fechaHoy = new Date().toISOString();
@@ -668,19 +687,13 @@ router.post('/fiados/abono', (req, res) => {
     return res.status(400).json({ error: 'Deudor y monto válido son requeridos.' });
   }
 
+  if (metodo_pago && (metodo_pago.toLowerCase() === 'cortesía' || metodo_pago.toLowerCase() === 'cortesia')) {
+    return res.status(400).json({ error: 'No se permite usar cortesía como método de pago para abonar o pagar créditos.' });
+  }
+
   const fechaHoy = new Date().toISOString();
 
   db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS abonos_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente_id TEXT, deudor TEXT, monto REAL, metodo_pago TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    db.run(`CREATE TABLE IF NOT EXISTS clientes_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE, saldo_pendiente REAL DEFAULT 0, ultimo_abono REAL DEFAULT 0, fecha_ultimo_abono TEXT)`);
-    db.run(`CREATE TABLE IF NOT EXISTS abonos_fiados (id INTEGER PRIMARY KEY AUTOINCREMENT, deudor TEXT, monto REAL, metodo_pago TEXT, pedido_id INTEGER, sesion_id INTEGER, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    db.run(`ALTER TABLE pedidos ADD COLUMN abono_parcial REAL DEFAULT 0`, () => {});
-    db.run(`ALTER TABLE pedidos ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
-    db.run(`ALTER TABLE pedidos ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
-    db.run(`ALTER TABLE pedidos ADD COLUMN metodo_pago_abono TEXT`, () => {});
-    db.run(`ALTER TABLE clientes_credito ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
-    db.run(`ALTER TABLE clientes_credito ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
-
     db.run(
       `INSERT INTO abonos_credito (cliente_id, deudor, monto, metodo_pago, fecha) VALUES (?, ?, ?, ?, datetime('now', 'localtime'))`,
       [targetDeudor, targetDeudor, montoAbono, metodo_pago || 'Efectivo'],
@@ -701,6 +714,27 @@ router.post('/fiados/abono', (req, res) => {
     
     db.all(sqlGet, [targetDeudor, targetDeudor], (err, ordenes) => {
       if (err) return res.status(500).json({ error: err.message });
+
+      if (Array.isArray(ordenes) && ordenes.length > 0) {
+        let deudaTotal = 0;
+        ordenes.forEach(ord => {
+          let totalPedido = Number(ord.total || 0);
+          if (totalPedido <= 0 && ord.items) {
+            try {
+              const items = typeof ord.items === 'string' ? JSON.parse(ord.items) : (ord.items || []);
+              totalPedido = items.reduce((sum, item) => sum + (Number(item.precio || 0) * Number(item.cantidad || 1)), 0);
+            } catch (e) {}
+          }
+          const abonoPrev = Number(ord.abono_parcial || 0);
+          deudaTotal += Math.max(0, totalPedido - abonoPrev);
+        });
+
+        if (deudaTotal > 0 && montoAbono > deudaTotal + 1) {
+          return res.status(400).json({ 
+            error: `El abono ($${montoAbono.toLocaleString('es-CO')}) no puede superar el saldo pendiente de $${Math.round(deudaTotal).toLocaleString('es-CO')}.` 
+          });
+        }
+      }
 
       let restante = montoAbono;
       db.run('BEGIN TRANSACTION');
@@ -780,56 +814,94 @@ router.put('/pedidos/:uuid/fiado', (req, res) => {
   const io = req.io || getIO();
   const { uuid } = req.params;
   const { deudor, fecha_fiado, usuario, items, mesa } = req.body;
-  
-  let query = `UPDATE pedidos SET estado = 'fiado', deudor = ?, fecha_fiado = ?`;
-  const params = [deudor, fecha_fiado];
-  
-  if (items) {
-    query += `, items = ?`;
-    params.push(JSON.stringify(items));
-  }
-  if (mesa) {
-    query += `, mesa = ?`;
-    params.push(mesa);
-  }
-  
-  query += ` WHERE uuid = ?`;
-  params.push(uuid);
-  
-  db.run(query, params, function (err) {
-    if (err) return res.status(400).json({ error: err.message });
-    // Liberar mesa física
-    const targetMesa = mesa || '';
-    const mesasALiberar = String(targetMesa).split(',').map(m => Number(m.trim())).filter(m => !isNaN(m));
-    if (mesasALiberar.length > 0) {
-      let updates = 0;
-      mesasALiberar.forEach(mesaNum => {
-        db.run(`UPDATE mesas SET estado = 'libre' WHERE num = ?`, [mesaNum], () => {
-          updates++;
-          if (updates === mesasALiberar.length) {
-            db.all('SELECT * FROM mesas', (errMesas, filasMesas) => {
-              if (!errMesas && io) io.emit('mesas_actualizadas', filasMesas);
-            });
-          }
+  const fechaHoy = fecha_fiado || new Date().toISOString();
+
+  db.get(`SELECT * FROM pedidos WHERE uuid = ? OR id = ?`, [uuid, uuid], (errSel, row) => {
+    if (errSel || !row) {
+      return res.status(404).json({ error: 'Pedido no encontrado para registrar crédito.' });
+    }
+
+    let totalReal = Number(req.body.total || row.total || 0);
+    if (totalReal <= 0) {
+      try {
+        const rawItems = items || row.items;
+        const itemsList = typeof rawItems === 'string' ? JSON.parse(rawItems || '[]') : (rawItems || []);
+        if (Array.isArray(itemsList)) {
+          totalReal = itemsList.reduce((acc, it) => {
+            const p = Number(it.precio || it.precio_unitario || it.subtotal || 0);
+            const c = Number(it.cantidad || 1);
+            return acc + (p * c);
+          }, 0);
+        }
+      } catch (eCalc) {}
+    }
+
+    if (totalReal <= 0) {
+      return res.status(400).json({ error: 'No se puede registrar crédito de un pedido con total $0 o sin consumos.' });
+    }
+
+    const targetMesa = mesa || row.mesa || '';
+    const deudorNombre = (deudor || row.deudor || '').trim();
+
+    if (!deudorNombre) {
+      return res.status(400).json({ error: 'Debes indicar el nombre del deudor para registrar el crédito.' });
+    }
+
+    let query = `UPDATE pedidos SET estado = 'fiado', deudor = ?, fecha_fiado = ?, total = ?, mesa = NULL`;
+    const params = [deudorNombre, fechaHoy, totalReal];
+
+    if (items) {
+      query += `, items = ?`;
+      params.push(typeof items === 'string' ? items : JSON.stringify(items));
+    }
+
+    query += ` WHERE id = ? OR uuid = ?`;
+    params.push(row.id, row.uuid || uuid);
+
+    db.run(query, params, function (errUpd) {
+      if (errUpd) return res.status(400).json({ error: errUpd.message });
+
+      // Liberar mesa física
+      const mesasALiberar = String(targetMesa).split(',').map(m => m.trim().replace(/\D/g, '')).filter(Boolean);
+      if (mesasALiberar.length > 0) {
+        let updates = 0;
+        mesasALiberar.forEach(mesaNum => {
+          db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaNum, mesaNum], () => {
+            updates++;
+            if (updates === mesasALiberar.length) {
+              db.all('SELECT * FROM mesas', (errMesas, filasMesas) => {
+                if (!errMesas && io) io.emit('mesas_actualizadas', filasMesas);
+              });
+            }
+          });
         });
-      });
-    }
-    
-    // Notificar a todos que el pedido ya no está activo
-    if (deudor) {
-      db.run('INSERT OR IGNORE INTO clientes (nombre) VALUES (?)', [deudor.trim()]);
-    }
-    
-    // Emitir el evento de fiado para que se actualice en la caja en tiempo real (Créditos)
-    db.get('SELECT * FROM pedidos WHERE uuid = ?', [uuid], (errSel, row) => {
-      if (row) {
-        row.items = JSON.parse(row.items);
-        if (io) io.emit('pedido_fiado_servidor', row);
       }
+
+      // Guardar deudor en clientes y clientes_credito
+      db.run('INSERT OR IGNORE INTO clientes (nombre) VALUES (?)', [deudorNombre]);
+      db.run('INSERT OR IGNORE INTO clientes_credito (nombre, saldo_pendiente) VALUES (?, 0)', [deudorNombre]);
+
+      // Emitir eventos en tiempo real para sincronizar Créditos / Fiados
+      db.get('SELECT * FROM pedidos WHERE id = ?', [row.id], (errR, updatedRow) => {
+        if (updatedRow) {
+          try {
+            updatedRow.items = typeof updatedRow.items === 'string' ? JSON.parse(updatedRow.items) : (updatedRow.items || []);
+          } catch(e) {
+            updatedRow.items = [];
+          }
+          if (io) {
+            io.emit('pedido_fiado_servidor', updatedRow);
+            io.emit('credito_actualizado');
+            io.emit('pedidos_actualizados');
+            io.emit('caja_actualizada');
+          }
+          emitirSincronizacionCompleta();
+        }
+      });
+
+      logAuditoria(usuario, 'pedido_fiado', `Pedido registrado a crédito a favor de ${deudorNombre} (Mesa ${targetMesa})`);
+      res.json({ success: true, pedido_id: row.id, deudor: deudorNombre });
     });
-    
-    logAuditoria(usuario, 'pedido_fiado', `Pedido registrado como fiado a favor de ${deudor} (Mesa ${targetMesa})`);
-    res.json({ success: true });
   });
 });
 
@@ -838,7 +910,7 @@ router.put('/pedidos/:uuid/fiado', (req, res) => {
 // POST - Registrar Venta Permanente con Detalle
 router.post('/ventas', (req, res) => {
   const io = req.io || getIO();
-  const { fecha, tipo_origen, mesa, total, metodo_pago, sesion_id, detalles, usuario, deudor, fecha_fiado, monto_efectivo, monto_transferencia, pedido_id } = req.body;
+  const { fecha, tipo_origen, mesa, total, metodo_pago, sesion_id, detalles, usuario, deudor, fecha_fiado, monto_efectivo, monto_transferencia, pedido_id, pedido_uuid } = req.body;
   const ahora = fecha || new Date().toISOString();
 
   const execInsert = (monto, metodo, det) => {
@@ -866,9 +938,7 @@ router.post('/ventas', (req, res) => {
                       db.run(`UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id = ?`, [cantidadADescontar, ing.insumo_id], (errUpd) => {
                         if (!errUpd) {
                           db.run(`INSERT INTO movimientos_inventario (insumo_id, tipo, cantidad, motivo, fecha) VALUES (?, 'salida', ?, ?, ?)`,
-                            [ing.insumo_id, cantidadADescontar, `Venta: ${d.cantidad}x ${d.nombre_producto} (Venta #${ventaId})`, ahora], () => {
-                              if (io) io.emit('inventario:actualizado');
-                            });
+                            [ing.insumo_id, cantidadADescontar, `Venta: ${d.cantidad}x ${d.nombre_producto} (Venta #${ventaId})`, ahora]);
                         }
                       });
                     }
@@ -890,33 +960,22 @@ router.post('/ventas', (req, res) => {
 
   db.serialize(() => {
     const liberarMesaYCerrarPedidos = () => {
-      if (pedido_id) {
+      const targetPed = pedido_id || pedido_uuid;
+      if (targetPed) {
         db.run(
           `UPDATE pedidos SET estado = 'cobrado', pagado = 1, caja_sesion_id = ? WHERE id = ? OR uuid = ?`,
-          [sesion_id || null, pedido_id, pedido_id],
-          () => {
-            if (io) io.emit('pedidos_actualizados');
-            emitirSincronizacionCompleta();
-          }
+          [sesion_id || null, targetPed, targetPed]
         );
       }
 
       if (tipo_origen === 'Mesa' || (mesa && !String(mesa).toLowerCase().includes('deuda'))) {
         const mesaNum = String(mesa).replace(/\D/g, '');
         if (mesaNum) {
-          db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaNum, mesaNum], () => {
-            db.all('SELECT * FROM mesas', (errM, rowsM) => {
-              if (!errM && io) io.emit('mesas_actualizadas', rowsM);
-            });
-          });
+          db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaNum, mesaNum]);
           db.run(
             `UPDATE pedidos SET estado = 'cobrado', pagado = 1, caja_sesion_id = ? WHERE (mesa = ? OR mesa = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
             [sesion_id || null, mesaNum, `Mesa ${mesaNum}`],
-
             () => {
-              if (io) io.emit('pedidos_actualizados');
-              emitirSincronizacionCompleta();
-
               // Asegurar vinculación en detalles_pedidos
               db.all(
                 `SELECT id FROM pedidos WHERE (mesa = ? OR mesa = ?) AND estado = 'cobrado' ORDER BY id DESC LIMIT 1`,
@@ -938,6 +997,29 @@ router.post('/ventas', (req, res) => {
       }
     };
 
+    const emitirPulsoFinal = async () => {
+      const ioInstance = req.io || (typeof getIO === 'function' ? getIO() : null);
+      if (ioInstance) {
+        db.all('SELECT * FROM mesas ORDER BY num ASC', (errM, rowsM) => {
+          ioInstance.emit('mesas_actualizadas', rowsM || []);
+          ioInstance.emit('pedidos_actualizados');
+          ioInstance.emit('inventario:actualizado');
+          if (typeof emitirSincronizacionCompleta === 'function') {
+            emitirSincronizacionCompleta();
+          }
+        });
+      }
+
+      const balanceActualizado = await obtenerBalanceTurnoActivo();
+      if (ioInstance && balanceActualizado) {
+        ioInstance.emit('caja:estado', {
+          abierta: Boolean(balanceActualizado),
+          sesion: balanceActualizado,
+          turno: balanceActualizado
+        });
+      }
+    };
+
     if (metodo_pago === 'mixto' || metodo_pago === 'Mixto') {
       Promise.all([
         (monto_efectivo && monto_efectivo > 0) ? execInsert(monto_efectivo, 'Efectivo', detalles) : Promise.resolve(null),
@@ -947,15 +1029,7 @@ router.post('/ventas', (req, res) => {
         res.json({ success: true, ids: results });
 
         liberarMesaYCerrarPedidos();
-
-        const balanceActualizado = await obtenerBalanceTurnoActivo();
-        if (io) {
-          io.emit('caja:estado', {
-            abierta: Boolean(balanceActualizado),
-            sesion: balanceActualizado,
-            turno: balanceActualizado
-          });
-        }
+        emitirPulsoFinal();
       }).catch(err => {
         res.status(400).json({ error: err.message });
       });
@@ -966,15 +1040,7 @@ router.post('/ventas', (req, res) => {
           res.json({ success: true, id: ventaId });
 
           liberarMesaYCerrarPedidos();
-
-          const balanceActualizado = await obtenerBalanceTurnoActivo();
-          if (io) {
-            io.emit('caja:estado', {
-              abierta: Boolean(balanceActualizado),
-              sesion: balanceActualizado,
-              turno: balanceActualizado
-            });
-          }
+          emitirPulsoFinal();
         })
         .catch(err => {
           res.status(400).json({ error: err.message });

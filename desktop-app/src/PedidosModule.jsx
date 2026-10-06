@@ -35,21 +35,21 @@ const sugerirEmojiPorCategoria = (categoriaTexto) => {
 };
 
 const DEFAULT_CATEGORIAS = [
-  { id: 1, nombre: "Hamburguesas", emoji: "🍔", color: "var(--cat-green)" },
-  { id: 2, nombre: "Perros Calientes", emoji: "🌭", color: "var(--cat-brown)" },
-  { id: 3, nombre: "Burritos", emoji: "🌯", color: "var(--cat-grey)" },
-  { id: 4, nombre: "Salchipapas", emoji: "🍟", color: "var(--cat-green)" },
-  { id: 5, nombre: "Mazorcada", emoji: "🌽", color: "var(--cat-brown)" },
-  { id: 6, nombre: "Jugos Naturales", emoji: "🥤", color: "var(--cat-grey)" },
-  { id: 7, nombre: "Limonadas", emoji: "🍋", color: "var(--cat-green)" },
-  { id: 8, nombre: "Cervezas", emoji: "🍺", color: "var(--cat-brown)" },
-  { id: 9, nombre: "Bebidas Calientes", emoji: "☕", color: "var(--cat-grey)" },
-  { id: 10, nombre: "Adicionales", emoji: "🍟", color: "var(--cat-orange)" },
+  { id: "hamburguesas", nombre: "Hamburguesas", emoji: "🍔", color: "var(--cat-green)" },
+  { id: "perros calientes", nombre: "Perros Calientes", emoji: "🌭", color: "var(--cat-brown)" },
+  { id: "burritos", nombre: "Burritos", emoji: "🌯", color: "var(--cat-grey)" },
+  { id: "salchipapas", nombre: "Salchipapas", emoji: "🍟", color: "var(--cat-green)" },
+  { id: "mazorcada", nombre: "Mazorcada", emoji: "🌽", color: "var(--cat-brown)" },
+  { id: "jugos naturales", nombre: "Jugos Naturales", emoji: "🥤", color: "var(--cat-grey)" },
+  { id: "limonadas", nombre: "Limonadas", emoji: "🍋", color: "var(--cat-green)" },
+  { id: "cervezas", nombre: "Cervezas y Licores", emoji: "🍺", color: "var(--cat-brown)" },
+  { id: "bebidas calientes", nombre: "Bebidas Calientes", emoji: "☕", color: "var(--cat-grey)" },
+  { id: "adicionales", nombre: "Adicionales", emoji: "🍟", color: "var(--cat-orange)" },
 ];
 
 export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], pedidoEditando, setPedidoEditando, pedidos = [], categorias = [] }) {
   const [catLocales, setCatLocales] = useState([]);
-  const [categoriaActiva, setCategoriaActiva] = useState(1);
+  const [categoriaActiva, setCategoriaActiva] = useState('hamburguesas');
 
   useEffect(() => {
     if ((!categorias || categorias.length === 0) && serverUrl) {
@@ -72,7 +72,8 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
       const key = nomStr.toLowerCase();
       if (!map.has(key)) {
         map.set(key, {
-          id: id || `cat_${key}`,
+          id: key,
+          originalId: id,
           nombre: nomStr,
           emoji: emoji || sugerirEmojiPorCategoria(nomStr),
           color: color || 'var(--cat-green)'
@@ -80,27 +81,56 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
       }
     };
 
-    DEFAULT_CATEGORIAS.forEach(c => addCat(c.id, c.nombre, c.emoji, c.color));
-
     const catsServidor = [...(categorias || []), ...(catLocales || [])];
-    catsServidor.forEach(c => {
-      const nom = typeof c === 'string' ? c : (c.nombre || c.categoria);
-      const id = typeof c === 'object' && c !== null ? c.id : null;
-      const emoji = typeof c === 'object' && c !== null ? c.emoji : null;
-      const color = typeof c === 'object' && c !== null ? c.color : null;
-      addCat(id, nom, emoji, color);
-    });
+    if (catsServidor.length > 0) {
+      catsServidor.forEach(c => {
+        const nom = typeof c === 'string' ? c : (c?.nombre || c?.categoria || '');
+        const id = typeof c === 'object' && c !== null ? c.id : null;
+        const emoji = typeof c === 'object' && c !== null ? c.emoji : null;
+        const color = typeof c === 'object' && c !== null ? c.color : null;
+        if (nom) addCat(id, nom, emoji, color);
+      });
+    }
 
     (productos || []).forEach(p => {
+      if (!p) return;
       const rawCat = p.categoria ?? p.categoria_nombre ?? p.cat;
       const nom = typeof rawCat === 'string' ? rawCat : (rawCat?.nombre || rawCat?.categoria || '');
       if (nom) addCat(p.categoria_id || p.cat, nom, p.emoji_categoria, null);
     });
 
+    // Si aún no hay ninguna categoría registrada ni en servidor ni en productos, usar DEFAULT_CATEGORIAS como fallback inicial
+    if (map.size === 0) {
+      DEFAULT_CATEGORIAS.forEach(c => addCat(c.id, c.nombre, c.emoji, c.color));
+    }
+
     return Array.from(map.values()).sort((a, b) => 
-      a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
+      (a.nombre || '').localeCompare(b.nombre || '', 'es', { sensitivity: 'base' })
     );
   }, [categorias, catLocales, productos]);
+
+  const [busquedaCategoria, setBusquedaCategoria] = useState('');
+
+  const listaCategoriasFiltradas = React.useMemo(() => {
+    if (!busquedaCategoria.trim()) return listaCategoriasDinamicas;
+    const q = busquedaCategoria.toLowerCase().trim();
+    return listaCategoriasDinamicas.filter(c => {
+      if (!c || !c.nombre) return false;
+      const cNom = c.nombre.toLowerCase();
+      const matchCat = cNom.includes(q);
+      if (matchCat) return true;
+      return (productos || []).some(p => {
+        if (!p) return false;
+        const pCat = String(p.categoria || p.categoria_nombre || p.cat || '').toLowerCase().trim();
+        const matchProdCat = pCat === String(c.id || '').toLowerCase() || pCat === cNom || (cNom && pCat.includes(cNom));
+        if (!matchProdCat) return false;
+        const nom = String(p.nombre || '').toLowerCase();
+        const desc = String(p.desc || p.descripcion || '').toLowerCase();
+        return nom.includes(q) || desc.includes(q);
+      });
+    });
+  }, [listaCategoriasDinamicas, busquedaCategoria, productos]);
+
   const [carrito, setCarrito] = useState([]);
   const [mesaSeleccionada, setMesaSeleccionada] = useState('');
   const [nombreCliente, setNombreCliente] = useState('');
@@ -117,15 +147,24 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
   const handleSelectMesa = (m) => {
     const mesaNumStr = String(m.num || m.id || m.numero || '');
     
-    // Si la mesa ya tiene una comanda activa, cargarla automáticamente para agregar ítems
-    const pedidoActivo = (pedidos || []).find(p => 
+    // Verificar si la mesa ya tiene una comanda activa u ocupada
+    const tieneComandaActiva = (pedidos || []).some(p => 
       (String(p.mesa_id || p.mesa) === mesaNumStr || String(p.mesa_id || p.mesa) === `Mesa ${mesaNumStr}`) &&
       !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
       (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
     );
+    const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
 
-    if (pedidoActivo && setPedidoEditando) {
-      setPedidoEditando(pedidoActivo);
+    const esMismaMesaQueEditando = pedidoEditando && (
+      String(pedidoEditando.mesa) === mesaNumStr || 
+      String(pedidoEditando.mesa) === `Mesa ${mesaNumStr}` ||
+      Number(pedidoEditando.mesa) === Number(mesaNumStr)
+    );
+
+    if (estaOcupada && !esMismaMesaQueEditando) {
+      toast.error(`🚫 La Mesa ${m.num || mesaNumStr} está ocupada. No se puede seleccionar para tomar un nuevo pedido.`);
+      setIsDropdownOpen(false);
+      return;
     }
 
     setMesaSeleccionada(mesaNumStr);
@@ -163,25 +202,42 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
   }, [pedidoEditando, productos]);
 
   const catObjActivo = listaCategoriasDinamicas.find(c => 
-    String(c.id) === String(categoriaActiva) || 
-    c.nombre.toLowerCase() === String(categoriaActiva).toLowerCase()
+    c && c.nombre && (
+      String(c.id).toLowerCase() === String(categoriaActiva || '').toLowerCase() || 
+      c.nombre.toLowerCase() === String(categoriaActiva || '').toLowerCase()
+    )
   ) || listaCategoriasDinamicas[0];
 
-  const nombreCatActiva = catObjActivo ? catObjActivo.nombre.toLowerCase() : '';
+  const nombreCatActiva = catObjActivo ? (catObjActivo.nombre || '').toLowerCase() : '';
   const idCatActiva = catObjActivo ? catObjActivo.id : null;
 
   const prodsFromDb = (productos || []).filter(p => {
+    if (!p) return false;
+    const esDisponible = (p.disponible !== 0 && p.disponible !== false && p.disponible !== '0' && p.disponible !== 'false') && 
+                         (p.disp !== 0 && p.disp !== false && p.disp !== '0' && p.disp !== 'false');
+    if (!esDisponible) return false;
+
+    const q = busquedaCategoria.toLowerCase().trim();
+    const nom = String(p.nombre || '').toLowerCase();
+    const desc = String(p.desc || p.descripcion || '').toLowerCase();
+    const pCatName = String(p.categoria || p.categoria_nombre || p.cat || '').toLowerCase().trim();
+
+    // Si el usuario ingresó un texto de búsqueda
+    if (q) {
+      const matchText = nom.includes(q) || desc.includes(q) || (pCatName && pCatName.includes(q));
+      if (matchText) return true;
+      return false;
+    }
+
     if (!catObjActivo) return true;
 
-    if (idCatActiva === 10 || nombreCatActiva.includes('adicional')) {
-      const catName = String(p.categoria || p.categoria_nombre || p.cat || '').toLowerCase();
-      if (catName.includes('adicional') || catName.includes('extra')) return true;
+    if (idCatActiva === 'adicionales' || nombreCatActiva.includes('adicional')) {
+      if (pCatName.includes('adicional') || pCatName.includes('extra')) return true;
     }
 
     const pCatId = p.cat ?? p.categoria_id;
-    if (pCatId !== undefined && pCatId !== null && String(pCatId) === String(idCatActiva)) return true;
+    if (pCatId !== undefined && pCatId !== null && catObjActivo.originalId !== undefined && catObjActivo.originalId !== null && String(pCatId) === String(catObjActivo.originalId)) return true;
 
-    const pCatName = String(p.categoria || p.categoria_nombre || p.cat || '').toLowerCase().trim();
     if (pCatName && nombreCatActiva) {
       if (pCatName === nombreCatActiva) return true;
       if (pCatName.includes(nombreCatActiva) || nombreCatActiva.includes(pCatName)) return true;
@@ -190,20 +246,22 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     return false;
   });
 
-  const adicionalesMapped = ((idCatActiva === 10 || nombreCatActiva.includes('adicional')) && Array.isArray(adicionales))
+  const adicionalesMapped = ((idCatActiva === 'adicionales' || nombreCatActiva.includes('adicional')) && Array.isArray(adicionales))
     ? adicionales.filter(a => a.disponible !== 0).map(a => ({
         id: `adic_${a.id}`,
         original_adic_id: a.id,
         nombre: a.nombre,
         precio: Number(a.precio || 0),
         emoji: '🍟',
-        cat: 10,
+        cat: 'adicionales',
         categoria: 'Adicionales',
         es_adicional_directo: true
       })).filter(a => !prodsFromDb.some(p => p.nombre.toLowerCase().trim() === a.nombre.toLowerCase().trim()))
     : [];
 
-  const productosFiltrados = [...prodsFromDb, ...adicionalesMapped];
+  const productosFiltrados = [...prodsFromDb, ...adicionalesMapped].sort((a, b) => 
+    (a.nombre || '').localeCompare(b.nombre || '', 'es', { sensitivity: 'base' })
+  );
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value || 0);
@@ -343,6 +401,21 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
     if (carrito.length === 0) return toast.error('El carrito está vacío');
     if (!paraLlevar && !mesaSeleccionada) return toast.error('Debes seleccionar una mesa o marcar como Para Llevar');
 
+    if (!paraLlevar && !pedidoEditando) {
+      const mesaTarget = String(mesaSeleccionada);
+      const tieneComandaActiva = (pedidos || []).some(p =>
+        (String(p.mesa_id || p.mesa) === mesaTarget || String(p.mesa_id || p.mesa) === `Mesa ${mesaTarget}`) &&
+        !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase()) &&
+        (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false)
+      );
+      const mObj = (mesas || []).find(m => String(m.num || m.id || m.numero) === mesaTarget);
+      const estaOcupada = (mObj && (mObj.estado === 'ocupada' || mObj.estado === 'cuenta')) || tieneComandaActiva;
+
+      if (estaOcupada) {
+        return toast.error(`🚫 La Mesa ${mesaSeleccionada} está ocupada. No se puede crear un nuevo pedido en una mesa ocupada.`);
+      }
+    }
+
     try {
       if (pedidoEditando) {
         // Enviar edición
@@ -389,24 +462,7 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
       if (setPedidoEditando) setPedidoEditando(null);
     } catch (error) {
       console.error('Error enviando pedido:', error);
-      if (error?.response?.status === 409 || (error?.response?.data?.error && String(error.response.data.error).toLowerCase().includes('activo'))) {
-        if (mesaSeleccionada) {
-          const mesaTarget = String(mesaSeleccionada);
-          const pedActivo = (pedidos || []).find(p =>
-            (String(p.mesa_id || p.mesa) === mesaTarget || String(p.mesa_id || p.mesa) === `Mesa ${mesaTarget}`) &&
-            !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(String(p.estado || '').toLowerCase())
-          );
-          if (pedActivo && setPedidoEditando) {
-            setPedidoEditando(pedActivo);
-          }
-        }
-        toast.success("✅ Ítems agregados a la orden abierta de la mesa.");
-        setCarrito([]);
-        setMesaSeleccionada('');
-        setParaLlevar(false);
-        return;
-      }
-      const msg = error?.response?.data?.error || 'Error al enviar la comanda al servidor. Revisa la conexión.';
+      const msg = error?.response?.data?.error || `🚫 La Mesa ${mesaSeleccionada || ''} está ocupada o hubo un error al enviar el pedido.`;
       toast.error(msg);
     }
   };
@@ -770,11 +826,27 @@ export function PedidosModule({ productos, mesas, serverUrl, adicionales = [], p
           <div style={{ fontWeight: 'bold', fontSize: '18px', color: 'var(--header-bg)', marginBottom: '8px', textAlign: 'center' }}>
             Categorías
           </div>
-          {listaCategoriasDinamicas.map(cat => {
-            const isSelected = catObjActivo && (
-              String(cat.id) === String(catObjActivo.id) ||
-              cat.nombre.toLowerCase() === catObjActivo.nombre.toLowerCase()
-            );
+          {/* Buscador de Categorías */}
+          <div style={{ padding: '0 4px 8px 4px' }}>
+            <input 
+              type="text" 
+              placeholder="🔍 Buscar categoría o producto..." 
+              value={busquedaCategoria}
+              onChange={e => setBusquedaCategoria(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                borderRadius: '20px',
+                border: '1px solid var(--border)',
+                backgroundColor: 'white',
+                fontSize: '13px',
+                outline: 'none',
+                boxSizing: 'border-box'
+              }}
+            />
+          </div>
+          {listaCategoriasFiltradas.map(cat => {
+            const isSelected = Boolean(catObjActivo && cat.id === catObjActivo.id);
             return (
               <button
                 key={cat.id}

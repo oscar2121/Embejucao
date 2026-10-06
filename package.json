@@ -7,7 +7,8 @@
     "android": "react-native run-android",
     "ios": "react-native run-ios",
     "server": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "jest --runInBand"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
@@ -43,6 +44,8 @@
     "@react-native-community/cli": "^15.0.1",
     "@react-native-community/cli-platform-android": "^15.0.1",
     "@react-native/babel-preset": "^0.76.9",
-    "@react-native/metro-config": "^0.76.9"
+    "@react-native/metro-config": "^0.76.9",
+    "jest": "^30.5.2",
+    "supertest": "^7.3.0"
   }
 }

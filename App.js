@@ -1350,6 +1350,17 @@ export default function App() {
       return;
     }
 
+    const orderObj = mesaActivaSelected || pedidos.find(p => p.deudor === deudor && (p.estado === 'fiado' || p.estado === 'credito'));
+    if (orderObj) {
+      const totalCuenta = Number(orderObj.total || orderObj.total_cuenta || 0);
+      const abonoPrevio = Number(orderObj.abono_parcial || 0);
+      const saldoPendiente = Math.max(0, totalCuenta - abonoPrevio);
+      if (saldoPendiente > 0 && valor > saldoPendiente + 1) {
+        Alert.alert('Monto excedido', `El abono ($${valor.toLocaleString('es-CO')}) supera el saldo pendiente de $${saldoPendiente.toLocaleString('es-CO')}.`);
+        return;
+      }
+    }
+
     try {
       setCargandoAbono(true);
       let cleanIP = (serverIP || '').trim();
@@ -2417,8 +2428,14 @@ export default function App() {
             setSesionActiva={setSesionActiva}
             loggedUser={loggedUser}
             onSolicitarCancelar={(p) => {
-              if (p.estado === 'completado') {
-                Alert.alert("Error", "Este pedido ya fue facturado y no puede eliminarse.");
+              if (!p) return;
+              const estadoLower = String(p.estado || '').toLowerCase().trim();
+              const itemsArr = Array.isArray(p.items) ? p.items : (typeof p.items === 'string' ? JSON.parse(p.items || '[]') : []);
+              const yaSalioDeCocina = ['listo', 'despachado', 'completado', 'cuenta', 'cobrado', 'entregado'].includes(estadoLower) ||
+                (Array.isArray(itemsArr) && itemsArr.length > 0 && itemsArr.some(i => i && String(i.estado || '').toLowerCase() === 'listo'));
+
+              if (yaSalioDeCocina) {
+                Alert.alert("No se puede cancelar", "⚠️ Este pedido ya salió de la cocina o ya está preparado y no se puede cancelar.");
                 return;
               }
               setPedidoACancelar(p);
@@ -2582,9 +2599,10 @@ export default function App() {
 
                         if (res.data && res.data.success) {
                           // Liberar mesa localmente si es física
-                          const mesaNum = Number(pedidoACancelar.mesa);
-                          if (!isNaN(mesaNum)) {
-                            setMesas(prev => prev.map(m => m.num === mesaNum ? { ...m, estado: 'libre' } : m));
+                          const mesaTarget = String(pedidoACancelar.mesa || '');
+                          const mDigits = mesaTarget.replace(/\D/g, '');
+                          if (mDigits) {
+                            setMesas(prev => prev.map(m => (String(m.num) === mDigits || String(m.id) === mDigits) ? { ...m, estado: 'libre' } : m));
                           }
                           // Quitar de pedidos locales
                           setPedidos(prev => prev.filter(p => p.uuid !== pedidoACancelar.uuid));
@@ -4170,7 +4188,8 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                   return obtenerCategoriaMovil(prod).toLowerCase() === catFiltroMovil.toLowerCase();
                 })
                 .map((prod) => {
-                  const disponible = prod.disp !== false;
+                  const disponible = (prod.disp !== 0 && prod.disp !== false && prod.disp !== '0' && prod.disp !== 'false') && 
+                                     (prod.disponible !== 0 && prod.disponible !== false && prod.disponible !== '0' && prod.disponible !== 'false');
                   return (
                     <View
                       key={prod.id}
@@ -4196,7 +4215,7 @@ function AdminView({ productos, setProductos: realSetProductos, mesas, setMesas,
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                           {/* Botón estado disponibilidad */}
                           <TouchableOpacity
-                            onPress={() => toggleProducto(prod.id, prod.disp)}
+                            onPress={() => toggleProducto(prod.id, disponible)}
                             style={{
                               backgroundColor: disponible ? 'rgba(22,163,74,0.15)' : 'rgba(220,38,38,0.15)',
                               paddingHorizontal: 8,

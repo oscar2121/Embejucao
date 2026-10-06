@@ -57,6 +57,7 @@ export default function TomarPedidoScreen({
   setAbonoModalVisible
 }) {
   const [catActiva, setCatActiva] = useState('Otros');
+  const [busquedaCategoria, setBusquedaCategoria] = useState('');
 
   const safeProductos = productos || [];
   const safeCategorias = categorias || [];
@@ -95,58 +96,20 @@ export default function TomarPedidoScreen({
     const estaOcupada = m.estado === 'ocupada' || m.estado === 'cuenta' || tieneComandaActiva;
 
     if (estaOcupada) {
-      const pedidosActivosDeMesa = (pedidos || []).filter(p => {
-        const estadoValido = !['cobrado', 'cancelado', 'archivado', 'completado'].includes(String(p.estado || '').toLowerCase());
-        const mesaMatch = String(p.mesa || '').trim().toLowerCase() === mesaNumStr.toLowerCase()
-          || String(p.mesa || '').trim().toLowerCase() === `mesa ${mesaNumStr}`.toLowerCase()
-          || Number(p.mesa) === Number(mesaNumStr);
-        return estadoValido && mesaMatch;
-      });
-      const activeOrder = pedidosActivosDeMesa[0];
-
-      Alert.alert(
-        "Mesa Ocupada",
-        `La Mesa ${m.num} ya tiene una comanda activa. No se puede crear un pedido nuevo duplicado.`,
-        [
-          activeOrder ? {
-            text: "Cargar comanda activa para añadir productos",
-            onPress: () => {
-              setPedidoEditando(activeOrder);
-              const itemsForCart = (activeOrder.items || []).map(item => {
-                const prod = productos.find(p => p.nombre === item.nombre) || {};
-                return {
-                  id: prod.id || ('temp_' + item.nombre),
-                  cat: item.cat || prod.cat,
-                  nombre: item.nombre,
-                  precio: item.precio || prod.precio || 0,
-                  precio_base: item.precio_base || prod.precio || 0,
-                  adicionales: item.adicionales || [],
-                  observaciones: item.observaciones || item.nota || '',
-                  desc: prod.desc || '',
-                  emoji: prod.emoji || '🍽️',
-                  cantidad: item.cantidad || 1,
-                  nota: item.nota || item.observaciones || '',
-                  estado: item.estado || 'pendiente'
-                };
-              });
-              setCarrito(itemsForCart);
-              setMesaSel(m);
-              setPaso(2);
-            }
-          } : {
-            text: "Ver detalles de la mesa",
-            onPress: () => {
-              setMesaActivaSelected(m);
-              setMesaActivaModalVisible(true);
-            }
-          },
-          {
-            text: "Cerrar / Volver",
-            style: "cancel"
-          }
-        ]
+      const esMismaMesaQueEditando = pedidoEditando && (
+        String(pedidoEditando.mesa) === mesaNumStr || 
+        String(pedidoEditando.mesa) === `Mesa ${mesaNumStr}` ||
+        Number(pedidoEditando.mesa) === Number(mesaNumStr)
       );
-      return;
+
+      if (!esMismaMesaQueEditando) {
+        Alert.alert(
+          "Mesa Ocupada",
+          `La Mesa ${m.num} está ocupada y ya tiene una comanda activa. No se puede seleccionar para tomar un pedido nuevo.`,
+          [{ text: "Entendido", style: "cancel" }]
+        );
+        return;
+      }
     }
 
     const draft = borradores[m.num];
@@ -380,7 +343,8 @@ export default function TomarPedidoScreen({
   const prods = (safeProductos || []).filter(p => {
     if (!p) return false;
     const catVal = String(p?.categoria || p?.cat || 'Otros');
-    const dispVal = p?.disp !== false && p?.disponible !== false;
+    const dispVal = (p?.disp !== 0 && p?.disp !== false && p?.disp !== '0' && p?.disp !== 'false') && 
+                    (p?.disponible !== 0 && p?.disponible !== false && p?.disponible !== '0' && p?.disponible !== 'false');
     return (catVal === String(catActiva) || (catActiva === 'Otros' && !p?.categoria && !p?.cat)) && dispVal;
   });
 
@@ -878,68 +842,136 @@ export default function TomarPedidoScreen({
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
+        {/* Buscador de Categorías / Productos */}
+        <View style={{ paddingHorizontal: 12, paddingTop: 6, paddingBottom: 4 }}>
+          <View style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            backgroundColor: 'rgba(245,230,200,0.08)',
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: 'rgba(245,230,200,0.15)',
+            paddingHorizontal: 12,
+            paddingVertical: 8
+          }}>
+            <Ionicons name="search" size={18} color={C.cream2 || '#E2E8F0'} style={{ marginRight: 8 }} />
+            <TextInput
+              style={{ flex: 1, color: C.cream || '#FFFFFF', fontSize: 14, padding: 0 }}
+              placeholder="🔍 Buscar categoría o producto..."
+              placeholderTextColor={C.text3 || '#94A3B8'}
+              value={busquedaCategoria}
+              onChangeText={setBusquedaCategoria}
+            />
+            {busquedaCategoria.length > 0 && (
+              <TouchableOpacity onPress={() => setBusquedaCategoria('')}>
+                <Ionicons name="close-circle" size={18} color={C.cream2 || '#E2E8F0'} />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
         {/* Categorías scroll horizontal */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 10, gap: 8 }}
+          contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8, gap: 8 }}
           style={{ flexGrow: 0 }}
         >
-          {Array.from(new Set((safeProductos || []).map(p => String(p?.categoria || p?.cat || 'Otros')).filter(Boolean))).map(catVal => {
-            const origCat = (safeCategorias || []).find(c => String(c?.id) === String(catVal) || String(c?.nombre).toLowerCase() === String(catVal).toLowerCase());
-            const origThemeCat = (CATEGORIAS || []).find(c => String(c?.id) === String(catVal) || String(c?.nombre).toLowerCase() === String(catVal).toLowerCase());
-            const catName = origCat?.nombre || origThemeCat?.nombre || String(catVal);
-            const isActiva = String(catActiva) === String(catVal);
-            return (
-              <TouchableOpacity
-                key={String(catVal)}
-                style={{
-                  paddingVertical: 8,
-                  paddingHorizontal: 14,
-                  borderRadius: 20,
-                  borderWidth: 1.5,
-                  borderColor: isActiva ? C.orange : "rgba(245,230,200,0.2)",
-                  backgroundColor: isActiva ? C.orange : "rgba(245,230,200,0.07)",
-                }}
-                onPress={() => setCatActiva(catVal)}
-              >
-                <Text
+          {Array.from(new Set((safeProductos || []).map(p => String(p?.categoria || p?.cat || 'Otros')).filter(Boolean)))
+            .filter(catVal => {
+              if (!busquedaCategoria.trim()) return true;
+              const origCat = (safeCategorias || []).find(c => String(c?.id || '') === String(catVal) || String(c?.nombre || '').toLowerCase() === String(catVal).toLowerCase());
+              const origThemeCat = (CATEGORIAS || []).find(c => String(c?.id || '') === String(catVal) || String(c?.nombre || '').toLowerCase() === String(catVal).toLowerCase());
+              const catName = String(origCat?.nombre || origThemeCat?.nombre || catVal || '');
+              const q = busquedaCategoria.toLowerCase().trim();
+              if (catName.toLowerCase().includes(q)) return true;
+              return (safeProductos || []).some(p => {
+                const pCat = String(p?.categoria || p?.cat || 'Otros');
+                if (pCat !== catVal && pCat.toLowerCase() !== String(catVal).toLowerCase()) return false;
+                const nom = String(p?.nombre || '').toLowerCase();
+                const desc = String(p?.desc || p?.descripcion || '').toLowerCase();
+                return nom.includes(q) || desc.includes(q);
+              });
+            })
+            .sort((aCatVal, bCatVal) => {
+              const aOrig = (safeCategorias || []).find(c => String(c?.id || '') === String(aCatVal) || String(c?.nombre || '').toLowerCase() === String(aCatVal).toLowerCase()) || (CATEGORIAS || []).find(c => String(c?.id || '') === String(aCatVal) || String(c?.nombre || '').toLowerCase() === String(aCatVal).toLowerCase());
+              const bOrig = (safeCategorias || []).find(c => String(c?.id || '') === String(bCatVal) || String(c?.nombre || '').toLowerCase() === String(bCatVal).toLowerCase()) || (CATEGORIAS || []).find(c => String(c?.id || '') === String(bCatVal) || String(c?.nombre || '').toLowerCase() === String(bCatVal).toLowerCase());
+              const aName = String(aOrig?.nombre || aCatVal || '');
+              const bName = String(bOrig?.nombre || bCatVal || '');
+              return aName.localeCompare(bName, 'es', { sensitivity: 'base' });
+            })
+            .map(catVal => {
+              const origCat = (safeCategorias || []).find(c => String(c?.id || '') === String(catVal) || String(c?.nombre || '').toLowerCase() === String(catVal).toLowerCase());
+              const origThemeCat = (CATEGORIAS || []).find(c => String(c?.id || '') === String(catVal) || String(c?.nombre || '').toLowerCase() === String(catVal).toLowerCase());
+              const catName = String(origCat?.nombre || origThemeCat?.nombre || catVal || '');
+              const isActiva = String(catActiva) === String(catVal);
+              return (
+                <TouchableOpacity
+                  key={String(catVal)}
                   style={{
-                    fontSize: 12,
-                    fontWeight: isActiva ? "700" : "500",
-                    color: isActiva ? "white" : "rgba(245,230,200,0.7)",
+                    paddingVertical: 8,
+                    paddingHorizontal: 14,
+                    borderRadius: 20,
+                    borderWidth: 1.5,
+                    borderColor: isActiva ? C.orange : "rgba(245,230,200,0.2)",
+                    backgroundColor: isActiva ? C.orange : "rgba(245,230,200,0.07)",
                   }}
-                  numberOfLines={1}
+                  onPress={() => setCatActiva(catVal)}
                 >
-                  {catName}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: isActiva ? "700" : "500",
+                      color: isActiva ? "white" : "rgba(245,230,200,0.7)",
+                    }}
+                    numberOfLines={1}
+                  >
+                    {catName}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
         </ScrollView>
 
         {/* Productos */}
         <View style={s.prodsGrid}>
-          {(prods || []).map(p => {
-            if (!p) return null;
-            const precioFormatted = Number(p?.precio || 0).toLocaleString("es-CO");
-            return (
-              <TouchableOpacity key={p?.id || Math.random()} style={s.prodCard} onPress={() => iniciarAgregarProducto(p)}>
-                {p?.imagen ? (
-                  <Image
-                    source={{ uri: `http://${serverIP}:3001${p.imagen}` }}
-                    style={{ width: 80, height: 80, borderRadius: 12, marginBottom: 8 }}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <Text style={{ fontSize: 28 }}>{p?.emoji || '🍽️'}</Text>
-                )}
-                <Text style={s.prodNombre}>{p?.nombre || 'Producto'}</Text>
-                <Text style={s.prodDesc} numberOfLines={2}>{p?.desc || p?.descripcion || ''}</Text>
-                <Text style={s.prodPrecio}>${precioFormatted}</Text>
-              </TouchableOpacity>
-            );
-          })}
+          {(() => {
+            const prodsFiltradosPorCat = (safeProductos || []).filter(p => {
+              if (!p) return false;
+              const catP = String(p.categoria || p.cat || 'Otros');
+              const catA = String(catActiva);
+              const matchCat = catP === catA || catP.toLowerCase() === catA.toLowerCase();
+              if (busquedaCategoria.trim()) {
+                const q = busquedaCategoria.toLowerCase().trim();
+                const nom = String(p.nombre || '').toLowerCase();
+                const desc = String(p.desc || p.descripcion || '').toLowerCase();
+                const matchNombre = nom.includes(q) || desc.includes(q);
+                return matchCat || matchNombre;
+              }
+              return matchCat;
+            }).sort((a, b) => (a?.nombre || '').localeCompare(b?.nombre || '', 'es', { sensitivity: 'base' }));
+
+            return prodsFiltradosPorCat.map(p => {
+              if (!p) return null;
+              const precioFormatted = Number(p?.precio || 0).toLocaleString("es-CO");
+              return (
+                <TouchableOpacity key={p?.id || Math.random()} style={s.prodCard} onPress={() => iniciarAgregarProducto(p)}>
+                  {p?.imagen ? (
+                    <Image
+                      source={{ uri: `http://${serverIP}:3001${p.imagen}` }}
+                      style={{ width: 80, height: 80, borderRadius: 12, marginBottom: 8 }}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Text style={{ fontSize: 28 }}>{p?.emoji || '🍽️'}</Text>
+                  )}
+                  <Text style={s.prodNombre}>{p?.nombre || 'Producto'}</Text>
+                  <Text style={s.prodDesc} numberOfLines={2}>{p?.desc || p?.descripcion || ''}</Text>
+                  <Text style={s.prodPrecio}>${precioFormatted}</Text>
+                </TouchableOpacity>
+              );
+            });
+          })()}
         </View>
 
         {/* Carrito */}

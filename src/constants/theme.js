@@ -28,7 +28,7 @@ export const CATEGORIAS = [
   { id: 5, nombre: "🌽 Mazorcada" },
   { id: 6, nombre: "🥤 Jugos Naturales" },
   { id: 7, nombre: "🍋 Limonadas" },
-  { id: 8, nombre: "🍺 Bebidas / Cervezas" },
+  { id: 8, nombre: "🍺 Cervezas y Licores" },
   { id: 9, nombre: "☕ Bebidas Calientes" },
   { id: 10, nombre: "🍟 Adicionales" },
 ];

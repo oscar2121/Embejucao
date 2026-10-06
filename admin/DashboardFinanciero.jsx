@@ -6,7 +6,7 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
   const [dashboardRango, setDashboardRango] = useState('hoy');
   const [dashboardFechaPersonalizada, setDashboardFechaPersonalizada] = useState('');
   const [modalGastoOpen, setModalGastoOpen] = useState(false);
-  const [gastoForm, setGastoForm] = useState({ descripcion: '', categoria: 'Servicios', valor: '', fuente_financiamiento: 'caja_negocio' });
+  const [gastoForm, setGastoForm] = useState({ descripcion: '', categoria: 'Servicios', valor: '', metodo_pago: 'efectivo', fuente_financiamiento: 'caja_negocio' });
 
   const cargarDashboard = async () => {
     try {
@@ -79,30 +79,13 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
       {/* Encabezado */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <h2 style={{ margin: 0, color: 'var(--brand, #144c3c)', fontSize: '26px' }}>Dashboard Financiero</h2>
+          <h2 style={{ margin: 0, color: 'var(--brand, #144c3c)', fontSize: '26px' }}>Situación Actual</h2>
           <button
             onClick={cargarDashboard}
             style={{ background: 'none', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '4px 8px', cursor: 'pointer' }}
             title="Actualizar datos"
           >
             🔄
-          </button>
-          <button
-            onClick={() => setModalGastoOpen(true)}
-            style={{
-              backgroundColor: '#e07a5f',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '8px',
-              padding: '7px 14px',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px'
-            }}
-          >
-            ➕ Registrar Gasto
           </button>
         </div>
 
@@ -286,6 +269,7 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                   descripcion: gastoForm.descripcion,
                   categoria: gastoForm.categoria,
                   valor: valorSanitizado,
+                  metodo_pago: gastoForm.metodo_pago || 'efectivo',
                   fuente_financiamiento: gastoForm.fuente_financiamiento || 'caja_negocio',
                   sesion_id: sesion?.id || null
                 }, {
@@ -296,11 +280,11 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                 });
 
                 setModalGastoOpen(false);
-                setGastoForm({ descripcion: '', categoria: 'Servicios', valor: '', fuente_financiamiento: 'caja_negocio' });
+                setGastoForm({ descripcion: '', categoria: 'Servicios', valor: '', metodo_pago: 'efectivo', fuente_financiamiento: 'caja_negocio' });
                 cargarDashboard();
               } catch (err) {
                 console.error('Error registrando gasto:', err);
-                alert('Error al registrar el gasto');
+                alert('Error al registrar el gasto: ' + (err.response?.data?.error || err.message));
               }
             }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
@@ -343,6 +327,18 @@ export default function DashboardFinanciero({ serverUrl, socket, adminToken }) {
                   placeholder="Ej. 50.000"
                   style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Método de Pago</label>
+                <select
+                  value={gastoForm.metodo_pago || 'efectivo'}
+                  onChange={(e) => setGastoForm({ ...gastoForm, metodo_pago: e.target.value })}
+                  style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                >
+                  <option value="efectivo">💵 Efectivo</option>
+                  <option value="transferencia">💳 Transferencia / Nequi / Daviplata</option>
+                </select>
               </div>
 
               <div>

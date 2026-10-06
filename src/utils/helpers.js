@@ -60,7 +60,7 @@ async function obtenerBalanceTurnoActivo() {
       const gastosRes = await dbGet(`
         SELECT 
           COALESCE(SUM(monto), 0) AS totalGastos,
-          COALESCE(SUM(CASE WHEN (LOWER(metodo_pago) = 'efectivo' OR metodo_pago IS NULL) THEN monto ELSE 0 END), 0) AS gastosEfectivo
+          COALESCE(SUM(CASE WHEN (LOWER(metodo_pago) = 'efectivo' OR metodo_pago IS NULL) AND (fuente_financiamiento IS NULL OR TRIM(fuente_financiamiento) = '' OR LOWER(fuente_financiamiento) = 'caja_negocio') THEN monto ELSE 0 END), 0) AS gastosEfectivo
         FROM gastos 
         WHERE datetime(fecha) >= datetime(?)
       `, [sesion.fecha_apertura]);

@@ -52,3 +52,7 @@ Thumbs.db
 
 desktop-app/dist-electron/
 cloudflared.exe
+
+*.db-wal
+*.db-shm
+embejucao.db*

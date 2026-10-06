@@ -15,20 +15,50 @@ const db = new sqlite3.Database(dbPath, (err) => {
   } else {
     console.log("📦 SQLite conectado firmemente en:", dbPath);
 
-    // Restaurar pedidos a crédito en la base de datos
+    // Configuración de Concurrencia y Blindaje en SQLite (Modo WAL y busy_timeout)
     db.serialize(() => {
-      // 1. Restaurar pedidos marcados como crédito / fiado para que vuelvan a la lista de Créditos
+      db.run('PRAGMA journal_mode = WAL;', (errWal) => {
+        if (errWal) console.error('Error configurando WAL:', errWal.message);
+        else console.log('✅ SQLite: Modo WAL activado');
+      });
+
+      db.run('PRAGMA busy_timeout = 5000;', (errBusy) => {
+        if (errBusy) console.error('Error configurando busy_timeout:', errBusy.message);
+        else console.log('✅ SQLite: busy_timeout configurado a 5000ms');
+      });
+
+      db.run('PRAGMA foreign_keys = ON;');
+      db.run('PRAGMA synchronous = NORMAL;');
+
+      // 1. Limpiar fiados saldados, sin items o con total 0
+      db.run(`
+        UPDATE pedidos 
+        SET estado = 'cobrado', pagado = 1 
+        WHERE LOWER(estado) IN ('fiado', 'credito') 
+          AND (
+            total = 0 
+            OR items IS NULL 
+            OR items = '' 
+            OR items = '[]'
+            OR (total > 0 AND abono_parcial >= total)
+          )
+      `, function(errClean) {
+        if (!errClean && this.changes > 0) {
+          console.log(`🧹 Se limpiaron / marcaron como cobrados ${this.changes} fiados vacíos o saldados.`);
+        }
+      });
+
+      // 2. Garantizar estado 'fiado' solo para pedidos verdaderamente pendientes de cobro
       db.run(`
         UPDATE pedidos 
         SET estado = 'fiado' 
-        WHERE (deudor IS NOT NULL AND TRIM(deudor) != '')
-           OR notas LIKE '%credito%' 
-           OR notas LIKE '%fiado%'
+        WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')
+          AND total > 0
+          AND (abono_parcial IS NULL OR abono_parcial < total)
+          AND (deudor IS NOT NULL AND TRIM(deudor) != '')
       `, function(errCred) {
-        if (errCred) {
-          console.error("Error al restaurar créditos:", errCred);
-        } else {
-          console.log(`Se restauraron ${this.changes} pedidos a crédito.`);
+        if (!errCred && this.changes > 0) {
+          console.log(`Se verificaron ${this.changes} pedidos a crédito pendientes.`);
         }
       });
 
@@ -40,7 +70,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
         db.run(`
           UPDATE pedidos 
           SET estado = 'cancelado', notas = COALESCE(notas, '') || ' [Cancelado por sistema (Ghost Order)]'
-          WHERE id = 77 OR (estado IN ('activo', 'pendiente', 'en_cocina', 'cocinando') AND datetime(fecha) <= datetime('now', '-2 hours'))
+          WHERE estado IN ('activo', 'pendiente', 'en_cocina', 'cocinando') AND datetime(fecha) <= datetime('now', '-24 hours')
         `, function(errLimpieza) {
           if (!errLimpieza && this.changes > 0) {
             console.log(`Se limpiaron ${this.changes} pedidos fantasma atascados en cocina.`);
@@ -256,6 +286,55 @@ db.serialize(() => {
       estado TEXT DEFAULT 'abierta'
     )
   `);
+
+  // 7.1 Abonos y Créditos
+  db.run(`
+    CREATE TABLE IF NOT EXISTS abonos_credito (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cliente_id TEXT,
+      deudor TEXT,
+      monto REAL,
+      metodo_pago TEXT,
+      fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, () => {
+    db.run(`ALTER TABLE abonos_credito ADD COLUMN cliente_id TEXT`, () => {});
+    db.run(`ALTER TABLE abonos_credito ADD COLUMN deudor TEXT`, () => {});
+    db.run(`ALTER TABLE abonos_credito ADD COLUMN monto REAL`, () => {});
+    db.run(`ALTER TABLE abonos_credito ADD COLUMN metodo_pago TEXT`, () => {});
+  });
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS abonos_fiados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      deudor TEXT,
+      monto REAL,
+      metodo_pago TEXT,
+      pedido_id INTEGER,
+      sesion_id INTEGER,
+      fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, () => {
+    db.run(`ALTER TABLE abonos_fiados ADD COLUMN deudor TEXT`, () => {});
+    db.run(`ALTER TABLE abonos_fiados ADD COLUMN monto REAL`, () => {});
+    db.run(`ALTER TABLE abonos_fiados ADD COLUMN metodo_pago TEXT`, () => {});
+    db.run(`ALTER TABLE abonos_fiados ADD COLUMN pedido_id INTEGER`, () => {});
+    db.run(`ALTER TABLE abonos_fiados ADD COLUMN sesion_id INTEGER`, () => {});
+  });
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS clientes_credito (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT UNIQUE,
+      saldo_pendiente REAL DEFAULT 0,
+      ultimo_abono REAL DEFAULT 0,
+      fecha_ultimo_abono TEXT
+    )
+  `, () => {
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN saldo_pendiente REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE clientes_credito ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
+  });
 
   // 8. Usuarios y Roles
   db.run(`

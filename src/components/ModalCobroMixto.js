@@ -108,6 +108,15 @@ export default function ModalCobroMixto({
                 <Text style={{ fontWeight: '700', color: C.text }}>📲 Transferencia</Text>
               </TouchableOpacity>
 
+              {!Boolean(pedidoSel?.deudor || pedidoSel?.uuids) && (
+                <TouchableOpacity
+                  onPress={() => { setMetodoPago('cortesia'); setEfectivoMixto(''); setNombreDeudor(''); Keyboard.dismiss(); }}
+                  style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'cortesia' && { borderColor: '#d97706', backgroundColor: 'rgba(217,119,6,0.1)' }]}
+                >
+                  <Text style={{ fontWeight: '700', color: C.text }}>🎁 Cortesía (Consumo Neutro)</Text>
+                </TouchableOpacity>
+              )}
+
               <TouchableOpacity
                 onPress={() => { setMetodoPago('mixto'); setNombreDeudor(''); Keyboard.dismiss(); }}
                 style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'mixto' && { borderColor: C.brand, backgroundColor: 'rgba(61,26,10,0.05)' }]}
@@ -115,13 +124,27 @@ export default function ModalCobroMixto({
                 <Text style={{ fontWeight: '700', color: C.text }}>💵 + 📲 Cobro Mixto</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                onPress={() => { setMetodoPago('fiado'); setEfectivoMixto(''); Keyboard.dismiss(); }}
-                style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'fiado' && { borderColor: C.yellow, backgroundColor: 'rgba(217,119,6,0.05)' }]}
-              >
-                <Text style={{ fontWeight: '700', color: C.text }}>👤 Dar a Crédito (Anotar en Cuenta)</Text>
-              </TouchableOpacity>
+              {!Boolean(pedidoSel?.deudor || pedidoSel?.uuids) && (
+                <TouchableOpacity
+                  onPress={() => { setMetodoPago('fiado'); setEfectivoMixto(''); Keyboard.dismiss(); }}
+                  style={[{ padding: 12, borderRadius: 8, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.surf2 }, metodoPago === 'fiado' && { borderColor: C.yellow, backgroundColor: 'rgba(217,119,6,0.05)' }]}
+                >
+                  <Text style={{ fontWeight: '700', color: C.text }}>👤 Dar a Crédito (Anotar en Cuenta)</Text>
+                </TouchableOpacity>
+              )}
             </View>
+
+            {/* Detalle para Cortesía */}
+            {metodoPago === 'cortesia' && (
+              <View style={{ marginTop: 14, padding: 12, backgroundColor: '#FEF3C7', borderRadius: 8, borderWidth: 1, borderColor: '#FDE68A' }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#92400E', textAlign: 'center' }}>
+                  🎁 Consumo de Cortesía
+                </Text>
+                <Text style={{ fontSize: 12, color: '#B45309', textAlign: 'center', marginTop: 4 }}>
+                  El pedido se marcará como cobrado y se descontará del inventario. El ingreso a la caja será neutro ($0.00).
+                </Text>
+              </View>
+            )}
 
             {/* Detalle para Efectivo (con cálculo de devuelta) */}
             {metodoPago === 'efectivo' && (
@@ -137,7 +160,7 @@ export default function ModalCobroMixto({
                 />
                 {recibidoNum > 0 && (
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, padding: 12, backgroundColor: C.surf3, borderRadius: 8 }}>
-                    <Text style={{ fontSize: 14, color: C.text, fontWeight: '600' }}>Devuelta / Cambio:</Text>
+                    <Text style={{ fontSize: 14, color: C.text, fontWeight: '600' }}>Cambio Entregado:</Text>
                     <Text style={{ fontSize: 16, color: devueltaEfectivo >= 0 ? C.green : C.red, fontWeight: '800' }}>
                       ${devueltaEfectivo.toLocaleString('es-CO')}
                     </Text>

@@ -63,6 +63,33 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [adminTab, setAdminTab] = useState('catalogo');
   const [listaProductos, setListaProductos] = useState(productos || []);
 
+  // Estado del menú lateral colapsable
+  const [sidebarColapsado, setSidebarColapsado] = useState(() => {
+    return localStorage.getItem('adminSidebarColapsado') === 'true';
+  });
+
+  const toggleSidebarColapsado = () => {
+    setSidebarColapsado(prev => {
+      const nextVal = !prev;
+      localStorage.setItem('adminSidebarColapsado', String(nextVal));
+      return nextVal;
+    });
+  };
+
+  const adminNavItems = [
+    { id: 'dashboard', label: 'Situación Actual', icon: '📊' },
+    { id: 'productividad', label: 'Productividad y Reinversión', icon: '📈' },
+    { id: 'gastos', label: 'Control de Gastos', icon: '💸' },
+    { id: 'catalogo', label: 'Catálogo de Productos', icon: '🍔', match: (t) => t === 'catalogo' || t === 'productos' },
+    { id: 'adicionales', label: 'Adicionales', icon: '🍟' },
+    { id: 'historial', label: 'Historial de Facturas', icon: '📄' },
+    { id: 'insumos', label: 'Insumos y Kardex', icon: '📦' },
+    { id: 'usuarios', label: 'Gestión de Usuarios', icon: '👤' },
+    { id: 'auditoria', label: 'Log de Auditoría', icon: '📋' },
+    { id: 'mesas', label: 'Gestión de Mesas', icon: '🪑' },
+    { id: 'impresora', label: 'Impresora Térmica', icon: '🖨️' },
+  ];
+
   const [adminToken, setAdminToken] = useState(null);
   const [loginPin, setLoginPin] = useState('');
   const [loginUser, setLoginUser] = useState('');
@@ -81,6 +108,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const [formProd, setFormProd] = useState({ nombre: '', precio: '', emoji: '🍽️', categoria: '', desc: '', imagen: '', disp: true, grupo_reporte: 'comida' });
   const [emojiManual, setEmojiManual] = useState(false);
   const [catFiltro, setCatFiltro] = useState('Todos');
+  const [estadoFiltro, setEstadoFiltro] = useState('todos'); // 'todos' | 'activos' | 'agotados'
+  const [busquedaCatalogo, setBusquedaCatalogo] = useState('');
   const [guardandoProd, setGuardandoProd] = useState(false);
 
   const [categoriasDinamicas, setCategoriasDinamicas] = useState(['Todos', 'Hamburguesas', 'Perros', 'Burritos', 'Sandwich', 'Bebidas', 'Otros']);
@@ -163,10 +192,49 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const productosFiltradosVista = useMemo(() => {
     const prods = listaProductos || [];
     const conCat = prods.map(p => ({ ...p, _catReal: obtenerCategoriaReal(p) }));
-    if (catFiltro === 'Todos') return conCat;
-    const catFiltroLower = String(catFiltro || '').toLowerCase().trim();
-    return conCat.filter(p => p._catReal.toLowerCase() === catFiltroLower);
-  }, [listaProductos, catFiltro]);
+    let filtered = catFiltro === 'Todos' 
+      ? conCat 
+      : conCat.filter(p => p._catReal.toLowerCase() === String(catFiltro || '').toLowerCase().trim());
+
+    if (estadoFiltro === 'activos') {
+      filtered = filtered.filter(p => p.disponible !== 0 && p.disponible !== false);
+    } else if (estadoFiltro === 'agotados') {
+      filtered = filtered.filter(p => p.disponible === 0 || p.disponible === false);
+    }
+
+    if (busquedaCatalogo.trim()) {
+      const q = busquedaCatalogo.toLowerCase().trim();
+      filtered = filtered.filter(p => 
+        String(p.nombre || '').toLowerCase().includes(q) || 
+        String(p.desc || p.descripcion || '').toLowerCase().includes(q) ||
+        String(p._catReal || '').toLowerCase().includes(q)
+      );
+    }
+
+    return filtered.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '', 'es', { sensitivity: 'base' }));
+  }, [listaProductos, catFiltro, estadoFiltro, busquedaCatalogo]);
+
+  const conteoEstados = useMemo(() => {
+    const prods = listaProductos || [];
+    const conCat = prods.map(p => ({ ...p, _catReal: obtenerCategoriaReal(p) }));
+    let porCat = catFiltro === 'Todos'
+      ? conCat
+      : conCat.filter(p => p._catReal.toLowerCase() === String(catFiltro || '').toLowerCase().trim());
+
+    if (busquedaCatalogo.trim()) {
+      const q = busquedaCatalogo.toLowerCase().trim();
+      porCat = porCat.filter(p => 
+        String(p.nombre || '').toLowerCase().includes(q) || 
+        String(p.desc || p.descripcion || '').toLowerCase().includes(q) ||
+        String(p._catReal || '').toLowerCase().includes(q)
+      );
+    }
+
+    const total = porCat.length;
+    const activos = porCat.filter(p => p.disponible !== 0 && p.disponible !== false).length;
+    const agotados = porCat.filter(p => p.disponible === 0 || p.disponible === false).length;
+    return { total, activos, agotados };
+  }, [listaProductos, catFiltro, busquedaCatalogo]);
   const [imageFile, setImageFile] = useState(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
   const fileInputRef = useRef(null);
@@ -249,34 +317,56 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   };
 
-  const eliminarInsumoDesktop = async (ins) => {
+  const confirmarYEliminarInsumo = async (ins) => {
     if (!ins || !ins.id) return;
-    if (!window.confirm(`¿Estás seguro de eliminar el insumo "${ins.nombre}"?\n\nEsta acción no se puede deshacer. Se eliminarán sus registros y se revertirá cualquier gasto asociado devolviendo el dinero.`)) {
-      return;
-    }
-    try {
-      const targetUrl = serverUrl || 'http://localhost:3001';
-      const res = await axios.delete(`${targetUrl}/api/inventario/insumos/${ins.id}`, {
-        headers: { 'ngrok-skip-browser-warning': 'true' }
+    const { id, nombre } = ins;
+    let confirmado = false;
+
+    // 1. Confirmación asíncrona no bloqueante
+    if (window.electronAPI?.showMessageBox) {
+      const res = await window.electronAPI.showMessageBox({
+        type: 'warning',
+        buttons: ['Eliminar', 'Cancelar'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Eliminar Insumo',
+        message: `¿Estás seguro de eliminar el insumo "${nombre}"?`,
+        detail: 'Esta acción removerá el insumo del inventario y desvinculará sus registros asociados.'
       });
-      if (res.data && res.data.success) {
-        if (typeof toast !== 'undefined' && toast.success) {
-          toast.success("Insumo y sus gastos asociados eliminados correctamente. Dinero restaurado.");
-        } else {
-          alert("Insumo y gastos asociados eliminados correctamente.");
-        }
-        cargarInventarioDesktop();
-        if (typeof cargarGastos === 'function') cargarGastos(filtroGastosInicio, filtroGastosFin);
-        if (typeof cargarGastosPorGrupo === 'function') cargarGastosPorGrupo(filtroProdInicio, filtroProdFin);
-        if (typeof cargarConsolidado === 'function') cargarConsolidado();
-      } else {
-        alert("⚠️ Error al eliminar el insumo");
+      confirmado = (res && res.response === 0);
+    } else {
+      confirmado = window.confirm(`¿Estás seguro de eliminar el insumo "${nombre}"?\n\nEsta acción no se puede deshacer.`);
+    }
+
+    if (!confirmado) return;
+
+    try {
+      const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
+      await axios.delete(`${targetUrl}/api/inventario/insumos/${id}`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' },
+        timeout: 8000
+      });
+
+      // 2. Sanitización inmediata del estado local para respuesta instantánea en UI
+      setInsumos?.(prev => prev.filter(item => item.id !== id));
+      setMovimientos?.(prev => prev.filter(item => item.insumo_id !== id));
+
+      // 3. Si no hay conexión socket activa, recargar manualmente como fallback
+      if (!socket?.connected) {
+        await cargarInventarioDesktop();
       }
-    } catch (err) {
-      console.error("Error al eliminar insumo:", err);
-      alert("⚠️ Error al eliminar insumo: " + (err.response?.data?.error || err.message));
+
+      toast.success(`Insumo "${nombre}" eliminado correctamente`);
+    } catch (error) {
+      console.error('Error al eliminar insumo:', error);
+      const mensajeError = error.response?.data?.error || 'Error al eliminar el insumo';
+      toast.error(mensajeError);
+    } finally {
+      window.focus();
     }
   };
+
+  const eliminarInsumoDesktop = confirmarYEliminarInsumo;
 
   useEffect(() => {
     if (adminTab === 'insumos') {
@@ -876,7 +966,8 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
   const cargarAdicionales = async () => {
     try {
-      const res = await axios.get(`${serverUrl}/api/adicionales`, {
+      const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
+      const res = await axios.get(`${targetUrl}/api/adicionales`, {
         headers: { 'ngrok-skip-browser-warning': 'true' }
       });
       if (res.data) {
@@ -902,12 +993,16 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   const guardarAdicional = async () => {
     if (!formAdicional.nombre || !formAdicional.precio) return toast.error("Completa los campos.");
     try {
+      const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
       if (adicionalEditando) {
-        await axios.put(`${serverUrl}/api/adicionales/${adicionalEditando.id}`, { ...formAdicional, precio: cleanNum(formAdicional.precio) });
+        await axios.put(`${targetUrl}/api/adicionales/${adicionalEditando.id}`, { ...formAdicional, precio: cleanNum(formAdicional.precio) });
         toast.success('Adicional actualizado');
       } else {
-        await axios.post(`${serverUrl}/api/adicionales`, { ...formAdicional, precio: cleanNum(formAdicional.precio) });
+        await axios.post(`${targetUrl}/api/adicionales`, { ...formAdicional, precio: cleanNum(formAdicional.precio) });
         toast.success('Adicional creado');
+      }
+      if (socket && typeof socket.emit === 'function') {
+        socket.emit('adicionales_actualizados');
       }
       setModalAdicionalVisible(false);
       cargarAdicionales();
@@ -916,17 +1011,62 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   };
 
-  const eliminarAdicional = async (id) => {
-    if (window.confirm("¿Seguro que deseas eliminar este adicional?")) {
-      try {
-        await axios.delete(`${serverUrl}/api/adicionales/${id}`);
-        toast.success('Adicional eliminado');
-        cargarAdicionales();
-      } catch (e) {
-        toast.error("Error al eliminar adicional");
+  const confirmarYEliminarAdicional = async (adicional) => {
+    const id = typeof adicional === 'object' ? adicional.id : adicional;
+    const nombre = (typeof adicional === 'object' && adicional.nombre)
+      ? adicional.nombre
+      : (adicionalesAdmin.find(item => item.id === id)?.nombre || 'este adicional');
+
+    let confirmado = false;
+
+    // 1. Confirmación asíncrona sin bloquear el event loop de Electron
+    if (window.electronAPI?.showMessageBox) {
+      const res = await window.electronAPI.showMessageBox({
+        type: 'warning',
+        buttons: ['Eliminar', 'Cancelar'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Eliminar Adicional',
+        message: `¿Estás seguro de eliminar el adicional "${nombre}"?`,
+        detail: 'Se desvinculará de los productos y grupos asociados.'
+      });
+      confirmado = (res && res.response === 0);
+    } else {
+      // Fallback estándar en navegador
+      confirmado = window.confirm(`¿Estás seguro de eliminar el adicional "${nombre}"?`);
+    }
+
+    if (!confirmado) return;
+
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      await axios.delete(`${targetUrl}/api/adicionales/${id}`, { timeout: 8000 });
+
+      // 2. Limpieza optimista del estado local (inputs y listados responden al instante)
+      setAdicionalesAdmin?.(prev => prev.filter(item => item.id !== id));
+
+      // Si había un adicional seleccionado en edición, limpiarlo
+      if (adicionalEditando?.id === id) {
+        setAdicionalEditando(null);
       }
+
+      // 3. Fallback solo si el socket está desconectado
+      if (!socket?.connected) {
+        await cargarAdicionales();
+      }
+
+      toast.success(`Adicional "${nombre}" eliminado`);
+    } catch (error) {
+      console.error('Error al eliminar adicional:', error);
+      const mensaje = error.response?.data?.error || 'Error al eliminar el adicional';
+      toast.error(mensaje);
+    } finally {
+      // Asegurar foco en la ventana
+      window.focus();
     }
   };
+
+  const eliminarAdicional = confirmarYEliminarAdicional;
 
   useEffect(() => {
     if (!imageFile) {
@@ -1188,6 +1328,60 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     }
   };
 
+  const confirmarYEliminarCategoria = async (nombreCat) => {
+    let confirmado = false;
+
+    if (window.electronAPI?.showMessageBox) {
+      const res = await window.electronAPI.showMessageBox({
+        type: 'warning',
+        buttons: ['Eliminar', 'Cancelar'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Confirmar eliminación',
+        message: `¿Eliminar la categoría "${nombreCat}"? Sus productos pasarán automáticamente a "Otros".`
+      });
+      confirmado = (res && res.response === 0);
+    } else {
+      // Si corre en navegador web estándar
+      confirmado = window.confirm(`¿Eliminar la categoría "${nombreCat}"? Sus productos pasarán automáticamente a "Otros".`);
+    }
+
+    if (!confirmado) return;
+
+    try {
+      const targetUrl = serverUrl || 'http://localhost:3001';
+      await axios.delete(`${targetUrl}/api/categorias/${encodeURIComponent(nombreCat)}`, { timeout: 8000 });
+
+      // Devolver el foco a la ventana principal
+      window.focus();
+
+      // Sanitización preventiva del estado local
+      const catEliminada = nombreCat;
+      setCatFiltro('Todos');
+      setFormProd(prev => {
+        if (prev.categoria === catEliminada || prev.cat === catEliminada) {
+          return { ...prev, categoria: 'Otros', cat: 'Otros' };
+        }
+        return prev;
+      });
+      setCategoriasDinamicas(prev => prev.filter(c => c !== catEliminada));
+      setCategoriasFull(prev => prev.filter(c => (typeof c === 'string' ? c : (c.nombre || c.categoria || '')) !== catEliminada));
+
+      // NO emitir socket manualmente aquí; el backend ya notifica a todos los clientes.
+      // Si los sockets están desconectados, se hace un fallback local:
+      if (!socket?.connected) {
+        await cargarCatalogo();
+      }
+
+      toast.success(`Categoría "${catEliminada}" eliminada`);
+    } catch (e) {
+      console.error('Error al eliminar categoría:', e);
+      toast.error('Error al eliminar la categoría');
+    } finally {
+      window.focus();
+    }
+  };
+
   if (!adminToken) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '16px' }}>
@@ -1207,22 +1401,80 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   }
 
   return (
-    <div style={{ display: 'flex', gap: '24px', height: '100%' }}>
-      {/* Sidebar Menú Admin */}
-      <div style={{ flex: '0.6', display: 'flex', flexDirection: 'column', gap: '16px', borderRight: '1px solid var(--border)', paddingRight: '24px' }}>
-        <h2 style={{ fontSize: '24px', color: 'var(--brand)' }}>⚙️ Configuración</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <button onClick={() => setAdminTab('dashboard')} style={navBtnStyle(adminTab === 'dashboard')}>📊 Dashboard de Hoy</button>
-          <button onClick={() => setAdminTab('productividad')} style={navBtnStyle(adminTab === 'productividad')}>📊 Productividad y Reinversión</button>
-          <button onClick={() => setAdminTab('gastos')} style={navBtnStyle(adminTab === 'gastos')}>💸 Control de Gastos</button>
-          <button onClick={() => setAdminTab('catalogo')} style={navBtnStyle(adminTab === 'catalogo' || adminTab === 'productos')}>🍔 Catálogo</button>
-          <button onClick={() => setAdminTab('adicionales')} style={navBtnStyle(adminTab === 'adicionales')}>🍟 Adicionales</button>
-          <button onClick={() => setAdminTab('historial')} style={navBtnStyle(adminTab === 'historial')}>📄 Historial de Facturas</button>
-          <button onClick={() => setAdminTab('insumos')} style={navBtnStyle(adminTab === 'insumos')}>📦 Insumos y Kardex</button>
-          <button onClick={() => setAdminTab('usuarios')} style={navBtnStyle(adminTab === 'usuarios')}>👤 Gestión de Usuarios</button>
-          <button onClick={() => setAdminTab('auditoria')} style={navBtnStyle(adminTab === 'auditoria')}>📋 Log de Auditoría</button>
-          <button onClick={() => setAdminTab('mesas')} style={navBtnStyle(adminTab === 'mesas')}>🪑 Gestión de Mesas</button>
-          <button onClick={() => setAdminTab('impresora')} style={navBtnStyle(adminTab === 'impresora')}>🖨️ Impresora Térmica</button>
+    <div style={{ display: 'flex', gap: sidebarColapsado ? '14px' : '24px', height: '100%' }}>
+      {/* Sidebar Menú Admin Colapsable */}
+      <div style={{
+        width: sidebarColapsado ? '64px' : '260px',
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+        borderRight: '1px solid var(--border)',
+        paddingRight: sidebarColapsado ? '6px' : '18px',
+        transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+        overflow: 'hidden'
+      }}>
+        {/* Encabezado del menú con botón colapsar / desplegar */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: sidebarColapsado ? 'center' : 'space-between',
+          paddingBottom: '10px',
+          borderBottom: '1px solid var(--border)',
+          gap: '8px'
+        }}>
+          {!sidebarColapsado && (
+            <h2 style={{ fontSize: '18px', color: 'var(--brand)', margin: 0, whiteSpace: 'nowrap', fontWeight: '800' }}>
+              ⚙️ Configuración
+            </h2>
+          )}
+          <button
+            type="button"
+            onClick={toggleSidebarColapsado}
+            title={sidebarColapsado ? "Desplegar menú (Ver nombres)" : "Esconder menú (Solo íconos)"}
+            style={{
+              background: 'var(--surf, #F3F4F6)',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              padding: '6px 10px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontWeight: 'bold',
+              color: 'var(--text)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.2s',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+            }}
+          >
+            {sidebarColapsado ? '⏩' : '⏪'}
+          </button>
+        </div>
+
+        {/* Botones de navegación */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' }}>
+          {adminNavItems.map((item) => {
+            const isActive = item.match ? item.match(adminTab) : adminTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setAdminTab(item.id)}
+                title={sidebarColapsado ? item.label : undefined}
+                style={navBtnStyle(isActive, sidebarColapsado)}
+              >
+                <span style={{ fontSize: sidebarColapsado ? '20px' : '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  {item.icon}
+                </span>
+                {!sidebarColapsado && (
+                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {item.label}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -1306,26 +1558,6 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                 </p>
               </div>
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                <button
-                  type="button"
-                  onClick={() => setModalGastoVisible(true)}
-                  style={{
-                    padding: '10px 16px',
-                    borderRadius: '10px',
-                    backgroundColor: '#dc2626',
-                    color: 'white',
-                    border: 'none',
-                    fontWeight: 'bold',
-                    fontSize: '13px',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: '0 2px 4px rgba(220,38,38,0.2)'
-                  }}
-                >
-                  💸 + Registrar Gasto
-                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1664,7 +1896,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                              <span>🍺</span> CERVEZAS
+                              <span>🍺</span> CERVEZAS Y LICORES
                             </span>
                             {esDeficit && (
                               <span style={{ backgroundColor: '#fee2e2', color: '#b91c1c', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
@@ -1959,7 +2191,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         <th style={thStyle}>Fecha</th>
                         <th style={{ ...thStyle, textAlign: 'right' }}>🍔 Comida</th>
                         <th style={{ ...thStyle, textAlign: 'right' }}>🥤 Jugos Nat.</th>
-                        <th style={{ ...thStyle, textAlign: 'right' }}>🍺 Cervezas</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>🍺 Cervezas y Licores</th>
                         <th style={{ ...thStyle, textAlign: 'right' }}>🍾 Embotellados</th>
                         <th style={{ ...thStyle, textAlign: 'right' }}>☕ Beb. Calientes</th>
                         <th style={{ ...thStyle, textAlign: 'right', color: 'var(--brand)' }}>💰 Total Día</th>
@@ -2083,21 +2315,31 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
               </div>
             </div>
 
-            {/* 3 Tarjetas Ejecutivas de Gastos */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+            {/* Tarjetas Ejecutivas de Gastos por Origen y Método */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
               <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
-                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#16a34a', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>💵</span> GASTOS EN EFECTIVO
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#c2410c', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>🏪</span> DESCONTADO CAJA NEGOCIO
                 </div>
                 <div style={{ fontSize: '24px', fontWeight: '900', color: 'var(--text)' }}>
-                  $ {Number(gastosResumen.total_efectivo || 0).toLocaleString('es-CO')}
+                  $ {Number(gastosResumen.total_caja_negocio || 0).toLocaleString('es-CO')}
                 </div>
-                <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '4px' }}>Salidas físicas de caja</div>
+                <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '4px' }}>Salidas del saldo de ventas</div>
+              </div>
+
+              <div style={{ backgroundColor: '#faf5ff', borderRadius: '16px', padding: '20px', border: '1px solid #e9d5ff', boxShadow: 'var(--shadow-sm)' }}>
+                <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#7e22ce', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>💼</span> APORTE DE CAPITAL / SOCIOS
+                </div>
+                <div style={{ fontSize: '24px', fontWeight: '900', color: '#7e22ce' }}>
+                  $ {Number(gastosResumen.total_aporte_capital || 0).toLocaleString('es-CO')}
+                </div>
+                <div style={{ fontSize: '12px', color: '#6b21a8', marginTop: '4px' }}>Inyección externa (No resta caja)</div>
               </div>
 
               <div style={{ backgroundColor: 'white', borderRadius: '16px', padding: '20px', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
                 <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#2563eb', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>💳</span> GASTOS EN TRANSFERENCIA
+                  <span>💳</span> EN TRANSFERENCIA
                 </div>
                 <div style={{ fontSize: '24px', fontWeight: '900', color: 'var(--text)' }}>
                   $ {Number(gastosResumen.total_transferencia || 0).toLocaleString('es-CO')}
@@ -2177,6 +2419,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         <th style={thStyle}>Categoría</th>
                         <th style={thStyle}>Grupo Afectado</th>
                         <th style={thStyle}>Descripción</th>
+                        <th style={{ ...thStyle, textAlign: 'center' }}>Fuente / Origen</th>
                         <th style={{ ...thStyle, textAlign: 'center' }}>Método de Pago</th>
                         <th style={{ ...thStyle, textAlign: 'right' }}>Monto</th>
                         <th style={thStyle}>Responsable</th>
@@ -2184,88 +2427,110 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {gastosData.map((g, idx) => (
-                        <tr key={g.id || idx} style={{ borderBottom: '1px solid var(--border)', backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa' }}>
-                          <td style={{ ...tdStyle, fontWeight: '600' }}>
-                            {formatFechaTabla(g.fecha || g.created_at)}
-                          </td>
-                          <td style={tdStyle}>
-                            <span style={{ backgroundColor: '#e2e8f0', color: '#334155', padding: '3px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
-                              {g.categoria || 'Insumos'}
-                            </span>
-                          </td>
-                          <td style={tdStyle}>
-                            <select
-                              value={g.grupo_afectado || 'gastos_generales'}
-                              onChange={(e) => handleActualizarGrupoGasto(g.id, e.target.value)}
-                              title="Reclasificar grupo de gasto"
-                              style={{
-                                padding: '4px 8px',
-                                borderRadius: '6px',
-                                border: '1px solid var(--border)',
-                                fontSize: '12px',
-                                fontWeight: 'bold',
-                                backgroundColor: (g.grupo_afectado || 'gastos_generales') === 'gastos_generales' ? '#f1f5f9' : '#fff7ed',
-                                color: (g.grupo_afectado || 'gastos_generales') === 'gastos_generales' ? '#475569' : '#ea580c',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              <option value="comida">🍔 Comida</option>
-                              <option value="jugos_naturales">🥤 Jugos Naturales</option>
-                              <option value="cervezas">🍺 Cervezas</option>
-                              <option value="gaseosas_embotellados">🍾 Embotellados</option>
-                              <option value="bebidas_calientes">☕ Bebidas Calientes</option>
-                              <option value="gastos_generales">🏢 Gastos Generales</option>
-                            </select>
-                          </td>
-                          <td style={{ ...tdStyle, fontWeight: '500' }}>
-                            {g.descripcion}
-                          </td>
-                          <td style={{ ...tdStyle, textAlign: 'center' }}>
-                            {String(g.metodo_pago).toLowerCase() === 'transferencia' ? (
-                              <span style={{ backgroundColor: 'rgba(37,99,235,0.1)', color: '#2563eb', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
-                                💳 Transferencia
+                      {gastosData.map((g, idx) => {
+                        const fuenteStr = String(g.fuente_financiamiento || g.origen_dinero || 'caja_negocio').toLowerCase().trim();
+                        return (
+                          <tr key={g.id || idx} style={{ borderBottom: '1px solid var(--border)', backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa' }}>
+                            <td style={{ ...tdStyle, fontWeight: '600' }}>
+                              {formatFechaTabla(g.fecha || g.created_at)}
+                            </td>
+                            <td style={tdStyle}>
+                              <span style={{ backgroundColor: '#e2e8f0', color: '#334155', padding: '3px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
+                                {g.categoria || 'Insumos'}
                               </span>
-                            ) : (
-                              <span style={{ backgroundColor: 'rgba(22,163,74,0.1)', color: '#16a34a', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
-                                💵 Efectivo
-                              </span>
-                            )}
-                          </td>
-                          <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 'bold', color: '#dc2626' }}>
-                            $ {Number(g.monto || g.valor || 0).toLocaleString('es-CO')}
-                          </td>
-                          <td style={{ ...tdStyle, color: 'var(--text2)', fontSize: '13px' }}>
-                            {g.usuario || 'Admin'}
-                          </td>
-                          <td style={{ ...tdStyle, textAlign: 'center' }}>
-                            <button
-                              type="button"
-                              onClick={() => handleEliminarGasto(g.id, g.descripcion)}
-                              title="Eliminar este gasto y restaurar dinero"
-                              style={{
-                                padding: '4px 10px',
-                                borderRadius: '6px',
-                                border: '1px solid #fca5a5',
-                                backgroundColor: '#fef2f2',
-                                color: '#dc2626',
-                                fontWeight: 'bold',
-                                fontSize: '12px',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '4px'
-                              }}
-                            >
-                              🗑️ Eliminar
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                            <td style={tdStyle}>
+                              <select
+                                value={g.grupo_afectado || 'gastos_generales'}
+                                onChange={(e) => handleActualizarGrupoGasto(g.id, e.target.value)}
+                                title="Reclasificar grupo de gasto"
+                                style={{
+                                  padding: '4px 8px',
+                                  borderRadius: '6px',
+                                  border: '1px solid var(--border)',
+                                  fontSize: '12px',
+                                  fontWeight: 'bold',
+                                  backgroundColor: (g.grupo_afectado || 'gastos_generales') === 'gastos_generales' ? '#f1f5f9' : '#fff7ed',
+                                  color: (g.grupo_afectado || 'gastos_generales') === 'gastos_generales' ? '#475569' : '#ea580c',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <option value="comida">🍔 Comida</option>
+                                <option value="jugos_naturales">🥤 Jugos Naturales</option>
+                                <option value="cervezas">🍺 Cervezas y Licores</option>
+                                <option value="gaseosas_embotellados">🍾 Embotellados</option>
+                                <option value="bebidas_calientes">☕ Bebidas Calientes</option>
+                                <option value="gastos_generales">🏢 Gastos Generales</option>
+                              </select>
+                            </td>
+                            <td style={{ ...tdStyle, fontWeight: '500' }}>
+                              {g.descripcion}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: 'center' }}>
+                              {fuenteStr === 'aporte_capital' ? (
+                                <span style={{ backgroundColor: '#f3e8ff', color: '#7e22ce', border: '1px solid #d8b4fe', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  💼 Aporte Capital
+                                </span>
+                              ) : fuenteStr === 'prestamo' ? (
+                                <span style={{ backgroundColor: '#fce7f3', color: '#be185d', border: '1px solid #fbcfe8', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  🤝 Préstamo / Pasivo
+                                </span>
+                              ) : fuenteStr === 'ingreso_no_operacional' ? (
+                                <span style={{ backgroundColor: '#d1fae5', color: '#047857', border: '1px solid #a7f3d0', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  📈 Ingreso Ext.
+                                </span>
+                              ) : (
+                                <span style={{ backgroundColor: '#fff7ed', color: '#c2410c', border: '1px solid #ffedd5', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  🏪 Caja Negocio
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: 'center' }}>
+                              {String(g.metodo_pago).toLowerCase() === 'transferencia' ? (
+                                <span style={{ backgroundColor: 'rgba(37,99,235,0.1)', color: '#2563eb', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
+                                  💳 Transferencia
+                                </span>
+                              ) : (
+                                <span style={{ backgroundColor: 'rgba(22,163,74,0.1)', color: '#16a34a', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
+                                  💵 Efectivo
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 'bold', color: '#dc2626' }}>
+                              $ {Number(g.monto || g.valor || 0).toLocaleString('es-CO')}
+                            </td>
+                            <td style={{ ...tdStyle, color: 'var(--text2)', fontSize: '13px' }}>
+                              {g.usuario || 'Admin'}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                onClick={() => handleEliminarGasto(g.id, g.descripcion)}
+                                title="Eliminar este gasto y restaurar dinero"
+                                style={{
+                                  padding: '4px 10px',
+                                  borderRadius: '6px',
+                                  border: '1px solid #fca5a5',
+                                  backgroundColor: '#fef2f2',
+                                  color: '#dc2626',
+                                  fontWeight: 'bold',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                🗑️ Eliminar
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                     <tfoot>
                       <tr style={{ backgroundColor: 'var(--surf2)', borderTop: '2px solid var(--border)', fontWeight: 'bold' }}>
-                        <td colSpan={5} style={{ ...tdStyle, fontSize: '14px', color: 'var(--text)' }}>
+                        <td colSpan={6} style={{ ...tdStyle, fontSize: '14px', color: 'var(--text)' }}>
                           TOTAL EGRESOS DEL PERÍODO ({gastosData.length} registros)
                         </td>
                         <td style={{ ...tdStyle, textAlign: 'right', color: '#dc2626', fontSize: '16px', fontWeight: '900' }}>
@@ -2284,15 +2549,53 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
         {(adminTab === 'productos' || adminTab === 'catalogo') && (
           <div className="animate-fade-in">
-            {/* Cabecera con botón superior derecho */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            {/* Cabecera con buscador y botón superior derecho */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
               <div>
                 <h2 style={{ margin: 0, color: 'var(--text)' }}>🍔 Gestión de Catálogo</h2>
                 <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text2)' }}>
-                  Administra los productos, precios y disponibilidad en el menú
+                  Administra los productos, precios y disponibilidad (Activos y Agotados) en el menú
                 </p>
               </div>
-              <div style={{ display: 'flex', gap: '10px' }}>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', width: '220px' }}>
+                  <input
+                    type="text"
+                    placeholder="🔍 Buscar producto..."
+                    value={busquedaCatalogo}
+                    onChange={(e) => setBusquedaCatalogo(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px 8px 30px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border)',
+                      backgroundColor: 'var(--card-bg, #fff)',
+                      color: 'var(--text)',
+                      fontSize: '13px',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                  {busquedaCatalogo && (
+                    <button
+                      type="button"
+                      onClick={() => setBusquedaCatalogo('')}
+                      style={{
+                        position: 'absolute',
+                        right: '8px',
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        border: 'none',
+                        background: 'none',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        color: 'var(--text3)'
+                      }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
                 <button
                   type="button"
                   className="btn-primary"
@@ -2313,6 +2616,77 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   + Agregar Producto / Categorías
                 </button>
               </div>
+            </div>
+
+            {/* Barra de Filtro por Estado: Todos / Activos / Agotados */}
+            <div style={{
+              display: 'flex',
+              gap: '10px',
+              marginBottom: '16px',
+              alignItems: 'center',
+              backgroundColor: 'var(--surf2, #f8fafc)',
+              padding: '8px 14px',
+              borderRadius: '12px',
+              border: '1px solid var(--border)',
+              flexWrap: 'wrap'
+            }}>
+              <span style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span>👁️</span> Disponibilidad:
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setEstadoFiltro('todos')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  border: estadoFiltro === 'todos' ? '2px solid #2563eb' : '1px solid var(--border)',
+                  backgroundColor: estadoFiltro === 'todos' ? '#dbeafe' : 'var(--card-bg, #fff)',
+                  color: estadoFiltro === 'todos' ? '#1e40af' : 'var(--text)',
+                  fontWeight: 'bold',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                📦 Todos ({conteoEstados.total})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setEstadoFiltro('activos')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  border: estadoFiltro === 'activos' ? '2px solid #16a34a' : '1px solid var(--border)',
+                  backgroundColor: estadoFiltro === 'activos' ? '#dcfce7' : 'var(--card-bg, #fff)',
+                  color: estadoFiltro === 'activos' ? '#15803d' : 'var(--text)',
+                  fontWeight: 'bold',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                🟢 Activos ({conteoEstados.activos})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setEstadoFiltro('agotados')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  border: estadoFiltro === 'agotados' ? '2px solid #dc2626' : '1px solid var(--border)',
+                  backgroundColor: estadoFiltro === 'agotados' ? '#fee2e2' : 'var(--card-bg, #fff)',
+                  color: estadoFiltro === 'agotados' ? '#b91c1c' : 'var(--text)',
+                  fontWeight: 'bold',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                🔴 Agotados ({conteoEstados.agotados})
+              </button>
             </div>
 
             {/* Barra de Filtros por Categoría */}
@@ -2350,19 +2724,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
               {catFiltro !== 'Todos' && catFiltro !== 'Otros' && (
                 <button
                   type="button"
-                  onClick={async () => {
-                    if (window.confirm(`¿Eliminar la categoría "${catFiltro}"? Sus productos pasarán automáticamente a "Otros".`)) {
-                      try {
-                        const targetUrl = serverUrl || 'http://localhost:3001';
-                        await axios.delete(`${targetUrl}/api/categorias/${encodeURIComponent(catFiltro)}`);
-                        setCatFiltro('Todos');
-                        await cargarCatalogo();
-                      } catch (e) {
-                        console.error("Error al eliminar categoría:", e);
-                        alert("Error al eliminar la categoría del servidor.");
-                      }
-                    }
-                  }}
+                  onClick={() => confirmarYEliminarCategoria(catFiltro)}
                   style={{
                     padding: '7px 14px',
                     borderRadius: '20px',
@@ -2390,8 +2752,36 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
               gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
               gap: '16px'
             }}>
+              {productosFiltradosVista.length === 0 && (
+                <div style={{
+                  gridColumn: '1 / -1',
+                  padding: '40px 20px',
+                  textAlign: 'center',
+                  backgroundColor: 'var(--surf2, #F8FAFC)',
+                  borderRadius: '12px',
+                  border: '1px dashed var(--border)',
+                  color: 'var(--text2)'
+                }}>
+                  <div style={{ fontSize: '36px', marginBottom: '8px' }}>
+                    {estadoFiltro === 'agotados' ? '🎉' : '🔍'}
+                  </div>
+                  <div style={{ fontWeight: 'bold', fontSize: '16px' }}>
+                    {estadoFiltro === 'agotados'
+                      ? 'No hay productos agotados'
+                      : estadoFiltro === 'activos'
+                      ? 'No hay productos activos'
+                      : 'No se encontraron productos'}
+                  </div>
+                  <div style={{ fontSize: '13px', color: 'var(--text3)', marginTop: '4px' }}>
+                    {estadoFiltro === 'agotados'
+                      ? 'Todos los productos en esta sección están disponibles.'
+                      : 'Prueba cambiar los filtros de categoría o búsqueda.'}
+                  </div>
+                </div>
+              )}
               {productosFiltradosVista.map((prod) => {
-                  const disponible = prod.disponible !== 0 && prod.disponible !== false;
+                  const disponible = (prod.disponible !== 0 && prod.disponible !== false && prod.disponible !== '0' && prod.disponible !== 'false') && 
+                                     (prod.disp !== 0 && prod.disp !== false && prod.disp !== '0' && prod.disp !== 'false');
                   return (
                     <div
                       key={prod.id}
@@ -2449,31 +2839,29 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
                             // 1. Cambio visual instantáneo (optimista)
                             setListaProductos(prev =>
-                              prev.map(p => p.id === prod.id ? { ...p, disponible: nuevoDisp } : p)
+                              prev.map(p => p.id === prod.id ? { ...p, disponible: nuevoDisp, disp: nuevoDisp } : p)
                             );
 
                             // 2. Persistir en la base de datos
                             try {
-                              const targetUrl = serverUrl || 'http://localhost:3001';
-                              await axios.post(`${targetUrl}/api/productos`, {
-                                id: prod.id,
+                              const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
+                              await axios.put(`${targetUrl}/api/productos/${prod.id}/disponibilidad`, {
                                 disponible: nuevoDisp ? 1 : 0,
-                                disp: nuevoDisp,
-                                cat: prod.categoria || prod.cat,
-                                emoji: prod.emoji,
-                                nombre: prod.nombre,
-                                precio: prod.precio
+                                disp: nuevoDisp ? 1 : 0
                               }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
 
                               if (socket && typeof socket.emit === 'function') {
-                                socket.emit('producto:actualizado', { id: prod.id, disponible: nuevoDisp });
+                                socket.emit('producto:actualizado', { id: prod.id, disponible: nuevoDisp ? 1 : 0, disp: nuevoDisp ? 1 : 0 });
+                                socket.emit('productos_actualizados');
+                                socket.emit('catalogo_actualizado');
                               }
                             } catch (e) {
                               console.error("Error al guardar en backend, revirtiendo:", e);
                               // Revertir si falló la red
                               setListaProductos(prev =>
-                                prev.map(p => p.id === prod.id ? { ...p, disponible: disponible } : p)
+                                prev.map(p => p.id === prod.id ? { ...p, disponible: disponible, disp: disponible } : p)
                               );
+                              toast.error("Error al actualizar disponibilidad");
                             }
                           }}
                           style={{
@@ -2511,13 +2899,17 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                             onClick={async () => {
                               if (window.confirm(`¿Eliminar ${prod.nombre}?`)) {
                                 try {
-                                  await axios.delete(`${serverUrl}/api/productos/${prod.id}`);
+                                  const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
+                                  await axios.delete(`${targetUrl}/api/productos/${prod.id}`);
                                   setListaProductos(prev => prev.filter(p => p.id !== prod.id));
+                                  toast.success(`Producto "${prod.nombre}" eliminado`);
                                   if (socket && typeof socket.emit === 'function') {
                                     socket.emit('productos_actualizados');
                                   }
+                                  await cargarCatalogo();
                                 } catch (e) {
-                                  console.error(e);
+                                  console.error("Error al eliminar producto:", e);
+                                  toast.error("Error al eliminar el producto");
                                 }
                               }
                             }}
@@ -2561,7 +2953,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                     <button onClick={() => abrirModalAdicionalEditar(a)} style={{ backgroundColor: 'var(--orange-light)', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
                       Editar
                     </button>
-                    <button onClick={() => eliminarAdicional(a.id)} style={{ backgroundColor: '#ef4444', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
+                    <button onClick={() => confirmarYEliminarAdicional(a)} style={{ backgroundColor: '#ef4444', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
                       X
                     </button>
                   </div>
@@ -2763,10 +3155,76 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
             </div>
 
             {modalInsumoOpen && (
-              <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-                <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '16px', width: '480px', maxWidth: '92%', boxShadow: '0 10px 25px rgba(0,0,0,0.2)', maxHeight: '90vh', overflowY: 'auto' }}>
-                  <h3 style={{ margin: '0 0 16px 0', color: 'var(--brand, #144c3c)', fontSize: '20px', fontWeight: 'bold' }}>📦 + Nuevo Insumo / Materia Prima</h3>
+              <div 
+                className="modal-overlay" 
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) setModalInsumoOpen(false);
+                }}
+                style={{ 
+                  position: 'fixed', 
+                  top: 0, 
+                  left: 0, 
+                  right: 0, 
+                  bottom: 0, 
+                  backgroundColor: 'rgba(15, 23, 42, 0.65)', 
+                  backdropFilter: 'blur(4px)',
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center', 
+                  zIndex: 1000,
+                  padding: '16px'
+                }}
+              >
+                <div style={{ 
+                  backgroundColor: '#ffffff', 
+                  borderRadius: '16px', 
+                  width: '520px', 
+                  maxWidth: '95vw', 
+                  maxHeight: '90vh', 
+                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', 
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden'
+                }}>
+                  {/* Cabecera Fija del Modal */}
+                  <div style={{
+                    padding: '18px 24px',
+                    borderBottom: '1px solid #e2e8f0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    backgroundColor: '#ffffff',
+                    flexShrink: 0
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '20px' }}>📦</span>
+                      <h3 style={{ margin: 0, color: 'var(--brand, #144c3c)', fontSize: '18px', fontWeight: '700' }}>
+                        Nuevo Insumo / Materia Prima
+                      </h3>
+                    </div>
+                    <button 
+                      type="button" 
+                      onClick={() => setModalInsumoOpen(false)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        fontSize: '20px',
+                        color: '#64748b',
+                        cursor: 'pointer',
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: 1
+                      }}
+                      title="Cerrar"
+                    >
+                      ✕
+                    </button>
+                  </div>
 
+                  {/* Formulario con cuerpo scrolleable y pie fijo */}
                   <form onSubmit={async (e) => {
                     e.preventDefault();
                     const f = e.target;
@@ -2817,91 +3275,211 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                     } finally {
                       if (btnSubmit) btnSubmit.disabled = false;
                     }
-                  }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  }} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
 
-                    <div>
-                      <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Nombre del Insumo</label>
-                      <input name="nombre" required placeholder="Ej: Queso Mozzarella, Carne, Papa..." style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Unidad de Medida</label>
-                        <select name="unidad" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
-                          <option value="Kg">Kg</option>
-                          <option value="Gr">Gramos</option>
-                          <option value="Unidad">Unidad</option>
-                          <option value="Litro">Litro</option>
-                          <option value="Paquete">Paquete</option>
-                        </select>
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Precio Compra (x Unidad)</label>
-                        <input name="precio_compra" type="number" placeholder="0" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Stock Inicial</label>
-                        <input name="cantidad_actual" type="number" step="any" required placeholder="0" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px' }}>Stock Mínimo</label>
-                        <input name="stock_minimo" type="number" step="any" required placeholder="0" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
-                      </div>
-                    </div>
-
-                    {/* Bloque Financiero / Opciones de Registrar Gasto */}
-                    <div style={{ borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', color: '#dc2626' }}>
-                        <input type="checkbox" name="registrar_gasto" defaultChecked style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
-                        💸 Registrar también la compra como Gasto / Egreso en Finanzas
-                      </label>
-
+                    {/* Cuerpo con scroll independiente */}
+                    <div style={{ padding: '20px 24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       <div>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
-                          ¿A qué grupo pertenece? (Descontar de):
+                        <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                          Nombre del Insumo *
                         </label>
-                        <select name="grupo_afectado" defaultValue="comida" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
-                          <option value="comida">🍔 Comida (Pan, carnes, verduras, salsas, quesos)</option>
-                          <option value="jugos_naturales">🥤 Jugos Naturales (Frutas, pulpas, leche, azúcar)</option>
-                          <option value="cervezas">🍺 Cervezas (Canastas y barriles)</option>
-                          <option value="gaseosas_embotellados">🍾 Embotellados (Gaseosas, aguas, jugos)</option>
-                          <option value="bebidas_calientes">☕ Bebidas Calientes (Café, té, aromáticas)</option>
-                          <option value="gastos_generales">🏢 Gastos Generales (Servicios, aseo)</option>
-                        </select>
+                        <input 
+                          name="nombre" 
+                          required 
+                          placeholder="Ej: Queso Mozzarella, Carne, Papa..." 
+                          style={{ 
+                            width: '100%', 
+                            padding: '10px 12px', 
+                            borderRadius: '8px', 
+                            border: '1px solid #cbd5e1',
+                            fontSize: '14px',
+                            boxSizing: 'border-box'
+                          }} 
+                        />
                       </div>
 
-                      <div style={{ display: 'flex', gap: '10px' }}>
-                        <div style={{ flex: 1 }}>
-                          <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
-                            Método de Pago:
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                            Unidad de Medida
                           </label>
-                          <select name="metodo_pago" defaultValue="efectivo" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
-                            <option value="efectivo">💵 Efectivo (Caja)</option>
-                            <option value="transferencia">💳 Transferencia (Nequi / Daviplata / Banco)</option>
+                          <select 
+                            name="unidad" 
+                            style={{ 
+                              width: '100%', 
+                              padding: '10px 12px', 
+                              borderRadius: '8px', 
+                              border: '1px solid #cbd5e1',
+                              fontSize: '14px',
+                              backgroundColor: '#fff',
+                              boxSizing: 'border-box'
+                            }}
+                          >
+                            <option value="Kg">Kg</option>
+                            <option value="Gr">Gramos</option>
+                            <option value="Unidad">Unidad</option>
+                            <option value="Litro">Litro</option>
+                            <option value="Paquete">Paquete</option>
                           </select>
                         </div>
-                        <div style={{ flex: 1 }}>
-                          <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: 'var(--text2)', marginBottom: '4px' }}>
-                            Fuente de Financiamiento:
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                            Precio Compra (x Unidad)
                           </label>
-                          <select name="fuente_financiamiento" defaultValue="caja_negocio" style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
-                            <option value="caja_negocio">🏪 Caja del Negocio (Ventas)</option>
-                            <option value="aporte_capital">💼 Aporte de Capital (Inyección)</option>
-                            <option value="prestamo">🤝 Préstamo / Pasivo (A devolver)</option>
-                            <option value="ingreso_no_operacional">📈 Ingreso No Operacional</option>
+                          <input 
+                            name="precio_compra" 
+                            type="number" 
+                            placeholder="0" 
+                            style={{ 
+                              width: '100%', 
+                              padding: '10px 12px', 
+                              borderRadius: '8px', 
+                              border: '1px solid #cbd5e1',
+                              fontSize: '14px',
+                              boxSizing: 'border-box'
+                            }} 
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                            Stock Inicial *
+                          </label>
+                          <input 
+                            name="cantidad_actual" 
+                            type="number" 
+                            step="any" 
+                            required 
+                            placeholder="0" 
+                            style={{ 
+                              width: '100%', 
+                              padding: '10px 12px', 
+                              borderRadius: '8px', 
+                              border: '1px solid #cbd5e1',
+                              fontSize: '14px',
+                              boxSizing: 'border-box'
+                            }} 
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>
+                            Stock Mínimo *
+                          </label>
+                          <input 
+                            name="stock_minimo" 
+                            type="number" 
+                            step="any" 
+                            required 
+                            placeholder="0" 
+                            style={{ 
+                              width: '100%', 
+                              padding: '10px 12px', 
+                              borderRadius: '8px', 
+                              border: '1px solid #cbd5e1',
+                              fontSize: '14px',
+                              boxSizing: 'border-box'
+                            }} 
+                          />
+                        </div>
+                      </div>
+
+                      {/* Bloque Financiero / Opciones de Registrar Gasto */}
+                      <div style={{ 
+                        backgroundColor: '#fef2f2', 
+                        border: '1px solid #fecaca', 
+                        borderRadius: '12px', 
+                        padding: '14px 16px', 
+                        display: 'flex', 
+                        flexDirection: 'column', 
+                        gap: '12px',
+                        marginTop: '4px'
+                      }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '700', fontSize: '13px', color: '#dc2626' }}>
+                          <input type="checkbox" name="registrar_gasto" defaultChecked style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#dc2626' }} />
+                          💸 Registrar también la compra como Gasto / Egreso en Finanzas
+                        </label>
+
+                        <div>
+                          <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '4px' }}>
+                            ¿A qué grupo pertenece? (Descontar de):
+                          </label>
+                          <select name="grupo_afectado" defaultValue="comida" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', backgroundColor: '#fff', boxSizing: 'border-box' }}>
+                            <option value="comida">🍔 Comida (Pan, carnes, verduras, salsas, quesos)</option>
+                            <option value="jugos_naturales">🥤 Jugos Naturales (Frutas, pulpas, leche, azúcar)</option>
+                            <option value="cervezas">🍺 Cervezas y Licores (Canastas, barriles y licores)</option>
+                            <option value="gaseosas_embotellados">🍾 Embotellados (Gaseosas, aguas, jugos)</option>
+                            <option value="bebidas_calientes">☕ Bebidas Calientes (Café, té, aromáticas)</option>
+                            <option value="gastos_generales">🏢 Gastos Generales (Servicios, aseo)</option>
                           </select>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                          <div>
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '4px' }}>
+                              Método de Pago:
+                            </label>
+                            <select name="metodo_pago" defaultValue="efectivo" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', backgroundColor: '#fff', boxSizing: 'border-box' }}>
+                              <option value="efectivo">💵 Efectivo (Caja)</option>
+                              <option value="transferencia">💳 Transferencia (Nequi / Daviplata / Banco)</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '4px' }}>
+                              Fuente de Financiamiento:
+                            </label>
+                            <select name="fuente_financiamiento" defaultValue="caja_negocio" style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', backgroundColor: '#fff', boxSizing: 'border-box' }}>
+                              <option value="caja_negocio">🏪 Caja del Negocio (Ventas)</option>
+                              <option value="aporte_capital">💼 Aporte de Capital (Inyección)</option>
+                              <option value="prestamo">🤝 Préstamo / Pasivo (A devolver)</option>
+                              <option value="ingreso_no_operacional">📈 Ingreso No Operacional</option>
+                            </select>
+                          </div>
                         </div>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>
-                      <button type="button" onClick={() => setModalInsumoOpen(false)} style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer' }}>
+                    {/* Pie Fijo con Botones de Acción */}
+                    <div style={{ 
+                      padding: '14px 24px', 
+                      backgroundColor: '#f8fafc', 
+                      borderTop: '1px solid #e2e8f0',
+                      display: 'flex', 
+                      justifyContent: 'flex-end', 
+                      gap: '12px',
+                      flexShrink: 0
+                    }}>
+                      <button 
+                        type="button" 
+                        onClick={() => setModalInsumoOpen(false)} 
+                        style={{ 
+                          padding: '9px 18px', 
+                          borderRadius: '8px', 
+                          border: '1px solid #cbd5e1', 
+                          background: '#ffffff', 
+                          color: '#475569',
+                          fontWeight: '600',
+                          fontSize: '14px',
+                          cursor: 'pointer' 
+                        }}
+                      >
                         Cancelar
                       </button>
-                      <button type="submit" style={{ padding: '8px 18px', borderRadius: '6px', border: 'none', background: 'var(--brand, #144c3c)', color: '#fff', fontWeight: 'bold', cursor: 'pointer' }}>
+                      <button 
+                        type="submit" 
+                        style={{ 
+                          padding: '9px 20px', 
+                          borderRadius: '8px', 
+                          border: 'none', 
+                          background: 'var(--brand, #144c3c)', 
+                          color: '#ffffff', 
+                          fontWeight: '700', 
+                          fontSize: '14px',
+                          cursor: 'pointer',
+                          boxShadow: '0 2px 4px rgba(20, 76, 60, 0.2)'
+                        }}
+                      >
                         💾 Guardar Insumo y Gasto
                       </button>
                     </div>
@@ -2934,15 +3512,15 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                         costo: f.costo ? Number(f.costo.value) : 0,
                         usuario: 'Admin'
                       };
-                      await axios.post(`${targetUrl}/api/inventario/movimientos`, payload, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+                      await axios.post(`${targetUrl}/api/inventario/insumos/${insumoSeleccionado.id}/movimiento`, payload, { headers: { 'ngrok-skip-browser-warning': 'true' } });
                       
                       setModalMovimiento(false);
                       setInsumoSeleccionado(null);
                       if (typeof cargarInventarioDesktop === 'function') cargarInventarioDesktop();
-                      toast.success(tipoMov === 'entrada' ? 'Entrada registrada' : 'Ajuste registrado');
+                      toast.success(tipoMov === 'entrada' ? 'Entrada registrada' : 'Ajuste de inventario aplicado correctamente');
                     } catch (err) {
                       console.error('Error registrando movimiento:', err);
-                      toast.error('Error al guardar el movimiento');
+                      toast.error('Error al guardar el movimiento: ' + (err.response?.data?.error || err.message));
                     }
                   }} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     
@@ -3343,17 +3921,26 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
             {/* Pestaña 1: Nuevo / Editar Producto */}
             {modalSubTab === 'producto' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div key="tab-producto" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 {/* Categoría */}
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', color: 'var(--text2)', marginBottom: '4px', fontWeight: 'bold' }}>
                     Categoría:
                   </label>
                   <select
-                    value={categoriaInput}
+                    value={formProd.categoria || formProd.cat || (listaCategorias[0] ?? '')}
                     onChange={(e) => {
-                      setCategoriaInput(e.target.value);
-                      handleCambioCategoria(e.target.value);
+                      const nuevaCat = e.target.value;
+                      setCategoriaInput(nuevaCat);
+                      setFormProd(prev => ({
+                        ...prev,
+                        categoria: nuevaCat,
+                        cat: nuevaCat,
+                        grupo_reporte: prev.grupo_reporte && prev.grupo_reporte !== 'comida' ? prev.grupo_reporte : sugerirGrupoReporte(nuevaCat, prev.nombre)
+                      }));
+                      if (typeof handleCambioCategoria === 'function') {
+                        handleCambioCategoria(nuevaCat);
+                      }
                     }}
                     style={{
                       width: '100%',
@@ -3544,7 +4131,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                   >
                     <option value="comida">🍔 Comida preparada (Hamburguesas, Perros, Burritos, etc.)</option>
                     <option value="jugos_naturales">🥤 Jugos naturales y limonadas</option>
-                    <option value="cervezas">🍺 Cerveza nacional e importada</option>
+                    <option value="cervezas">🍺 Cervezas y Licores</option>
                     <option value="gaseosas_embotellados">🍾 Gaseosas, aguas y embotellados</option>
                     <option value="bebidas_calientes">☕ Bebidas calientes (cafés, tés, aromáticas)</option>
                   </select>
@@ -3638,7 +4225,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
 
             {/* Pestaña 2: Gestionar Categorías */}
             {modalSubTab === 'categorias' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div key="tab-categorias" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 {/* Formulario rápido arriba */}
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <input
@@ -3690,23 +4277,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                           {!esFijo && (
                             <button
                               type="button"
-                              onClick={async () => {
-                                if (window.confirm(`¿Eliminar la categoría "${nombreCat}"? Sus productos pasarán automáticamente a "Otros".`)) {
-                                  try {
-                                    const targetUrl = serverUrl || 'http://localhost:3001';
-                                    await axios.delete(`${targetUrl}/api/categorias/${encodeURIComponent(nombreCat)}`);
-                                    setCatFiltro('Todos');
-                                    await cargarCatalogo();
-                                    if (socket && typeof socket.emit === 'function') {
-                                      socket.emit('catalogo_actualizado');
-                                    }
-                                    toast.success(`Categoría "${nombreCat}" eliminada`);
-                                  } catch (e) {
-                                    console.error(e);
-                                    toast.error("Error al eliminar la categoría");
-                                  }
-                                }
-                              }}
+                              onClick={() => confirmarYEliminarCategoria(nombreCat)}
                               style={{ background: '#FEE2E2', color: '#DC2626', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
                               title="Eliminar categoría"
                             >
@@ -3804,7 +4375,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
                 >
                   <option value="comida">🍔 Comida (Pan, carnes, verduras, salsas, quesos)</option>
                   <option value="jugos_naturales">🥤 Jugos Naturales (Frutas, pulpas, leche, azúcar)</option>
-                  <option value="cervezas">🍺 Cervezas (Canastas y barriles de cerveza)</option>
+                  <option value="cervezas">🍺 Cervezas y Licores (Canastas, barriles y licores)</option>
                   <option value="gaseosas_embotellados">🍾 Embotellados (Gaseosas, aguas, jugos en caja)</option>
                   <option value="bebidas_calientes">☕ Bebidas Calientes (Café, té, aromáticas, leche)</option>
                   <option value="gastos_generales">🏢 Gastos Generales (Servicios, aseo, mantenimiento)</option>
@@ -4171,18 +4742,23 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
   );
 }
 
-const navBtnStyle = (isActive) => ({
-  padding: '12px 16px',
+const navBtnStyle = (isActive, isCollapsed = false) => ({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: isCollapsed ? 'center' : 'flex-start',
+  gap: isCollapsed ? '0px' : '10px',
+  padding: isCollapsed ? '10px 0px' : '10px 14px',
   border: 'none',
   borderRadius: '12px',
-  textAlign: 'left',
-  fontSize: '16px',
+  textAlign: isCollapsed ? 'center' : 'left',
+  fontSize: '15px',
   fontWeight: 'bold',
   cursor: 'pointer',
-  backgroundColor: isActive ? 'var(--orange-light)' : 'transparent',
+  backgroundColor: isActive ? 'var(--orange-light, #ea580c)' : 'transparent',
   color: isActive ? 'white' : 'var(--text2)',
-  transition: 'all 0.2s',
-  border: isActive ? 'none' : '1px solid transparent',
+  transition: 'all 0.2s ease',
+  width: '100%',
+  outline: 'none'
 });
 
 const kpiCardStyle = {

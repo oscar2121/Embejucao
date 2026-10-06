@@ -189,6 +189,16 @@ io.on('connection', async (socket) => {
     });
   });
 
+  socket.on('producto:actualizado', (data) => {
+    io.emit('catalogo_actualizado', data);
+    io.emit('productos_actualizados', data);
+  });
+
+  socket.on('productos_actualizados', (data) => {
+    io.emit('catalogo_actualizado', data);
+    io.emit('productos_actualizados', data);
+  });
+
   socket.on('disconnect', () => {
     for (let [usuarioId, socketId] of usuariosConectados.entries()) {
       if (socketId === socket.id) {
@@ -202,6 +212,12 @@ io.on('connection', async (socket) => {
 
 app.use(cors());
 app.use(express.json());
+
+// Inyectar io en req para emitir desde los endpoints HTTP
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
 
 // LOG de todas las peticiones entrantes (debug)
 app.use((req, res, next) => {
@@ -280,19 +296,13 @@ app.post('/api/creditos/abono', async (req, res) => {
     return res.status(400).json({ error: 'Cliente y monto válido son requeridos.' });
   }
 
+  if (metodo_pago && (metodo_pago.toLowerCase() === 'cortesía' || metodo_pago.toLowerCase() === 'cortesia')) {
+    return res.status(400).json({ error: 'No se permite usar cortesía como método de pago para abonar o pagar créditos.' });
+  }
+
   const fechaHoy = new Date().toISOString();
 
   try {
-    await dbRun(`CREATE TABLE IF NOT EXISTS abonos_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente_id TEXT, deudor TEXT, monto REAL, metodo_pago TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    await dbRun(`CREATE TABLE IF NOT EXISTS clientes_credito (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE, saldo_pendiente REAL DEFAULT 0, ultimo_abono REAL DEFAULT 0, fecha_ultimo_abono TEXT)`);
-    await dbRun(`CREATE TABLE IF NOT EXISTS abonos_fiados (id INTEGER PRIMARY KEY AUTOINCREMENT, deudor TEXT, monto REAL, metodo_pago TEXT, pedido_id INTEGER, sesion_id INTEGER, fecha DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    await dbRun(`ALTER TABLE pedidos ADD COLUMN abono_parcial REAL DEFAULT 0`, () => {});
-    await dbRun(`ALTER TABLE pedidos ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
-    await dbRun(`ALTER TABLE pedidos ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
-    await dbRun(`ALTER TABLE pedidos ADD COLUMN metodo_pago_abono TEXT`, () => {});
-    await dbRun(`ALTER TABLE clientes_credito ADD COLUMN ultimo_abono REAL DEFAULT 0`, () => {});
-    await dbRun(`ALTER TABLE clientes_credito ADD COLUMN fecha_ultimo_abono TEXT`, () => {});
-
     await dbRun(
       `INSERT INTO abonos_credito (cliente_id, deudor, monto, metodo_pago, fecha) VALUES (?, ?, ?, ?, datetime('now', 'localtime'))`,
       [targetCliente, targetCliente, montoAbono, metodo_pago || 'Efectivo']
@@ -308,6 +318,25 @@ app.post('/api/creditos/abono', async (req, res) => {
     );
 
     if (Array.isArray(ordenesFiadas) && ordenesFiadas.length > 0) {
+      let deudaTotal = 0;
+      ordenesFiadas.forEach(ord => {
+        let totalOrd = Number(ord.total || 0);
+        if (totalOrd <= 0 && ord.items) {
+          try {
+            const items = typeof ord.items === 'string' ? JSON.parse(ord.items) : (ord.items || []);
+            totalOrd = items.reduce((sum, item) => sum + (Number(item.precio || 0) * Number(item.cantidad || 1)), 0);
+          } catch (e) {}
+        }
+        const abonoPrev = Number(ord.abono_parcial || 0);
+        deudaTotal += Math.max(0, totalOrd - abonoPrev);
+      });
+
+      if (deudaTotal > 0 && montoAbono > deudaTotal + 1) {
+        return res.status(400).json({ 
+          error: `El abono ($${montoAbono.toLocaleString('es-CO')}) no puede superar el saldo pendiente de $${Math.round(deudaTotal).toLocaleString('es-CO')}.` 
+        });
+      }
+
       let restante = montoAbono;
       for (const ord of ordenesFiadas) {
         if (restante <= 0) break;
@@ -643,9 +672,56 @@ app.put('/api/adicionales/:id', (req, res) => {
 });
 
 app.delete('/api/adicionales/:id', (req, res) => {
-  db.run('DELETE FROM adicionales WHERE id = ?', [req.params.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true, changes: this.changes });
+  const adicionalId = Number(req.params.id);
+
+  if (isNaN(adicionalId) || adicionalId <= 0) {
+    return res.status(400).json({ error: "ID de adicional inválido" });
+  }
+
+  db.serialize(() => {
+    db.run("BEGIN TRANSACTION");
+
+    // 1. Eliminar relaciones puente con productos o grupos si existen
+    db.run(
+      `DELETE FROM producto_adicionales WHERE adicional_id = ?`,
+      [adicionalId],
+      function (errRel) {
+        if (errRel && !errRel.message.includes('no such table')) {
+          console.error("Error al desvincular adicional de productos:", errRel);
+          db.run("ROLLBACK");
+          return res.status(500).json({ error: "Error al desvincular relaciones del adicional" });
+        }
+
+        // 2. Eliminar el registro principal en la tabla adicionales
+        db.run(
+          `DELETE FROM adicionales WHERE id = ?`,
+          [adicionalId],
+          function (errDel) {
+            if (errDel) {
+              console.error("Error al eliminar adicional:", errDel);
+              db.run("ROLLBACK");
+              return res.status(500).json({ error: "Error al eliminar adicional de la base de datos" });
+            }
+
+            // 3. Confirmar transacción
+            db.run("COMMIT", (errCommit) => {
+              if (errCommit) {
+                db.run("ROLLBACK");
+                return res.status(500).json({ error: "Error al confirmar transacción en SQLite" });
+              }
+
+              // 4. Emitir un único evento canónico hacia el cliente
+              const ioInstance = req.io || (typeof io !== 'undefined' ? io : null);
+              if (ioInstance) {
+                ioInstance.emit('adicionales_actualizados');
+              }
+
+              res.json({ success: true, mensaje: "Adicional eliminado correctamente" });
+            });
+          }
+        );
+      }
+    );
   });
 });
 
@@ -710,7 +786,8 @@ app.get('/api/productos', (req, res) => {
 
 app.post('/api/productos', (req, res) => {
   const { id, cat, categoria, nombre, precio, desc, descripcion, emoji, disp, disponible, usuario, imagen, grupo_reporte } = req.body;
-  const dispVal = disp !== false && disponible !== false ? 1 : 0;
+  const isDispFalse = (disp === false || disp === 0 || disp === '0' || disponible === false || disponible === 0 || disponible === '0');
+  const dispVal = isDispFalse ? 0 : 1;
   const categoriaFinal = (categoria || cat || '').toString().trim() || 'Otros';
   const descFinal = desc || descripcion || '';
   const grupoFinal = grupo_reporte || 'comida';
@@ -727,8 +804,10 @@ app.post('/api/productos', (req, res) => {
           db.run(`INSERT OR IGNORE INTO categorias (nombre, color) VALUES (?, ?)`, [categoriaFinal, '#16a34a']);
         }
 
-        if (req.io) req.io.emit('catalogo_actualizado');
-        if (typeof io !== 'undefined') io.emit('productos_actualizados');
+        if (req.io) {
+          req.io.emit('catalogo_actualizado');
+          req.io.emit('productos_actualizados');
+        }
         broadcastComandasActivas();
 
         res.json({ success: true, updated: this.changes });
@@ -746,8 +825,10 @@ app.post('/api/productos', (req, res) => {
           db.run(`INSERT OR IGNORE INTO categorias (nombre, color) VALUES (?, ?)`, [categoriaFinal, '#16a34a']);
         }
 
-        if (req.io) req.io.emit('catalogo_actualizado');
-        if (typeof io !== 'undefined') io.emit('productos_actualizados');
+        if (req.io) {
+          req.io.emit('catalogo_actualizado');
+          req.io.emit('productos_actualizados');
+        }
         broadcastComandasActivas();
 
         res.json({ success: true, id: this.lastID });
@@ -757,9 +838,11 @@ app.post('/api/productos', (req, res) => {
 });
 
 app.put('/api/productos/:id', (req, res) => {
-  const { nombre, precio, cat, categoria, activo, grupo_reporte } = req.body;
+  const { nombre, precio, cat, categoria, activo, disp, disponible, grupo_reporte } = req.body;
   const usuario = req.body.usuario || 'Admin';
   const catVal = categoria || cat;
+  const isDispFalse = (disp === false || disp === 0 || disp === '0' || disponible === false || disponible === 0 || disponible === '0' || activo === false || activo === 0);
+  const dispVal = isDispFalse ? 0 : 1;
   
   db.run(
     `UPDATE productos SET 
@@ -767,15 +850,17 @@ app.put('/api/productos/:id', (req, res) => {
       precio = COALESCE(?, precio), 
       cat = COALESCE(?, cat), 
       categoria = COALESCE(?, categoria), 
-      disp = COALESCE(?, disp),
+      disp = ?,
       grupo_reporte = COALESCE(?, grupo_reporte)
      WHERE id = ?`,
-    [nombre, precio, catVal, catVal, activo !== undefined ? activo : 1, grupo_reporte || null, req.params.id],
+    [nombre, precio, catVal, catVal, dispVal, grupo_reporte || null, req.params.id],
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
       logAuditoria(usuario, 'producto_actualizado', `Producto modificado: ${nombre || req.params.id} ($${precio || 'Sin cambio'})`);
-      if (req.io) req.io.emit('catalogo_actualizado');
-      if (typeof io !== 'undefined') io.emit('productos_actualizados');
+      if (req.io) {
+        req.io.emit('catalogo_actualizado');
+        req.io.emit('productos_actualizados');
+      }
       broadcastComandasActivas();
       res.json({ success: true, updatedID: req.params.id });
     }
@@ -783,17 +868,28 @@ app.put('/api/productos/:id', (req, res) => {
 });
 
 app.put('/api/productos/:id/disponibilidad', (req, res) => {
-  const { disp, usuario } = req.body;
+  const { disp, disponible, usuario } = req.body;
+  const isDispFalse = (disp === false || disp === 0 || disp === '0' || disponible === false || disponible === 0 || disponible === '0');
+  const dispVal = isDispFalse ? 0 : 1;
+
   db.get(`SELECT nombre FROM productos WHERE id = ?`, [req.params.id], (errGet, prod) => {
     const prodName = prod ? prod.nombre : 'Producto #' + req.params.id;
     db.run(
       `UPDATE productos SET disp = ? WHERE id = ?`,
-      [disp ? 1 : 0, req.params.id],
+      [dispVal, req.params.id],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
-        logAuditoria(usuario, 'disponibilidad_cambiada', `Disponibilidad de ${prodName} cambiada a: ${disp ? 'Disponible' : 'No Disponible'}`);
-        if (req.io) req.io.emit('catalogo_actualizado');
-        if (typeof io !== 'undefined') io.emit('productos_actualizados');
+        logAuditoria(usuario, 'disponibilidad_cambiada', `Disponibilidad de ${prodName} cambiada a: ${dispVal ? 'Disponible' : 'No Disponible'}`);
+        if (req.io) {
+          req.io.emit('catalogo_actualizado');
+          req.io.emit('productos_actualizados');
+          req.io.emit('producto:actualizado', { id: req.params.id, disponible: dispVal, disp: dispVal });
+        }
+        if (typeof io !== 'undefined') {
+          io.emit('catalogo_actualizado');
+          io.emit('productos_actualizados');
+          io.emit('producto:actualizado', { id: req.params.id, disponible: dispVal, disp: dispVal });
+        }
         broadcastComandasActivas();
         res.json({ success: true });
       }
@@ -807,13 +903,22 @@ app.delete('/api/productos/:id', (req, res) => {
   
   db.get(`SELECT nombre FROM productos WHERE id = ?`, [id], (errGet, prod) => {
     const prodName = prod ? prod.nombre : 'Producto #' + id;
-    db.run(`DELETE FROM productos WHERE id = ?`, [id], function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      logAuditoria(usuario, 'producto_eliminado', `Producto eliminado: ${prodName}`);
-      if (req.io) req.io.emit('catalogo_actualizado');
-      if (typeof io !== 'undefined') io.emit('productos_actualizados');
-      broadcastComandasActivas();
-      res.json({ success: true, deleted: this.changes });
+    db.run(`DELETE FROM producto_insumos WHERE producto_id = ?`, [id], (errDelIns) => {
+      if (errDelIns) console.error("Error al eliminar ingredientes de producto:", errDelIns);
+      db.run(`DELETE FROM productos WHERE id = ?`, [id], function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        logAuditoria(usuario, 'producto_eliminado', `Producto eliminado: ${prodName}`);
+        if (req.io) {
+          req.io.emit('catalogo_actualizado');
+          req.io.emit('productos_actualizados');
+        }
+        if (typeof io !== 'undefined') {
+          io.emit('catalogo_actualizado');
+          io.emit('productos_actualizados');
+        }
+        broadcastComandasActivas();
+        res.json({ success: true, deleted: this.changes });
+      });
     });
   });
 });
@@ -908,27 +1013,51 @@ app.delete('/api/categorias/:nombre', (req, res) => {
       return res.status(400).json({ error: "No se puede eliminar esta categoría" });
     }
 
-    db.run(
-      `UPDATE productos SET categoria = 'Otros', cat = 'Otros' WHERE LOWER(categoria) = LOWER(?) OR LOWER(cat) = LOWER(?)`,
-      [nombreLimpio, nombreLimpio],
-      function (errUpdate) {
-        if (errUpdate) console.error("Error al reasignar productos:", errUpdate);
+    db.serialize(() => {
+      db.run("BEGIN TRANSACTION");
 
-        db.run(
-          `DELETE FROM categorias WHERE LOWER(nombre) = LOWER(?) OR id = ?`,
-          [nombreLimpio, isNaN(Number(param)) ? -1 : Number(param)],
-          function (errDel) {
-            if (errDel) console.error("Error al eliminar de tabla categorias:", errDel);
-
-            if (req.io) req.io.emit('catalogo_actualizado');
-            if (typeof io !== 'undefined') io.emit('productos_actualizados');
-            broadcastComandasActivas();
-
-            res.json({ success: true, mensaje: "Categoría eliminada y productos reasignados a 'Otros'" });
+      // 1. Reasignar productos
+      db.run(
+        `UPDATE productos SET categoria = 'Otros', cat = 'Otros' WHERE LOWER(categoria) = LOWER(?) OR LOWER(cat) = LOWER(?)`,
+        [nombreLimpio, nombreLimpio],
+        function (errUpdate) {
+          if (errUpdate) {
+            console.error("Error al reasignar productos:", errUpdate);
+            db.run("ROLLBACK");
+            return res.status(500).json({ error: "Error al reasignar productos" });
           }
-        );
-      }
-    );
+
+          // 2. Eliminar la categoría
+          db.run(
+            `DELETE FROM categorias WHERE LOWER(nombre) = LOWER(?) OR id = ?`,
+            [nombreLimpio, isNaN(Number(param)) ? -1 : Number(param)],
+            function (errDel) {
+              if (errDel) {
+                console.error("Error al eliminar categoría:", errDel);
+                db.run("ROLLBACK");
+                return res.status(500).json({ error: "Error al eliminar categoría" });
+              }
+
+              db.run("COMMIT", (errCommit) => {
+                if (errCommit) {
+                  db.run("ROLLBACK");
+                  return res.status(500).json({ error: "Error al confirmar transacción" });
+                }
+
+                // 3. Emitir un único evento canónico para evitar tormenta de re-fetches
+                const ioInstance = req.io || (typeof io !== 'undefined' ? io : null);
+                if (ioInstance) {
+                  ioInstance.emit('catalogo_actualizado');
+                }
+                broadcastComandasActivas();
+
+                res.json({ success: true, mensaje: "Categoría eliminada correctamente" });
+              });
+            }
+          );
+        }
+      );
+    });
   };
 
   if (nombreQuery) {
@@ -951,8 +1080,8 @@ app.post('/api/gastos', async (req, res) => {
   const grupoLimpio = String(grupo_afectado || 'comida').toLowerCase().trim();
   const fuenteFinLimpia = String(fuente_financiamiento || origen_dinero || 'caja_negocio').toLowerCase().trim();
 
-  if (!descripcion || isNaN(montoNum) || !metodo_pago) {
-    return res.status(400).json({ error: "Descripción, monto y método de pago (efectivo/transferencia) son obligatorios." });
+  if (!descripcion || isNaN(montoNum) || montoNum <= 0) {
+    return res.status(400).json({ error: "Descripción y un monto mayor a cero son obligatorios." });
   }
 
   try {
@@ -1068,7 +1197,7 @@ app.get('/api/gastos', async (req, res) => {
               COALESCE(metodo_pago, 'efectivo') as metodo_pago, 
               COALESCE(grupo_afectado, 'gastos_generales') as grupo_afectado, 
               COALESCE(caja_sesion_id, sesion_id) as caja_sesion_id, 
-              usuario, created_at 
+              usuario, COALESCE(fuente_financiamiento, 'caja_negocio') as fuente_financiamiento, COALESCE(origen_dinero, 'caja_negocio') as origen_dinero, created_at 
        FROM gastos 
        WHERE ${where} 
        ORDER BY fecha DESC, id DESC`,
@@ -1078,6 +1207,10 @@ app.get('/api/gastos', async (req, res) => {
     const resumen = {
       total_efectivo: 0,
       total_transferencia: 0,
+      total_caja_negocio: 0,
+      total_aporte_capital: 0,
+      total_prestamo: 0,
+      total_ingreso_no_operacional: 0,
       total_gastos: 0,
       lista: rows || [],
       gastos: rows || []
@@ -1086,11 +1219,24 @@ app.get('/api/gastos', async (req, res) => {
     (rows || []).forEach(g => {
       const val = Number(g.monto) || 0;
       const metodo = String(g.metodo_pago || '').toLowerCase();
+      const fuente = String(g.fuente_financiamiento || g.origen_dinero || 'caja_negocio').toLowerCase().trim();
+
       if (metodo === 'transferencia' || metodo.includes('nequi') || metodo.includes('daviplata')) {
         resumen.total_transferencia += val;
       } else {
         resumen.total_efectivo += val;
       }
+
+      if (fuente === 'aporte_capital') {
+        resumen.total_aporte_capital += val;
+      } else if (fuente === 'prestamo') {
+        resumen.total_prestamo += val;
+      } else if (fuente === 'ingreso_no_operacional') {
+        resumen.total_ingreso_no_operacional += val;
+      } else {
+        resumen.total_caja_negocio += val;
+      }
+
       resumen.total_gastos += val;
     });
 
@@ -1388,11 +1534,28 @@ app.get('/api/inventario/movimientos', (req, res) => {
 });
 
 app.post('/api/inventario/insumos', async (req, res) => {
-  const { nombre, unidad, cantidad_actual, stock_minimo, precio_compra, usuario, metodo_pago, grupo_afectado, fuente_financiamiento, registrar_gasto } = req.body;
+  const { id, nombre, unidad, cantidad_actual, stock_minimo, precio_compra, usuario, metodo_pago, grupo_afectado, fuente_financiamiento, registrar_gasto } = req.body;
   const cantNum = Number(cantidad_actual) || 0;
   const precioNum = Number(precio_compra) || 0;
   const stockMinNum = Number(stock_minimo) || 0;
   const usuarioResp = usuario || 'Administrador';
+
+  if (id) {
+    db.run(
+      `UPDATE insumos SET nombre = ?, unidad = ?, cantidad_actual = ?, stock_minimo = ?, precio_compra = ? WHERE id = ?`,
+      [String(nombre || '').trim(), unidad || 'Unidad', cantNum, stockMinNum, precioNum, id],
+      function (err) {
+        if (err) return res.status(400).json({ error: err.message });
+        logAuditoria(usuarioResp, 'insumo_actualizado', `Insumo modificado: ${nombre}`);
+        if (req.io) {
+          req.io.emit('inventario:actualizado');
+          req.io.emit('inventario_actualizado');
+        }
+        res.json({ success: true, id });
+      }
+    );
+    return;
+  }
 
   db.run(
     `INSERT INTO insumos (nombre, unidad, cantidad_actual, stock_minimo, precio_compra) VALUES (?, ?, ?, ?, ?)`,
@@ -1440,6 +1603,7 @@ app.post('/api/inventario/insumos', async (req, res) => {
             if (errGasto) console.error("Error al registrar gasto de insumo:", errGasto);
             if (req.io) {
               req.io.emit('inventario:actualizado');
+              req.io.emit('inventario_actualizado');
               req.io.emit('caja_actualizada');
               req.io.emit('gastos_actualizados');
               req.io.emit('caja:estado');
@@ -1451,6 +1615,7 @@ app.post('/api/inventario/insumos', async (req, res) => {
       } else {
         if (req.io) {
           req.io.emit('inventario:actualizado');
+          req.io.emit('inventario_actualizado');
         }
         return res.json({ success: true, id: insumoId, gastoRegistrado: false });
       }
@@ -1458,45 +1623,89 @@ app.post('/api/inventario/insumos', async (req, res) => {
   );
 });
 
-app.delete('/api/inventario/insumos/:id', (req, res) => {
-  const { id } = req.params;
+app.delete(['/api/inventario/insumos/:id', '/api/insumos/:id'], (req, res) => {
+  const insumoId = Number(req.params.id);
   const usuario = req.body?.usuario || req.query?.usuario || 'Admin';
 
-  db.get(`SELECT nombre FROM insumos WHERE id = ?`, [id], (errGet, ins) => {
+  if (isNaN(insumoId) || insumoId <= 0) {
+    return res.status(400).json({ error: "ID de insumo inválido" });
+  }
+
+  db.get(`SELECT nombre FROM insumos WHERE id = ?`, [insumoId], (errGet, ins) => {
     if (errGet) return res.status(500).json({ error: errGet.message });
     if (!ins) return res.status(404).json({ error: 'Insumo no encontrado' });
 
     const insNombre = String(ins.nombre || '').trim();
 
     db.serialize(() => {
-      db.run(`DELETE FROM movimientos_inventario WHERE insumo_id = ?`, [id]);
-      db.run(`DELETE FROM producto_insumos WHERE insumo_id = ?`, [id]);
-      db.run(
-        `DELETE FROM gastos WHERE insumo_id = ? OR LOWER(descripcion) LIKE LOWER(?)`,
-        [id, `%${insNombre.toLowerCase()}%`]
-      );
-      db.run(`DELETE FROM insumos WHERE id = ?`, [id], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        if (typeof logAuditoria === 'function') {
-          logAuditoria(usuario, 'insumo_eliminado', `Insumo eliminado y dinero revertido: ${insNombre}`);
+      db.run("BEGIN TRANSACTION");
+
+      // 1. Limpiar movimientos de inventario asociados
+      db.run(`DELETE FROM movimientos_inventario WHERE insumo_id = ?`, [insumoId], function (errMov) {
+        if (errMov) {
+          console.error("Error al eliminar movimientos de inventario:", errMov);
+          db.run("ROLLBACK");
+          return res.status(500).json({ error: "Error al eliminar movimientos del insumo" });
         }
-        if (req.io) {
-          req.io.emit('inventario:actualizado');
-          req.io.emit('gastos_actualizados');
-          req.io.emit('caja_actualizada');
-          req.io.emit('caja:estado');
-          req.io.emit('dashboard:actualizado');
-        }
-        res.json({ success: true, deleted: this.changes, message: 'Insumo y sus gastos asociados fueron eliminados y revertidos con éxito' });
+
+        // 2. Desvincular de recetas o composiciones de productos
+        db.run(`DELETE FROM producto_insumos WHERE insumo_id = ?`, [insumoId], function (errRecetas) {
+          if (errRecetas) {
+            console.error("Error al desvincular recetas:", errRecetas);
+            db.run("ROLLBACK");
+            return res.status(500).json({ error: "Error al desvincular recetas del insumo" });
+          }
+
+          // 3. Eliminar gastos asociados al insumo
+          db.run(`DELETE FROM gastos WHERE insumo_id = ?`, [insumoId], function (errGastos) {
+            if (errGastos) {
+              console.error("Error al eliminar gastos asociados:", errGastos);
+              db.run("ROLLBACK");
+              return res.status(500).json({ error: "Error al eliminar gastos asociados al insumo" });
+            }
+
+            // 4. Eliminar el insumo de la tabla principal
+            db.run(`DELETE FROM insumos WHERE id = ?`, [insumoId], function (errDel) {
+              if (errDel) {
+                console.error("Error al eliminar insumo:", errDel);
+                db.run("ROLLBACK");
+                return res.status(500).json({ error: "Error al eliminar insumo de la base de datos" });
+              }
+
+              db.run("COMMIT", (errCommit) => {
+                if (errCommit) {
+                  db.run("ROLLBACK");
+                  return res.status(500).json({ error: "Error al confirmar transacción en SQLite" });
+                }
+
+                if (typeof logAuditoria === 'function') {
+                  logAuditoria(usuario, 'insumo_eliminado', `Insumo eliminado y dinero revertido: ${insNombre}`);
+                }
+
+                // 5. Emitir un único evento canónico para sincronizar clientes
+                const ioInstance = req.io || (typeof io !== 'undefined' ? io : null);
+                if (ioInstance) {
+                  ioInstance.emit('inventario_actualizado');
+                }
+
+                res.json({ success: true, mensaje: "Insumo eliminado correctamente" });
+              });
+            });
+          });
+        });
       });
     });
   });
 });
 
-app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {
-  const insumoId = req.params.id;
+const manejarMovimientoInventario = (req, res) => {
+  const insumoId = req.params.id || req.body.insumo_id;
   const { tipo, cantidad, motivo, fecha, usuario } = req.body;
-  const fechaMov = fecha || new Date().toISOString().split('T')[0];
+  const fechaMov = fecha || getFechaHoyCO();
+
+  if (!insumoId) {
+    return res.status(400).json({ error: 'ID de insumo no especificado' });
+  }
 
   db.serialize(() => {
     db.run("BEGIN TRANSACTION");
@@ -1507,16 +1716,17 @@ app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {
         return res.status(404).json({ error: 'Insumo no encontrado' });
       }
 
-      let nuevaCantidad = insumo.cantidad_actual;
+      let nuevaCantidad = Number(insumo.cantidad_actual || 0);
+      const cantNum = Number(cantidad || 0);
       if (tipo === 'entrada') {
-        nuevaCantidad += parseFloat(cantidad);
+        nuevaCantidad += cantNum;
       } else if (tipo === 'ajuste') {
-        nuevaCantidad = parseFloat(cantidad);
+        nuevaCantidad = cantNum;
       }
 
       db.run(
         `INSERT INTO movimientos_inventario (insumo_id, tipo, cantidad, fecha, motivo) VALUES (?, ?, ?, ?, ?)`,
-        [insumoId, tipo, cantidad, fechaMov, motivo || 'Sin motivo'],
+        [insumoId, tipo, cantNum, fechaMov, motivo || (tipo === 'entrada' ? 'Compra' : 'Ajuste manual')],
         function (errInsert) {
           if (errInsert) {
             db.run("ROLLBACK");
@@ -1535,13 +1745,18 @@ app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {
               db.run("COMMIT");
               const accionAuditoria = tipo === 'entrada' ? 'entrada_inventario' : 'ajuste_inventario';
               const detalleAuditoria = tipo === 'entrada' 
-                ? `Entrada de ${cantidad} unidades de ${insumo.nombre}. Motivo: ${motivo}`
-                : `Ajuste de stock de ${insumo.nombre} a ${cantidad} unidades. Motivo: ${motivo}`;
-              logAuditoria(usuario, accionAuditoria, detalleAuditoria);
+                ? `Entrada de ${cantNum} unidades de ${insumo.nombre}. Motivo: ${motivo}`
+                : `Ajuste de stock de ${insumo.nombre} a ${cantNum} unidades. Motivo: ${motivo}`;
+              logAuditoria(usuario || 'Admin', accionAuditoria, detalleAuditoria);
+
+              if (req.io) {
+                req.io.emit('inventario:actualizado');
+                req.io.emit('inventario_actualizado');
+              }
 
               if (tipo === 'entrada') {
                 const precioUnit = parseFloat(req.body.precio_compra) || parseFloat(req.body.costo) || parseFloat(insumo.precio_compra) || 0;
-                const subtotalGasto = parseFloat(req.body.costo) > 0 ? parseFloat(req.body.costo) : (parseFloat(cantidad) * precioUnit);
+                const subtotalGasto = parseFloat(req.body.costo) > 0 ? parseFloat(req.body.costo) : (cantNum * precioUnit);
                 if (subtotalGasto > 0) {
                   const formaPago = (req.body.metodo_pago || 'efectivo').toLowerCase();
                   const grupoLimpio = String(req.body.grupo_afectado || 'comida').toLowerCase();
@@ -1550,7 +1765,7 @@ app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {
                   db.run(`
                     INSERT INTO gastos (categoria, descripcion, monto, valor, metodo_pago, grupo_afectado, fuente_financiamiento, origen_dinero, fecha, usuario)
                     VALUES ('Ingredientes / Materia Prima', ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?)
-                  `, [`Entrada insumo: ${insumo.nombre} (${cantidad} ${insumo.unidad})`, subtotalGasto, subtotalGasto, formaPago, grupoLimpio, fuenteFin, fuenteFin, usuario || 'Admin'], () => {
+                  `, [`Entrada insumo: ${insumo.nombre} (${cantNum} ${insumo.unidad})`, subtotalGasto, subtotalGasto, formaPago, grupoLimpio, fuenteFin, fuenteFin, usuario || 'Admin'], () => {
                     if (req.io) {
                       req.io.emit('caja_actualizada');
                       req.io.emit('gastos_actualizados');
@@ -1561,14 +1776,17 @@ app.post('/api/inventario/insumos/:id/movimiento', (req, res) => {
                 }
               }
 
-              res.json({ success: true, insumo_id: insumoId });
+              res.json({ success: true, insumo_id: insumoId, nueva_cantidad: nuevaCantidad });
             }
           );
         }
       );
     });
   });
-});
+};
+
+app.post('/api/inventario/insumos/:id/movimiento', manejarMovimientoInventario);
+app.post('/api/inventario/movimientos', manejarMovimientoInventario);
 
 app.get('/api/inventario/movimientos', (req, res) => {
   db.all(
@@ -1929,13 +2147,18 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Iniciar servidor
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-  console.log(`📡 API disponible en http://localhost:${PORT}/api`);
-});
+// Iniciar servidor solo si no estamos en entorno de pruebas
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`📡 API disponible en http://localhost:${PORT}/api`);
+  });
+}
 
 process.on('SIGINT', () => {
   db.close();
   process.exit();
 });
+
+module.exports = app;
+

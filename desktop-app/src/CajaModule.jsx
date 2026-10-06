@@ -64,14 +64,18 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
       if (!p) return false;
       const estado = String(p.estado || '').toLowerCase().trim();
       if (['cobrado', 'cancelado', 'archivado'].includes(estado)) return false;
-      if (p.pagado === 1 || p.pagado === true) return false;
+      const tot = Number(p.total || 0);
+      const abono = Number(p.abono_parcial || 0);
+      if (tot > 0 && abono >= tot) return false;
       return estado === 'fiado' || estado === 'credito' || p.fiado === 1 || p.fiado === true;
     }),
     ...fiadosDirectos.filter(f => {
       if (!f) return false;
       const estado = String(f.estado || '').toLowerCase().trim();
       if (['cobrado', 'cancelado', 'archivado'].includes(estado)) return false;
-      if (f.pagado === 1 || f.pagado === true) return false;
+      const tot = Number(f.total || 0);
+      const abono = Number(f.abono_parcial || 0);
+      if (tot > 0 && abono >= tot) return false;
       return true;
     })
   ];
@@ -85,7 +89,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
   });
   const listaFiados = Array.from(fiadosMap.values());
 
-  // Mesas que tienen pedidos pendientes de cobro o están en estado cuenta/ocupada
+  // Mesas que tienen pedidos pendientes de cobro
   const mesasPorCobrar = (mesas || []).filter(m => {
     const idMesa = String(m.numero || m.num || m.id || '').replace(/\D/g, '');
     const mText = String(m.numero || m.num || m.id || '').trim().toLowerCase();
@@ -93,11 +97,11 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
       const pedidoMesa = String(p.mesa_id || p.mesa || '').replace(/\D/g, '');
       const coincideMesa = Boolean(idMesa && pedidoMesa && idMesa === pedidoMesa) ||
         (String(p.mesa_id || p.mesa || '').trim().toLowerCase() === mText);
-      const estadoValido = !['cobrado', 'cancelado', 'archivado', 'fiado'].includes(String(p.estado || '').toLowerCase());
+      const estadoValido = !['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(String(p.estado || '').toLowerCase());
       const noPagado = (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false);
-      return coincideMesa && estadoValido && noPagado;
+      return coincideMesa && estadoValido && noPagado && !p.deudor;
     });
-    return m.estado === 'cuenta' || m.estado === 'ocupada' || tienePedido;
+    return tienePedido;
   });
 
   // Búsqueda robusta del pedido para la mesa seleccionada:
@@ -119,8 +123,83 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
     : null;
 
   const pedidoActivoDisplay = activeTab === 'creditos' 
-    ? selectedPedido 
-    : (pedidoSeleccionado || selectedPedido);
+    ? (selectedPedido && (selectedPedido.deudor || ['fiado', 'credito'].includes(String(selectedPedido.estado || '').toLowerCase())) ? selectedPedido : null)
+    : (pedidoSeleccionado || (selectedPedido && !selectedPedido.deudor && !['fiado', 'credito'].includes(String(selectedPedido.estado || '').toLowerCase()) ? selectedPedido : null));
+
+  const esPedidoSalidoCocina = (p) => {
+    if (!p) return false;
+    const estadoLower = String(p.estado || '').toLowerCase().trim();
+    if (['listo', 'despachado', 'completado', 'cuenta', 'cobrado', 'entregado'].includes(estadoLower)) {
+      return true;
+    }
+    const items = Array.isArray(p.items) ? p.items : (typeof p.items === 'string' ? JSON.parse(p.items || '[]') : []);
+    if (Array.isArray(items) && items.length > 0 && items.some(i => i && String(i.estado || '').toLowerCase() === 'listo')) {
+      return true;
+    }
+    return false;
+  };
+
+  const handleCancelarPedidoClick = async (pedido) => {
+    if (!pedido) return;
+
+    if (esPedidoSalidoCocina(pedido)) {
+      toast.error('No se puede cancelar: el pedido ya fue despachado o cobrado');
+      return;
+    }
+
+    const mesaNombre = mesaSeleccionada ? (mesaSeleccionada.numero || mesaSeleccionada.num || mesaSeleccionada.id) : (pedido.mesa || '');
+    const confirmMsg = `¿Seguro que deseas cancelar el pedido ${mesaNombre ? `de la Mesa ${mesaNombre}` : ''}?`;
+    let confirmado = false;
+
+    // Diálogo asíncrono no bloqueante
+    if (window.electronAPI?.showMessageBox) {
+      const { response } = await window.electronAPI.showMessageBox({
+        type: 'warning',
+        buttons: ['Sí, Cancelar Pedido', 'Volver'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Cancelar Pedido',
+        message: confirmMsg,
+        detail: 'El pedido pasará a auditoría y la mesa quedará liberada.'
+      });
+      confirmado = (response === 0);
+    } else {
+      confirmado = window.confirm(confirmMsg);
+    }
+
+    if (!confirmado) return;
+
+    try {
+      const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
+      const uuid = pedido.uuid || pedido.id;
+      const res = await axios.post(`${targetUrl}/api/pedidos/${uuid}/cancelar`, {
+        motivo: 'Cancelado desde Caja',
+        usuario: 'Admin'
+      }, { timeout: 8000, headers: { 'ngrok-skip-browser-warning': 'true' } });
+
+      if (res.data && res.data.success) {
+        toast.success('Pedido cancelado correctamente');
+        setMesaSeleccionada(null);
+        setSelectedPedido(null);
+        try {
+          const today = new Date().toISOString().split('T')[0];
+          await Promise.all([
+            axios.get(`${targetUrl}/api/mesas`, { headers: { 'ngrok-skip-browser-warning': 'true' } }),
+            axios.get(`${targetUrl}/api/pedidos/date/${today}`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+          ]);
+        } catch (eRefetch) {}
+      } else {
+        toast.error('⚠️ ' + (res.data?.error || 'Error al cancelar el pedido'));
+      }
+    } catch (error) {
+      console.error('Error al cancelar pedido:', error);
+      toast.error(error.response?.data?.error || 'Error al cancelar pedido');
+    } finally {
+      if (typeof window !== 'undefined' && window.focus) {
+        window.focus();
+      }
+    }
+  };
 
   // Auto-selección al abrir Caja o cambiar de pestaña:
   useEffect(() => {
@@ -375,114 +454,117 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
     try {
       const idPedidoReal = pedidoACobrar.id || pedidoACobrar.uuid;
       const uuidPedidoReal = pedidoACobrar.uuid || pedidoACobrar.id;
+      const totalNum = Number(pedidoACobrar.total || totalCuenta || 0);
+      const idMesaDigits = String(pedidoACobrar.mesa || '').replace(/\D/g, '') || '1';
+      const esPhantom = String(uuidPedidoReal).startsWith('mesa_') || totalNum <= 0;
+
+      const targetUrl = (serverUrl && String(serverUrl).trim()) ? String(serverUrl).trim() : 'http://localhost:3001';
+
+      // Si es una mesa que figuraba ocupada sin consumos ($0) o se solicita liberar
+      if (metodo === 'Liberar' || (esPhantom && metodo !== 'Crédito')) {
+        try {
+          await axios.post(`${targetUrl}/api/mesas/${idMesaDigits}/liberar-forzoso`, {}, {
+            headers: { 'ngrok-skip-browser-warning': 'true' }
+          });
+          toast.success(`Mesa ${idMesaDigits} liberada correctamente.`);
+        } catch (errLib) {
+          console.warn("Error liberando mesa fantasma:", errLib);
+        }
+        setModalPagoVisible(false);
+        setPedidoACobrar(null);
+        setSelectedPedido(null);
+        setMesaSeleccionada(null);
+        return;
+      }
 
       if (metodo === 'Crédito') {
+        if (totalNum <= 0) {
+          toast.error('No se puede enviar a crédito un pedido con total $0.');
+          return;
+        }
         const deudor = deudorName.trim();
         if (!deudor) {
           toast.error('Debes ingresar un nombre para el crédito.');
           return;
         }
-        await axios.put(`${serverUrl}/api/pedidos/${uuidPedidoReal}/fiado`, {
+        await axios.put(`${targetUrl}/api/pedidos/${uuidPedidoReal}/fiado`, {
           deudor,
           fecha_fiado: new Date().toISOString(),
           usuario: 'Caja',
           mesa: pedidoACobrar.mesa,
-          pedido_id: idPedidoReal
+          pedido_id: idPedidoReal,
+          total: totalNum,
+          items: pedidoACobrar.items
         }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
       } else {
-        // Cobro normal (Efectivo / Transferencia / Mixto)
-        if (pedidoACobrar.uuids && pedidoACobrar.uuids.length > 0) {
-          for (let u of pedidoACobrar.uuids) {
-            if (u && u !== 'undefined' && u !== 'null') {
-              try {
-                await axios.delete(`${serverUrl}/api/pedidos/${u}`, {
-                  headers: { 'ngrok-skip-browser-warning': 'true' }
-                });
-              } catch (eDel) {
-                console.warn('Error completando pedido agrupado:', u, eDel);
-              }
-            }
+        // Cobro directo (Efectivo / Transferencia / Mixto / Cortesía)
+        // El endpoint POST /api/ventas ya se encarga atómicamente de:
+        // 1. Guardar la venta y sus detalles
+        // 2. Descontar inventario / kardex
+        // 3. Marcar el pedido como 'cobrado' (pagado = 1)
+        // 4. Liberar la mesa física
+        let detallesVenta = [];
+        if (pedidoACobrar.ordenes_historial) {
+          pedidoACobrar.ordenes_historial.forEach(orden => {
+            obtenerItemsSeguros(orden).forEach(i => detallesVenta.push(i));
+          });
+        } else {
+          detallesVenta = obtenerItemsSeguros(pedidoACobrar);
+        }
+
+        const mappedDetalles = detallesVenta.map(i => ({
+          producto_id: i.productoId || i.id,
+          nombre_producto: getProductoInfo(i.productoId || i.id).nombre,
+          cantidad: i.cantidad || 1,
+          precio_unitario: i.precio || getProductoInfo(i.productoId || i.id).precio,
+          subtotal: (i.cantidad || 1) * (i.precio || getProductoInfo(i.productoId || i.id).precio)
+        }));
+
+        if (metodo.type === 'Mixto') {
+          // Pago mixto: separamos en dos registros para cuadre de caja
+          await axios.post(`${targetUrl}/api/ventas`, {
+            fecha: new Date().toISOString(),
+            tipo_origen: pedidoACobrar.uuids ? 'Crédito Pagado' : 'Mesa',
+            mesa: pedidoACobrar.uuids ? `Deuda: ${pedidoACobrar.deudor}` : pedidoACobrar.mesa,
+            total: metodo.efectivo,
+            metodo_pago: 'Efectivo',
+            sesion_id: sesionActiva ? sesionActiva.id : null,
+            usuario: 'Caja',
+            pedido_id: idPedidoReal,
+            pedido_uuid: uuidPedidoReal,
+            detalles: mappedDetalles
+          }, { timeout: 8000, headers: { 'ngrok-skip-browser-warning': 'true' } });
+
+          if (metodo.transferencia > 0) {
+            await axios.post(`${targetUrl}/api/ventas`, {
+              fecha: new Date().toISOString(),
+              tipo_origen: pedidoACobrar.uuids ? 'Crédito Pagado' : 'Mesa',
+              mesa: pedidoACobrar.uuids ? `Deuda: ${pedidoACobrar.deudor}` : pedidoACobrar.mesa,
+              total: metodo.transferencia,
+              metodo_pago: 'Transferencia',
+              sesion_id: sesionActiva ? sesionActiva.id : null,
+              usuario: 'Caja',
+              pedido_id: idPedidoReal,
+              pedido_uuid: uuidPedidoReal,
+              detalles: []
+            }, { timeout: 8000, headers: { 'ngrok-skip-browser-warning': 'true' } });
           }
         } else {
-          const targetId = uuidPedidoReal;
-          if (targetId && targetId !== 'undefined' && targetId !== 'null') {
-            try {
-              await axios.delete(`${serverUrl}/api/pedidos/${targetId}?pedido_id=${idPedidoReal}&mesa=${encodeURIComponent(pedidoACobrar.mesa || '')}`, {
-                headers: { 'ngrok-skip-browser-warning': 'true' }
-              });
-            } catch (eDel) {
-              console.warn('Error completando pedido:', targetId, eDel);
-            }
-          }
-        }
-        
-        // Registrar en la nueva tabla de ventas para reportes
-        try {
-           let detallesVenta = [];
-           if (pedidoACobrar.ordenes_historial) {
-             pedidoACobrar.ordenes_historial.forEach(orden => {
-               obtenerItemsSeguros(orden).forEach(i => detallesVenta.push(i));
-             });
-           } else {
-             detallesVenta = obtenerItemsSeguros(pedidoACobrar);
-           }
-
-           const mappedDetalles = detallesVenta.map(i => ({
-              producto_id: i.productoId || i.id,
-              nombre_producto: getProductoInfo(i.productoId || i.id).nombre,
-              cantidad: i.cantidad || 1,
-              precio_unitario: i.precio || getProductoInfo(i.productoId || i.id).precio,
-              subtotal: (i.cantidad || 1) * (i.precio || getProductoInfo(i.productoId || i.id).precio)
-           }));
-
-           if (metodo.type === 'Mixto') {
-              // Pago mixto: separamos en dos registros para que el cuadre de caja funcione bien
-              // El efectivo lleva los detalles para no duplicar en el inventario/reportes
-              await axios.post(`${serverUrl}/api/ventas`, {
-                fecha: new Date().toISOString(),
-                tipo_origen: pedidoACobrar.uuids ? 'Crédito Pagado' : 'Mesa',
-                mesa: pedidoACobrar.uuids ? `Deuda: ${pedidoACobrar.deudor}` : pedidoACobrar.mesa,
-                total: metodo.efectivo,
-                metodo_pago: 'Efectivo',
-                sesion_id: sesionActiva ? sesionActiva.id : null,
-                usuario: 'Caja',
-                pedido_id: idPedidoReal,
-                detalles: mappedDetalles
-              }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
-
-              if (metodo.transferencia > 0) {
-                // La transferencia va sin detalles para evitar duplicidad de productos vendidos
-                await axios.post(`${serverUrl}/api/ventas`, {
-                  fecha: new Date().toISOString(),
-                  tipo_origen: pedidoACobrar.uuids ? 'Crédito Pagado' : 'Mesa',
-                  mesa: pedidoACobrar.uuids ? `Deuda: ${pedidoACobrar.deudor}` : pedidoACobrar.mesa,
-                  total: metodo.transferencia,
-                  metodo_pago: 'Transferencia',
-                  sesion_id: sesionActiva ? sesionActiva.id : null,
-                  usuario: 'Caja',
-                  pedido_id: idPedidoReal,
-                  detalles: []
-                }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
-              }
-           } else {
-             await axios.post(`${serverUrl}/api/ventas`, {
-               fecha: new Date().toISOString(),
-               tipo_origen: pedidoACobrar.uuids ? 'Crédito Pagado' : 'Mesa',
-               mesa: pedidoACobrar.uuids ? `Deuda: ${pedidoACobrar.deudor}` : pedidoACobrar.mesa,
-               total: totalCuenta || calcularTotal(pedidoACobrar),
-               metodo_pago: metodo,
-               sesion_id: sesionActiva ? sesionActiva.id : null,
-               usuario: 'Caja',
-               pedido_id: idPedidoReal,
-               detalles: mappedDetalles
-             }, { headers: { 'ngrok-skip-browser-warning': 'true' } });
-           }
-        } catch(e) {
-           console.warn('Omitiendo registro en tabla de ventas secundarias:', e);
+          await axios.post(`${targetUrl}/api/ventas`, {
+            fecha: new Date().toISOString(),
+            tipo_origen: pedidoACobrar.uuids ? 'Crédito Pagado' : 'Mesa',
+            mesa: pedidoACobrar.uuids ? `Deuda: ${pedidoACobrar.deudor}` : pedidoACobrar.mesa,
+            total: totalCuenta || calcularTotal(pedidoACobrar),
+            metodo_pago: metodo,
+            sesion_id: sesionActiva ? sesionActiva.id : null,
+            usuario: 'Caja',
+            pedido_id: idPedidoReal,
+            pedido_uuid: uuidPedidoReal,
+            detalles: mappedDetalles
+          }, { timeout: 8000, headers: { 'ngrok-skip-browser-warning': 'true' } });
         }
       }
 
-      
       setModalPagoVisible(false);
       setIsCreditoMode(false);
       setIsMixtoMode(false);
@@ -492,13 +574,30 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
       setPedidoACobrar(null);
       setSelectedPedido(null);
       setMesaSeleccionada(null);
-      toast.success(`Pago procesado exitosamente ${metodo.type === 'Mixto' ? '(Mixto)' : '(' + metodo + ')'}`);
+
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const [fiadoRes] = await Promise.all([
+          axios.get(`${targetUrl}/api/pedidos/fiado`, { headers: { 'ngrok-skip-browser-warning': 'true' } }),
+          axios.get(`${targetUrl}/api/mesas`, { headers: { 'ngrok-skip-browser-warning': 'true' } }),
+          axios.get(`${targetUrl}/api/pedidos/date/${today}`, { headers: { 'ngrok-skip-browser-warning': 'true' } })
+        ]);
+        if (fiadoRes.data && fiadoRes.data.fiados) {
+          setListaFiados(fiadoRes.data.fiados);
+        }
+      } catch (eRefetch) {}
+
+      toast.success(metodo === 'Cortesía' ? 'Cortesía registrada con éxito' : (metodo === 'Crédito' ? 'Crédito registrado con éxito' : `Pago procesado exitosamente ${metodo.type === 'Mixto' ? '(Mixto)' : '(' + metodo + ')'}`));
     } catch (error) {
       console.error('Error al cobrar:', error);
       const serverMsg = error.response && error.response.data && error.response.data.error 
         ? error.response.data.error 
         : error.message;
       toast.error(`Hubo un error al procesar el pago en el servidor.\nDetalle: ${serverMsg}`);
+    } finally {
+      if (typeof window !== 'undefined' && window.focus) {
+        window.focus();
+      }
     }
   };
 
@@ -510,9 +609,15 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
       return;
     }
 
-    const deudor = selectedPedido?.deudor;
+    const deudor = selectedPedido?.deudor || pedidoActivoDisplay?.deudor;
     if (!deudor) {
       toast.error('⚠️ No se ha seleccionado un deudor válido.');
+      return;
+    }
+
+    const saldoPendiente = calcularTotal(selectedPedido || pedidoActivoDisplay);
+    if (saldoPendiente > 0 && monto > saldoPendiente + 1) {
+      toast.error(`⚠️ El abono (${formatCurrency(monto)}) no puede superar el saldo pendiente de la cuenta (${formatCurrency(saldoPendiente)}).`);
       return;
     }
 
@@ -753,9 +858,12 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
           <button 
             onClick={() => {
               setActiveTab('mesas');
+              setSelectedPedido(null);
               if (mesasPorCobrar.length > 0) {
                 const mesaPrioritaria = mesasPorCobrar.find(m => m.estado === 'cuenta') || mesasPorCobrar[0];
                 setMesaSeleccionada(mesaPrioritaria);
+              } else {
+                setMesaSeleccionada(null);
               }
             }}
             style={{ 
@@ -811,19 +919,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
               const estado = String(p.estado || '').toLowerCase().trim();
               const estadoValido = !['cobrado', 'cancelado', 'archivado', 'credito', 'fiado'].includes(estado);
               const noPagado = (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false);
-              return (coincideDigits || coincideText) && estadoValido && noPagado;
-            }) || (pedidosCaja || []).filter(p => {
-              if (!p) return false;
-              const pMesaRaw = String(p.mesa || p.mesa_id || '').trim().toLowerCase();
-              return !(p.isParaLlevar === true || p.para_llevar === 1 ||
-                       String(p.tipo || p.tipo_origen || '').toLowerCase().includes('llevar') ||
-                       pMesaRaw.includes('llevar') || pMesaRaw.includes('para'));
-            }).find(p => {
-              const pedidoMesaDigits = String(p.mesa || p.mesa_id || '').replace(/\D/g, '');
-              const coincideDigits = Boolean(idMesaDigits && pedidoMesaDigits && idMesaDigits === pedidoMesaDigits);
-              const coincideText = String(p.mesa || p.mesa_id || '').trim().toLowerCase() === mText ||
-                                   String(p.mesa || p.mesa_id || '').trim().toLowerCase() === `mesa ${mText}`;
-              return coincideDigits || coincideText;
+              return (coincideDigits || coincideText) && estadoValido && noPagado && !p.deudor;
             }) || null;
 
             const tieneCuentaPendiente = Boolean(pedidoMesa);
@@ -875,7 +971,8 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                       const coincide = (idMesaDigits && pMesaDigits && idMesaDigits === pMesaDigits) ||
                                        String(p.mesa || '').trim().toLowerCase() === mText;
                       const estado = String(p.estado || '').toLowerCase().trim();
-                      return coincide && !['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(estado);
+                      const noPagado = (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false);
+                      return coincide && !['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(estado) && !p.deudor && noPagado;
                     });
                   }
 
@@ -886,11 +983,13 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                         headers: { 'ngrok-skip-browser-warning': 'true' }
                       });
                       if (res.data && res.data.pedido) {
-                        pedidoTarget = res.data.pedido;
-                        const totalSeguro = Number(res.data.pedido.total) || 0;
-                        pedidoTarget.total = totalSeguro;
-                      } else if (res.data && (res.data.id || res.data.uuid)) {
-                        pedidoTarget = res.data;
+                        const p = res.data.pedido;
+                        const pEst = String(p.estado || '').toLowerCase().trim();
+                        if (!['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(pEst) && !p.deudor) {
+                          pedidoTarget = p;
+                          const totalSeguro = Number(p.total) || 0;
+                          pedidoTarget.total = totalSeguro;
+                        }
                       }
                     } catch (e) {
                       try {
@@ -898,34 +997,22 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                           headers: { 'ngrok-skip-browser-warning': 'true' }
                         });
                         if (res2.data && Array.isArray(res2.data) && res2.data.length > 0) {
-                          pedidoTarget = res2.data[0];
+                          pedidoTarget = res2.data.find(p => {
+                            const pEst = String(p.estado || '').toLowerCase().trim();
+                            const noPagado = (p.pagado === 0 || p.pagado === null || p.pagado === undefined || p.pagado === false);
+                            return !['cobrado', 'cancelado', 'archivado', 'fiado', 'credito'].includes(pEst) && !p.deudor && noPagado;
+                          }) || null;
                         }
                       } catch (e2) {}
                     }
                   }
 
-                  // 3. Si la mesa figura como ocupada en el sistema pero no se halló registro activo,
-                  // crear pedido estructurado para permitir procesar el cobro/liberación
-                  if (!pedidoTarget && (isOcupada || m.estado === 'ocupada')) {
-                    pedidoTarget = {
-                      id: m.id || m.num || idMesaDigits,
-                      uuid: `mesa_${idMesaDigits}_${Date.now()}`,
-                      mesa: m.num || idMesaDigits,
-                      estado: 'activo',
-                      total: 0,
-                      items: []
-                    };
-                  }
-
-                  // Si está libre y sin pedidos, no hacer nada
-                  if (!pedidoTarget && esLibre) {
+                  if (!pedidoTarget) {
+                    setSelectedPedido(null);
                     return;
                   }
 
-                  if (pedidoTarget) {
-                    setSelectedPedido(pedidoTarget);
-                    handleCobrarClick(pedidoTarget); // Abrir automáticamente el modal de cobro
-                  }
+                  setSelectedPedido(pedidoTarget);
                 }}
                 style={{ 
                   backgroundColor: bgColor,
@@ -1097,8 +1184,8 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
           <>
             <div style={{ borderBottom: '2px dashed var(--border)', paddingBottom: '16px', marginBottom: '16px' }}>
               <h2 style={{ fontSize: '28px', color: 'var(--brand)' }}>
-                {pedidoActivoDisplay.ordenes_historial 
-                  ? `Crédito - ${pedidoActivoDisplay.deudor}` 
+                {activeTab === 'creditos' || pedidoActivoDisplay.ordenes_historial || pedidoActivoDisplay.deudor
+                  ? `Crédito - ${pedidoActivoDisplay.deudor || 'Cliente'}` 
                   : `Cobro Mesa ${mesaSeleccionada?.numero || mesaSeleccionada?.num || mesaSeleccionada?.id || pedidoActivoDisplay.mesa}`}
               </h2>
               <p style={{ color: 'var(--text2)' }}>
@@ -1143,7 +1230,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                                 5: "Mazorcada",
                                 6: "Jugo Natural",
                                 7: "Limonada",
-                                8: "Cerveza",
+                                8: "Cervezas y Licores",
                                 9: "Bebida Caliente"
                               }[prod.cat] || ''} {item.nombre || prod.nombre}
                             </span>
@@ -1173,7 +1260,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                               5: "Mazorcada",
                               6: "Jugo Natural",
                               7: "Limonada",
-                              8: "Cerveza",
+                              8: "Cervezas y Licores",
                               9: "Bebida Caliente"
                             }[prod.cat] || ''} {item.nombre || prod.nombre}
                           </span>
@@ -1221,20 +1308,36 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                   {formatCurrency(calcularTotal(pedidoActivoDisplay))}
                 </span>
               </div>
-              
-              <div style={{ display: 'flex', gap: '16px' }}>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                 <button 
                   onClick={() => handlePrintReceipt(pedidoActivoDisplay)}
-                  style={{ flex: 1, padding: '16px', backgroundColor: 'white', color: 'var(--brand)', border: '2px solid var(--border)', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}
+                  style={{ flex: 1, minWidth: '120px', padding: '16px', backgroundColor: 'white', color: 'var(--brand)', border: '2px solid var(--border)', borderRadius: '12px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
                 >
                   🖨️ Imprimir
                 </button>
                 {activeTab !== 'creditos' && !pedidoActivoDisplay?.deudor && (
                   <button 
                     onClick={() => onEditPedido && onEditPedido(pedidoActivoDisplay)}
-                    style={{ flex: 1, padding: '16px', backgroundColor: 'var(--surf3)', color: 'var(--brand)', border: '2px solid var(--border)', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer' }}
+                    style={{ flex: 1, minWidth: '120px', padding: '16px', backgroundColor: 'var(--surf3)', color: 'var(--brand)', border: '2px solid var(--border)', borderRadius: '12px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
                   >
                     ✏️ Editar
+                  </button>
+                )}
+                {activeTab !== 'creditos' && !pedidoActivoDisplay?.deudor && (
+                  <button 
+                    onClick={() => handleCancelarPedidoClick(pedidoActivoDisplay)}
+                    disabled={esPedidoSalidoCocina(pedidoActivoDisplay)}
+                    title={esPedidoSalidoCocina(pedidoActivoDisplay) ? "No se puede cancelar: El pedido ya salió de cocina" : "Cancelar este pedido"}
+                    style={{
+                      flex: 1, minWidth: '120px', padding: '16px',
+                      backgroundColor: esPedidoSalidoCocina(pedidoActivoDisplay) ? '#f3f4f6' : '#fee2e2',
+                      color: esPedidoSalidoCocina(pedidoActivoDisplay) ? '#9ca3af' : '#dc2626',
+                      border: esPedidoSalidoCocina(pedidoActivoDisplay) ? '1px solid #e5e7eb' : '1px solid #fca5a5',
+                      borderRadius: '12px', fontSize: '16px', fontWeight: 'bold',
+                      cursor: esPedidoSalidoCocina(pedidoActivoDisplay) ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    🚫 Cancelar
                   </button>
                 )}
                 {(activeTab === 'creditos' || pedidoActivoDisplay?.deudor) && (
@@ -1245,6 +1348,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                     }}
                     style={{
                       flex: 1,
+                      minWidth: '120px',
                       padding: '12px 16px',
                       borderRadius: '8px',
                       backgroundColor: '#2563EB',
@@ -1265,7 +1369,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                 <button 
                   onClick={() => handleCobrarClick(pedidoActivoDisplay)}
                   style={{
-                    flex: 1, padding: '16px', backgroundColor: 'var(--brand)', color: 'white',
+                    flex: 1.2, minWidth: '140px', padding: '16px', backgroundColor: 'var(--brand)', color: 'white',
                     border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold',
                     cursor: 'pointer',
                     boxShadow: '0 4px 6px rgba(61, 26, 10, 0.2)'
@@ -1309,7 +1413,31 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
               Mesa {pedidoACobrar?.mesa} - Total: ${totalCuenta.toLocaleString('es-CO')}
             </p>
             
-            {!isCreditoMode && !isMixtoMode && !mostrarCalculadoraEfectivo ? (
+            {totalCuenta <= 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ padding: '12px', backgroundColor: '#FEF3C7', color: '#92400E', borderRadius: '8px', fontSize: '14px', textAlign: 'center', lineHeight: '1.4' }}>
+                  ℹ️ Esta mesa figura ocupada pero no tiene productos registrados ni saldo pendiente ($0).
+                </div>
+                <button
+                  type="button"
+                  onClick={() => confirmarCobro('Liberar')}
+                  style={{ padding: '16px', backgroundColor: 'var(--brand, #16A34A)', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  🟢 Liberar Mesa
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalPagoVisible(false);
+                    setPedidoACobrar(null);
+                    setIsCreditoMode(false);
+                  }}
+                  style={{ padding: '14px', backgroundColor: '#F3F4F6', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+                >
+                  Cerrar
+                </button>
+              </div>
+            ) : !isCreditoMode && !isMixtoMode && !mostrarCalculadoraEfectivo ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <button 
                   onClick={() => {
@@ -1326,12 +1454,22 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                 >
                   📲 Transferencia
                 </button>
-                <button 
-                  onClick={() => setIsCreditoMode(true)}
-                  style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
-                >
-                  👤 Crédito
-                </button>
+                {!(activeTab === 'creditos' || pedidoACobrar?.deudor || pedidoACobrar?.uuids) && (
+                  <button 
+                    onClick={() => confirmarCobro('Cortesía')}
+                    style={{ padding: '16px', backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FDE68A', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    🎁 Cortesía (Consumo Neutro)
+                  </button>
+                )}
+                {!(activeTab === 'creditos' || pedidoACobrar?.deudor || pedidoACobrar?.uuids) && (
+                  <button 
+                    onClick={() => setIsCreditoMode(true)}
+                    style={{ padding: '16px', backgroundColor: 'white', color: 'black', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    👤 Crédito
+                  </button>
+                )}
                 <button 
                   onClick={() => {
                     setIsMixtoMode(true);
@@ -1391,7 +1529,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                   justifyContent: 'space-between',
                   alignItems: 'center'
                 }}>
-                  <span style={{ fontWeight: 'bold', color: devuelta > 0 ? '#166534' : '#64748b' }}>Devuelta:</span>
+                  <span style={{ fontWeight: 'bold', color: devuelta > 0 ? '#166534' : '#64748b' }}>Cambio Entregado:</span>
                   <strong style={{ fontSize: '20px', color: devuelta > 0 ? '#16a34a' : '#94a3b8' }}>
                     $ {devuelta.toLocaleString('es-CO')}
                   </strong>
@@ -1737,16 +1875,48 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
 
             {/* Input de Monto */}
             <div style={{ marginBottom: '24px' }}>
-              <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '8px', color: 'var(--text-light)', fontSize: '14px' }}>
-                Monto a Abonar ($)
-              </label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <label style={{ fontWeight: 'bold', color: 'var(--text-light)', fontSize: '14px', margin: 0 }}>
+                  Monto a Abonar ($)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const saldo = calcularTotal(selectedPedido || pedidoActivoDisplay);
+                    setMontoAbonoInput(formatNumberInput(saldo));
+                  }}
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid #3b82f6',
+                    backgroundColor: '#eff6ff',
+                    color: '#1d4ed8',
+                    fontSize: '12px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ⚡ Todo (${calcularTotal(selectedPedido || pedidoActivoDisplay).toLocaleString('es-CO')})
+                </button>
+              </div>
               <input
                 type="text"
                 inputMode="numeric"
                 autoFocus
                 placeholder="Ej. 20.000"
                 value={montoAbonoInput}
-                onChange={(e) => setMontoAbonoInput(formatNumberInput(e.target.value))}
+                onChange={(e) => {
+                  const valLimpio = cleanNum(e.target.value);
+                  const numVal = parseFloat(valLimpio) || 0;
+                  const saldoPendiente = calcularTotal(selectedPedido || pedidoActivoDisplay);
+
+                  if (saldoPendiente > 0 && numVal > saldoPendiente) {
+                    setMontoAbonoInput(formatNumberInput(saldoPendiente));
+                    toast.error(`⚠️ El abono máximo permitido es ${formatCurrency(saldoPendiente)}`);
+                  } else {
+                    setMontoAbonoInput(formatNumberInput(e.target.value));
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') handleConfirmarAbono();
                 }}
@@ -1754,7 +1924,7 @@ export function CajaModule({ pedidos, mesas, productos, serverUrl, sesionActiva,
                   width: '100%', padding: '14px', borderRadius: '10px',
                   border: '1px solid var(--border)', backgroundColor: 'var(--surf2)',
                   color: 'var(--text)', fontSize: '20px', fontWeight: 'bold', textAlign: 'right',
-                  outline: 'none'
+                  outline: 'none', boxSizing: 'border-box'
                 }}
               />
             </div>

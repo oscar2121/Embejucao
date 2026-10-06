@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
@@ -138,6 +138,11 @@ function createWindow() {
         resolve({ success: false, reason: 'Timeout' });
       });
     });
+  });
+
+  ipcMain.handle('show-message-box', async (event, options) => {
+    const focusedWindow = BrowserWindow.getFocusedWindow();
+    return dialog.showMessageBox(focusedWindow, options);
   });
 }
 

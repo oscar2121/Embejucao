@@ -28,7 +28,28 @@ router.get('/mesas', (req, res) => {
         });
       });
     } else {
-      res.json({ mesas: rows });
+      // Reconciliar mesas que figuren ocupadas pero no tengan pedidos activos
+      db.all("SELECT mesa FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') AND (pagado = 0 OR pagado IS NULL)", [], (errPed, pedidosActivos) => {
+        if (!errPed && pedidosActivos) {
+          const mesasConPedido = new Set(
+            pedidosActivos.map(p => String(p.mesa || '').replace(/\D/g, '')).filter(Boolean)
+          );
+          let huboCambio = false;
+          rows.forEach(m => {
+            const mDigits = String(m.num || m.id || '').replace(/\D/g, '');
+            if (m.estado !== 'libre' && !mesasConPedido.has(mDigits)) {
+              m.estado = 'libre';
+              huboCambio = true;
+              db.run("UPDATE mesas SET estado = 'libre' WHERE id = ?", [m.id]);
+            }
+          });
+          if (huboCambio) {
+            const io = req.io || getIO();
+            if (io) io.emit('mesas_actualizadas', rows);
+          }
+        }
+        res.json({ mesas: rows });
+      });
     }
   });
 });
@@ -96,7 +117,7 @@ router.post('/mesas/:id/liberar-forzoso', async (req, res) => {
     db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaId, mesaNum || mesaId], async () => {
       // 2. Marcar cualquier pedido atascado/abierto de esa mesa como cancelado
       db.run(
-        `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')`,
+        `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
         [mesaStr, mesaVariante],
         () => {
           db.all(`SELECT * FROM mesas ORDER BY num ASC`, [], (err2, rows) => {
@@ -126,7 +147,7 @@ router.post('/mesas/:id/forzar-limpieza-completa', async (req, res) => {
     const mesaVariante = mesaNum ? `Mesa ${mesaNum}` : mesaStr;
 
     db.run(
-      `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ? OR id = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')`,
+      `UPDATE pedidos SET estado = 'cancelado' WHERE (mesa = ? OR mesa = ? OR id = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')`,
       [mesaStr, mesaVariante, mesaId],
       () => {
         db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaId, mesaNum || mesaId], () => {

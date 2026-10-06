@@ -254,8 +254,12 @@ export default function CajaScreen({
           const ingresado = Number(String(datosExtra.efectivoRecibir || 0).replace(/[^0-9]/g, '')) || 0;
           efec = Math.min(total, ingresado);
           trans = Math.max(0, total - efec);
-        } else if (metodo === 'credito') {
+        } else if (metodo === 'credito' || metodo === 'fiado') {
           credito = total;
+        } else if (metodo === 'cortesia' || metodo === 'Cortesía') {
+          efec = 0;
+          trans = 0;
+          credito = 0;
         }
 
         const payload = {
@@ -264,7 +268,7 @@ export default function CajaScreen({
           id: pedido.id,
           mesa: pedido.mesa,
           total,
-          metodo_pago: metodo,
+          metodo_pago: (metodo === 'cortesia' || metodo === 'Cortesía') ? 'Cortesía' : metodo,
           monto_efectivo: efec,
           monto_transferencia: trans,
           saldo_cartera: credito,

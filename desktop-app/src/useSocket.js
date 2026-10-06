@@ -163,6 +163,23 @@ export function useAppStore() {
       debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
     });
 
+    socketRef.current.on('adicionales_actualizados', () => {
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
+    socketRef.current.on('producto:actualizado', (data) => {
+      if (data && data.id !== undefined) {
+        setProductos(prev => prev.map(p => {
+          if (String(p.id) === String(data.id)) {
+            const isDispFalse = (data.disponible === 0 || data.disponible === false || data.disp === 0 || data.disp === false);
+            return { ...p, disponible: !isDispFalse, disp: !isDispFalse };
+          }
+          return p;
+        }));
+      }
+      debouncedSincronizarDatos(serverUrlRef.current || DEFAULT_SERVER_URL);
+    });
+
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();

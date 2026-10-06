@@ -12,7 +12,19 @@ const recibirPedidoHandler = async (req, res) => {
     const uuid = b.uuid || b.id || `ped_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const mesa = String(b.mesa || b.mesa_id || '1');
     const tipo = b.tipo || 'mesa';
-    const total = Number(b.total || 0) || 0;
+    let total = Number(b.total || 0) || 0;
+    if (total <= 0) {
+      try {
+        const rawIt = typeof b.items === 'string' ? JSON.parse(b.items || '[]') : (b.items || b.productos || []);
+        if (Array.isArray(rawIt) && rawIt.length > 0) {
+          total = rawIt.reduce((acc, it) => {
+            const p = Number(it.precio || it.precio_unitario || it.subtotal || 0);
+            const c = Number(it.cantidad || 1);
+            return acc + (p * c);
+          }, 0);
+        }
+      } catch (eTot) {}
+    }
     const notas = b.notas || b.observaciones || '';
     const itemsData = typeof b.items === 'string' ? b.items : JSON.stringify(b.items || b.productos || []);
     const fecha = new Date().toISOString();
@@ -37,7 +49,8 @@ const recibirPedidoHandler = async (req, res) => {
         db.get(
           `SELECT * FROM pedidos 
            WHERE (mesa = ? OR mesa = ? OR mesa = ?) 
-             AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado')
+             AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito')
+             AND deudor IS NULL
              AND (uuid IS NULL OR uuid != ?)
            LIMIT 1`,
           [mesa, mesaVariante, mesaNumOnly || mesa, uuid],
@@ -243,7 +256,7 @@ router.post('/pedidos', recibirPedidoHandler);
 // GET /api/pedidos
 router.get('/pedidos', (req, res) => {
   const { estado, mesa } = req.query;
-  let sql = "SELECT * FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') AND (pagado = 0 OR pagado IS NULL)";
+  let sql = "SELECT * FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') AND (pagado = 0 OR pagado IS NULL)";
   const params = [];
   if (estado) {
     sql += " AND LOWER(estado) = ?";
@@ -266,11 +279,16 @@ router.get('/pedidos', (req, res) => {
 // GET /api/pedidos/mesa/:mesa - Buscar el pedido activo de una mesa específica
 router.get('/pedidos/mesa/:mesa', async (req, res) => {
   try {
-    const mesaNum = req.params.mesa;
-    // Buscar el pedido activo usando columna 'mesa' y estado 'activo'
+    const mesaNum = String(req.params.mesa).replace(/\D/g, '');
+    const mesaParam = req.params.mesa;
     const pedido = await dbGet(
-      "SELECT * FROM pedidos WHERE mesa = ? AND estado = 'activo' ORDER BY id DESC LIMIT 1",
-      [mesaNum]
+      `SELECT * FROM pedidos 
+       WHERE (mesa = ? OR mesa = ? OR mesa = ?) 
+         AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') 
+         AND deudor IS NULL
+         AND (pagado = 0 OR pagado IS NULL) 
+       ORDER BY id DESC LIMIT 1`,
+      [mesaParam, `Mesa ${mesaParam}`, mesaNum || mesaParam]
     );
 
     if (!pedido) {
@@ -309,7 +327,7 @@ router.get('/pedidos/mesa/:mesa', async (req, res) => {
 
 // GET /api/pedidos/pendientes
 router.get('/pedidos/pendientes', (req, res) => {
-  db.all("SELECT * FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') AND (pagado = 0 OR pagado IS NULL) ORDER BY id DESC", [], (err, rows) => {
+  db.all("SELECT * FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') AND (pagado = 0 OR pagado IS NULL) ORDER BY id DESC", [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     const respuesta = rows.map(r => ({ ...r, items: typeof r.items === 'string' ? JSON.parse(r.items || '[]') : (r.items || []) }));
     res.json(respuesta);
@@ -319,7 +337,7 @@ router.get('/pedidos/pendientes', (req, res) => {
 // GET /api/pedidos/date/:fecha
 router.get('/pedidos/date/:fecha', (req, res) => {
   db.all(
-    `SELECT * FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado') AND (pagado = 0 OR pagado IS NULL) ORDER BY id DESC`,
+    `SELECT * FROM pedidos WHERE LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') AND (pagado = 0 OR pagado IS NULL) ORDER BY id DESC`,
     [],
     (err, rows) => {
       if (err) {
@@ -452,7 +470,7 @@ router.post('/pedidos/cobrar', (req, res) => {
 
   if ((!targetId || targetId === 'undefined' || targetId === 'null') && targetMesa) {
     const mesaNum = String(targetMesa).replace(/\D/g, '');
-    sql = "SELECT * FROM pedidos WHERE (mesa = ? OR mesa = ? OR mesa = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado') ORDER BY id DESC LIMIT 1";
+    sql = "SELECT * FROM pedidos WHERE (mesa = ? OR mesa = ? OR mesa = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') ORDER BY id DESC LIMIT 1";
     params = [targetMesa, `Mesa ${targetMesa}`, mesaNum || targetMesa];
   }
 
@@ -531,7 +549,7 @@ router.delete('/pedidos/:uuid', (req, res) => {
       params = [queryId, queryId];
     } else if (queryMesa) {
       const mesaNum = String(queryMesa).replace(/\D/g, '');
-      sql = `SELECT id, uuid, mesa FROM pedidos WHERE (mesa = ? OR mesa = ? OR mesa = ?) AND estado NOT IN ('cobrado', 'cancelado', 'archivado') ORDER BY id DESC LIMIT 1`;
+      sql = `SELECT id, uuid, mesa FROM pedidos WHERE (mesa = ? OR mesa = ? OR mesa = ?) AND LOWER(estado) NOT IN ('cobrado', 'cancelado', 'archivado', 'fiado', 'credito') ORDER BY id DESC LIMIT 1`;
       params = [queryMesa, `Mesa ${queryMesa}`, mesaNum || queryMesa];
     }
   }
@@ -587,7 +605,17 @@ router.post('/pedidos/:uuid/cancelar', (req, res) => {
 
   db.get(`SELECT * FROM pedidos WHERE uuid = ?`, [uuid], (err, row) => {
     if (err || !row) return res.status(404).json({ error: 'Pedido no encontrado' });
-    if (row.estado === 'completado') return res.status(400).json({ error: 'Este pedido ya fue facturado y no puede eliminarse' });
+
+    let itemsArr = [];
+    try { itemsArr = typeof row.items === 'string' ? JSON.parse(row.items) : (row.items || []); } catch(e) {}
+
+    const estadoLower = String(row.estado || '').toLowerCase().trim();
+    const yaSalioDeCocina = ['listo', 'despachado', 'completado', 'cuenta', 'cobrado', 'entregado'].includes(estadoLower) ||
+      (Array.isArray(itemsArr) && itemsArr.length > 0 && itemsArr.some(i => i && String(i.estado || '').toLowerCase() === 'listo'));
+
+    if (yaSalioDeCocina) {
+      return res.status(400).json({ error: 'No se puede cancelar el pedido porque ya salió de la cocina.' });
+    }
 
     // Insertar en cancelaciones
     db.run(
@@ -604,14 +632,39 @@ router.post('/pedidos/:uuid/cancelar', (req, res) => {
             if (errUpdate) return res.status(400).json({ error: errUpdate.message });
 
             // Liberar mesa física
-            const mesaNum = Number(row.mesa);
-            if (!isNaN(mesaNum)) {
-              db.run(`UPDATE mesas SET estado = 'libre' WHERE num = ?`, [mesaNum]);
-            }
+            const targetMesa = row.mesa || '';
+            const mesasALiberar = String(targetMesa).split(',').map(m => m.trim().replace(/\D/g, '')).filter(Boolean);
 
-            logAuditoria(usuario, 'pedido_cancelado', `Pedido cancelado para ${row.mesa}. Motivo: ${motivo}`);
-            if (io) io.emit('pedido_cancelado_servidor', { uuid });
-            res.json({ success: true });
+            const finalizarRespuesta = () => {
+              logAuditoria(usuario, 'pedido_cancelado', `Pedido cancelado para ${row.mesa}. Motivo: ${motivo}`);
+              if (io) {
+                io.emit('pedido_cancelado_servidor', { uuid });
+                io.emit('pedidos_actualizados');
+                io.emit('actualizar_pedidos');
+                io.emit('caja_actualizada');
+              }
+              emitirSincronizacionCompleta();
+              res.json({ success: true });
+            };
+
+            if (mesasALiberar.length > 0) {
+              let updates = 0;
+              mesasALiberar.forEach(mesaNum => {
+                db.run(`UPDATE mesas SET estado = 'libre' WHERE id = ? OR num = ?`, [mesaNum, mesaNum], () => {
+                  updates++;
+                  if (updates === mesasALiberar.length) {
+                    db.all('SELECT * FROM mesas', (errMesas, filasMesas) => {
+                      if (!errMesas && io) {
+                        io.emit('mesas_actualizadas', filasMesas);
+                      }
+                      finalizarRespuesta();
+                    });
+                  }
+                });
+              });
+            } else {
+              finalizarRespuesta();
+            }
           }
         );
       }
