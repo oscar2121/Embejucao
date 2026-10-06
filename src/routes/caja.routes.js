@@ -1049,6 +1049,219 @@ router.post('/ventas', (req, res) => {
   });
 });
 
+// POST - Registrar Pago Parcial / División de Cuenta
+router.post('/ventas/pago-parcial', (req, res) => {
+  const {
+    pedido_uuid,
+    pedido_id,
+    mesa,
+    tipo_division = 'por_items', // 'por_items' | 'por_monto'
+    items_a_pagar = [],          // [{ id, producto_id, nombre, cantidad, precio, subtotal, item_index }]
+    monto_abono = 0,             // Valor numérico abonado (si es por_monto)
+    metodo_pago = 'Efectivo',
+    sesion_id,
+    propina = 0,
+    usuario = 'Caja'
+  } = req.body;
+
+  if ((!pedido_uuid && !pedido_id) || !metodo_pago || !sesion_id) {
+    return res.status(400).json({ error: "Faltan datos obligatorios para el cobro parcial (pedido_uuid/pedido_id, metodo_pago, sesion_id)" });
+  }
+
+  const queryId = pedido_uuid || pedido_id;
+
+  // 1. Obtener la comanda activa
+  db.get(`SELECT * FROM pedidos WHERE uuid = ? OR id = ?`, [queryId, queryId], (errPedido, pedidoRow) => {
+    if (errPedido || !pedidoRow) {
+      return res.status(404).json({ error: "Comanda no encontrada" });
+    }
+
+    let itemsActuales = [];
+    try {
+      itemsActuales = typeof pedidoRow.items === 'string' ? JSON.parse(pedidoRow.items || '[]') : (pedidoRow.items || []);
+    } catch (e) {
+      return res.status(500).json({ error: "Error al deserializar items de la comanda" });
+    }
+
+    // 2. Calcular montos de la transacción
+    let subtotalCobro = 0;
+    if (tipo_division === 'por_items') {
+      subtotalCobro = items_a_pagar.reduce((acc, it) => acc + Number(it.subtotal || (Number(it.precio || 0) * Number(it.cantidad || 1)) || 0), 0);
+    } else {
+      subtotalCobro = Number(monto_abono || 0);
+    }
+
+    if (subtotalCobro <= 0) {
+      return res.status(400).json({ error: "El monto o los ítems a cobrar deben ser mayores a cero" });
+    }
+
+    const totalCobro = subtotalCobro + Number(propina || 0);
+    const pedIdReal = pedidoRow.id;
+    const targetMesa = mesa || pedidoRow.mesa;
+    const ahora = new Date().toISOString();
+
+    // 3. Evaluar si la cuenta quedará completada y actualizar items
+    let comandaCompletada = false;
+    let itemsActualizados = [...itemsActuales];
+    let nuevoAbonoAcumulado = Number(pedidoRow.abono_parcial || 0);
+
+    if (tipo_division === 'por_items') {
+      // Actualizar el array en memoria con cantidad_pagada y estado_pago
+      itemsActualizados = itemsActuales.map((itemOriginal, idx) => {
+        const itemCobrado = items_a_pagar.find(p => 
+          (p.item_index !== undefined && p.item_index === idx) ||
+          ((p.producto_id || p.id) && (itemOriginal.producto_id || itemOriginal.id) && String(p.producto_id || p.id) === String(itemOriginal.producto_id || itemOriginal.id))
+        );
+        if (itemCobrado) {
+          const cantPagadaPrevia = Number(itemOriginal.cantidad_pagada || 0);
+          const cantTotal = Number(itemOriginal.cantidad || 1);
+          const cantAPagar = Number(itemCobrado.cantidad || 1);
+          const nuevaCantPagada = Math.min(cantTotal, cantPagadaPrevia + cantAPagar);
+          return {
+            ...itemOriginal,
+            cantidad_pagada: nuevaCantPagada,
+            estado_pago: nuevaCantPagada >= cantTotal ? 'pagado' : 'pagado_parcial'
+          };
+        }
+        return itemOriginal;
+      });
+
+      const itemsIncompletos = itemsActualizados.filter(it => (Number(it.cantidad_pagada || 0) < Number(it.cantidad || 1)));
+      comandaCompletada = (itemsIncompletos.length === 0);
+      nuevoAbonoAcumulado += subtotalCobro;
+    } else {
+      // Modalidad por monto
+      nuevoAbonoAcumulado += subtotalCobro;
+      const totalComanda = Number(pedidoRow.total_estimado || pedidoRow.total || 0);
+      comandaCompletada = (nuevoAbonoAcumulado >= (totalComanda - 50));
+    }
+
+    // 4. Iniciar persistencia atómica en SQLite
+    db.serialize(() => {
+      // A. Registrar la venta en la cabecera
+      const sqlVenta = `
+        INSERT INTO ventas (fecha, tipo_origen, mesa, total, subtotal, propina, metodo_pago, sesion_id, tipo_division, pedido_id)
+        VALUES (?, 'Mesa', ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      db.run(sqlVenta, [ahora, String(targetMesa), totalCobro, subtotalCobro, Number(propina || 0), metodo_pago, sesion_id, tipo_division, pedIdReal], function (errVenta) {
+        if (errVenta) {
+          console.error("Error al registrar venta parcial:", errVenta);
+          return res.status(500).json({ error: "Error al registrar comprobante de venta: " + errVenta.message });
+        }
+
+        const ventaId = this.lastID;
+
+        // B. Si es por ítems: registrar ventas_detalle y descontar insumos de inmediato
+        if (tipo_division === 'por_items') {
+          const stmtDetalle = db.prepare(`
+            INSERT INTO ventas_detalle (venta_id, producto_id, nombre_producto, cantidad, precio_unitario, subtotal)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `);
+
+          items_a_pagar.forEach((it) => {
+            const prodId = it.producto_id || it.id;
+            const cant = Number(it.cantidad || 1);
+            const prec = Number(it.precio || 0);
+            const subt = Number(it.subtotal || (cant * prec));
+            stmtDetalle.run(ventaId, prodId, it.nombre || it.nombre_producto || 'Producto', cant, prec, subt);
+
+            // Deducción de insumos por receta (Modalidad A)
+            if (prodId) {
+              db.all(`SELECT insumo_id, cantidad FROM producto_insumos WHERE producto_id = ?`, [prodId], (errRec, recetas) => {
+                if (!errRec && recetas && recetas.length > 0) {
+                  recetas.forEach((rec) => {
+                    const gastoInsumo = Number(rec.cantidad || 0) * cant;
+                    if (gastoInsumo > 0) {
+                      db.run(`UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id = ?`, [gastoInsumo, rec.insumo_id]);
+                      db.run(
+                        `INSERT INTO movimientos_inventario (insumo_id, tipo, cantidad, motivo, fecha)
+                         VALUES (?, 'salida', ?, ?, ?)`,
+                        [rec.insumo_id, gastoInsumo, `Cobro parcial Mesa ${targetMesa} (Venta #${ventaId})`, ahora]
+                      );
+                    }
+                  });
+                }
+              });
+            }
+          });
+
+          stmtDetalle.finalize();
+        } else if (comandaCompletada) {
+          // Si se completó por monto (Modalidad B), descontar el inventario completo aquí
+          itemsActualizados.forEach((it) => {
+            const prodId = it.producto_id || it.id;
+            const cant = Number(it.cantidad || 1);
+            if (prodId) {
+              db.all(`SELECT insumo_id, cantidad FROM producto_insumos WHERE producto_id = ?`, [prodId], (errR, recs) => {
+                if (!errR && recs && recs.length > 0) {
+                  recs.forEach((r) => {
+                    const gasto = Number(r.cantidad || 0) * cant;
+                    if (gasto > 0) {
+                      db.run(`UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id = ?`, [gasto, r.insumo_id]);
+                      db.run(
+                        `INSERT INTO movimientos_inventario (insumo_id, tipo, cantidad, motivo, fecha)
+                         VALUES (?, 'salida', ?, ?, ?)`,
+                        [r.insumo_id, gasto, `Cierre total Mesa ${targetMesa} (Venta #${ventaId})`, ahora]
+                      );
+                    }
+                  });
+                }
+              });
+            }
+          });
+        }
+
+        // C. Actualizar comanda y estado de la mesa
+        const nuevoEstadoPedido = comandaCompletada ? 'cobrado' : 'cobro_parcial';
+        const jsonActualizado = JSON.stringify(itemsActualizados);
+
+        db.run(
+          `UPDATE pedidos SET items = ?, estado = ?, pagado = ?, abono_parcial = ? WHERE id = ?`,
+          [jsonActualizado, nuevoEstadoPedido, comandaCompletada ? 1 : 0, nuevoAbonoAcumulado, pedIdReal],
+          (errUpPed) => {
+            if (errUpPed) {
+              console.error("Error al actualizar pedido:", errUpPed);
+              return res.status(500).json({ error: "Error al actualizar estado del pedido: " + errUpPed.message });
+            }
+
+            if (comandaCompletada) {
+              const mesaNum = String(targetMesa).replace(/\D/g, '') || targetMesa;
+              db.run(`UPDATE mesas SET estado = 'libre' WHERE num = ? OR id = ?`, [mesaNum, mesaNum]);
+            }
+
+            // D. Emisión consolidada de sockets hacia frontend y móviles
+            const ioInstance = req.io || (typeof getIO === 'function' ? getIO() : null);
+            if (ioInstance) {
+              db.all('SELECT * FROM mesas ORDER BY num ASC', (errM, rowsM) => {
+                ioInstance.emit('mesas_actualizadas', rowsM || []);
+                ioInstance.emit('pedidos_actualizados');
+                ioInstance.emit('caja_actualizada');
+                if (tipo_division === 'por_items' || comandaCompletada) {
+                  ioInstance.emit('inventario:actualizado');
+                }
+                if (typeof emitirSincronizacionCompleta === 'function') {
+                  emitirSincronizacionCompleta();
+                }
+              });
+            }
+
+            logAuditoria(usuario, 'pago_parcial', `Pago parcial registrado para ${targetMesa} por $${totalCobro} (${metodo_pago}, división: ${tipo_division})`);
+
+            return res.json({
+              success: true,
+              venta_id: ventaId,
+              comanda_saldada: comandaCompletada,
+              estado_pedido: nuevoEstadoPedido,
+              abono_acumulado: nuevoAbonoAcumulado,
+              mensaje: comandaCompletada ? "Mesa saldada por completo y liberada" : "Pago parcial asentado correctamente"
+            });
+          }
+        );
+      });
+    });
+  });
+});
+
 // GET - Obtener Ventas Históricas
 router.get('/ventas', (req, res) => {
   const { rango } = req.query; 

@@ -441,6 +441,11 @@ db.serialize(() => {
   db.run(`ALTER TABLE productos ADD COLUMN imagen TEXT`, () => {});
   db.run(`ALTER TABLE productos ADD COLUMN grupo_reporte TEXT DEFAULT 'comida'`, () => {});
   db.run(`ALTER TABLE pedidos ADD COLUMN caja_sesion_id INTEGER`, () => {});
+  db.run(`ALTER TABLE ventas ADD COLUMN tipo_division TEXT DEFAULT 'completa'`, () => {});
+  db.run(`ALTER TABLE ventas ADD COLUMN pedido_id INTEGER`, () => {});
+  db.run(`ALTER TABLE ventas ADD COLUMN propina REAL DEFAULT 0`, () => {});
+  db.run(`ALTER TABLE ventas ADD COLUMN subtotal REAL`, () => {});
+  db.run(`ALTER TABLE pedidos ADD COLUMN total_estimado REAL DEFAULT 0`, () => {});
 
   // Tabla detalles_pedidos para reportes de productividad
   db.run(`
