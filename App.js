@@ -92,6 +92,7 @@ import DocumentPicker from 'react-native-document-picker';
 import RNFS from 'react-native-fs';
 import io from 'socket.io-client';
 import CocinaScreen, { CocinaView } from './src/screens/CocinaScreen';
+import { esItemDeCocina } from './src/utils/cocinaFilter';
 import TomarPedidoScreen, { PedidoView } from './src/screens/TomarPedidoScreen';
 import CajaScreen, { CajaView } from './src/screens/CajaScreen';
 
@@ -1809,7 +1810,7 @@ export default function App() {
       const updated = prev.map(p => {
         const match = (p.uuid && p.uuid === pId) || (p.id && (p.id === pId || String(p.id) === String(pId)));
         if (!match) return p;
-        const items = (p.items || []).map(it => (!(Number(it.cat) >= 8) || it.cat === undefined) ? { ...it, estado: 'listo' } : it);
+        const items = (p.items || []).map(it => esItemDeCocina(it) ? { ...it, estado: 'listo' } : it);
         newItems = items;
         return { ...p, items, estado: 'listo' };
       });
@@ -1842,7 +1843,7 @@ export default function App() {
   const despacharMesa = async (pedido) => {
     if (!pedido) return;
     const pId = pedido.uuid || pedido.id;
-    const itemsCocina = (pedido.items || []).filter(it => (!(Number(it.cat) >= 8) || it.cat === undefined));
+    const itemsCocina = (pedido.items || []).filter(esItemDeCocina);
     const todosListos = itemsCocina.length > 0 && itemsCocina.every(it => it.estado === 'listo');
     if (!todosListos) {
       showToast("⚠️ Todos los platos deben estar listos para despachar");
@@ -1897,7 +1898,7 @@ export default function App() {
   };
 
   const cocinaPendientes = pedidos.filter(p =>
-    p.items.some(it => (!(Number(it.cat) >= 8) || it.cat === undefined) && it.estado !== "listo")
+    (p.items || []).some(it => esItemDeCocina(it) && it.estado !== "listo")
   ).length;
 
   // PANTALLA DE CONFIGURACIÓN DE IP

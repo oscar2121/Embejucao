@@ -3,6 +3,7 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import DashboardFinanciero from '../../admin/DashboardFinanciero';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from 'recharts';
+import { esItemDeCocina } from './cocinaFilter';
 
 const formatNumberInput = (text) => {
   if (!text) return '';
@@ -1104,7 +1105,7 @@ export function AdminModule({ pedidos, productos, serverUrl, mesas, socket }) {
     let preparando = 0;
     let listos = 0;
     if (items && items.length > 0) {
-      items.forEach(item => {
+      items.filter(esItemDeCocina).forEach(item => {
         if (item.estado === 'pendiente') pendientes += (item.cantidad || 1);
         else if (item.estado === 'preparando') preparando += (item.cantidad || 1);
         else if (item.estado === 'listo') listos += (item.cantidad || 1);

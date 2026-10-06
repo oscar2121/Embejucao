@@ -7,6 +7,7 @@ import {
   StyleSheet
 } from 'react-native';
 import { C, s, obtenerMinutosTranscurridos } from '../constants/theme';
+import { esItemDeCocina, esBebidaCocina } from '../utils/cocinaFilter';
 
 export default function CocinaScreen({
   pedidos = [],
@@ -39,13 +40,9 @@ export default function CocinaScreen({
     const rawItems = Array.isArray(p.items) ? p.items : [];
     const itemsConIdx = rawItems.map((it, idx) => ({ ...it, originalIdx: idx }));
     // Conservamos todos los ítems de cocina (sin filtrar por estado !== 'listo') para mantener la tarjeta en pantalla
-    const itemsCocina = itemsConIdx.filter(it => (!(Number(it.cat) >= 8) || it.cat === undefined)).sort((a, b) => {
-      const getTipo = (cat) => {
-        if (cat >= 1 && cat <= 5) return 1;
-        if (cat === 6 || cat === 7) return 2;
-        return 3;
-      };
-      return getTipo(a.cat) - getTipo(b.cat);
+    const itemsCocina = itemsConIdx.filter(esItemDeCocina).sort((a, b) => {
+      const getTipo = (it) => (esBebidaCocina(it) ? 2 : 1);
+      return getTipo(a) - getTipo(b);
     });
     return { ...p, itemsFiltered: itemsCocina };
   }).filter(p => p.itemsFiltered.length > 0);
@@ -94,8 +91,8 @@ export default function CocinaScreen({
             </View>
             <View style={{ padding: 12 }}>
               {(() => {
-                const comidas = p.itemsFiltered.filter(it => !it.cat || Number(it.cat) < 6);
-                const bebidas = p.itemsFiltered.filter(it => Number(it.cat) >= 6);
+                const comidas = p.itemsFiltered.filter(it => !esBebidaCocina(it));
+                const bebidas = p.itemsFiltered.filter(it => esBebidaCocina(it));
 
                 const renderItem = (it) => (
                   <View

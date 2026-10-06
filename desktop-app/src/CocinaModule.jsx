@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
+import { esItemDeCocina, esBebidaCocina } from './cocinaFilter';
 
 export function CocinaModuleV2({ pedidos, serverUrl }) {
   console.log("RENDERIZANDO COCINA NUEVA V2");
@@ -26,11 +27,12 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
     }
   };
 
-  // Filtrar únicamente pedidos activos (no cobrados, cancelados, archivados ni completados) y ocultar muy antiguos
+  // Filtrar únicamente pedidos activos (no cobrados, cancelados, archivados ni completados) que tengan productos de cocina
   const pedidosCocina = useMemo(() => {
     return localPedidos.filter(p =>
       !['cobrado', 'cancelado', 'archivado', 'completado'].includes(String(p.estado || '').toLowerCase()) &&
-      obtenerMinutosTranscurridos(p.fecha) <= 1000
+      obtenerMinutosTranscurridos(p.fecha) <= 1000 &&
+      (Array.isArray(p.items) ? p.items : []).some(esItemDeCocina)
     );
   }, [localPedidos]);
 
@@ -66,7 +68,7 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
     item.estado = item.estado === 'preparando' ? 'listo' : 'preparando';
 
     // Conservar estado activo del pedido (en_cocina o listo si todos estan listos)
-    const itemsCocina = pedidoActualizado.items.filter(i => !(Number(i.cat) >= 8));
+    const itemsCocina = pedidoActualizado.items.filter(esItemDeCocina);
     const todosListos = itemsCocina.length > 0 && itemsCocina.every(i => i.estado === 'listo');
     pedidoActualizado.estado = todosListos ? 'listo' : 'en_cocina';
 
@@ -95,7 +97,7 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
 
     pedidoActualizado.estado = 'listo';
     pedidoActualizado.items.forEach(i => {
-      if (!(Number(i.cat) >= 8)) i.estado = 'listo';
+      if (esItemDeCocina(i)) i.estado = 'listo';
     });
 
     // Optimistic Update
@@ -202,13 +204,9 @@ export function CocinaModuleV2({ pedidos, serverUrl }) {
             const mins = tiempoTranscurrido[pedido.uuid] || 0;
             const colorMins = getColorTiempo(mins);
             const rawItems = pedido.items || [];
-            const items = [...rawItems].filter(it => !(Number(it.cat) >= 8)).sort((a, b) => {
-              const getTipo = (cat) => {
-                if (cat >= 1 && cat <= 5) return 1; // Comidas
-                if (cat === 6 || cat === 7) return 2; // Jugos y Limonadas
-                return 3; // Otros
-              };
-              return getTipo(a.cat) - getTipo(b.cat);
+            const items = [...rawItems].filter(esItemDeCocina).sort((a, b) => {
+              const getTipo = (it) => (esBebidaCocina(it) ? 2 : 1);
+              return getTipo(a) - getTipo(b);
             });
             // Si el pedido no tiene ítems de cocina, no calculamos progreso
             const progreso = items.length > 0 ? (items.filter(i => i.estado === 'listo').length / items.length) * 100 : 0;
